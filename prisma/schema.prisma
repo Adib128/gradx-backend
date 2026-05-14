@@ -1,48 +1,46 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
 }
 
-enum UserRole {
-  USER
-  ADMIN
-}
-
 model Tenant {
   id        Int      @id @default(autoincrement())
   createdAt DateTime @default(now())
-
-  users User[]
+  users     User[]
 
   @@map("tenants")
 }
 
 model User {
-  id    Int    @id @default(autoincrement())
-  email String @unique
-
-  passwordHash String
-  hashVersion  String
-
-  firstName      String?
-  lastName       String?
-  universityName String?
-  fieldName      String?
-
-  tenantId Int
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
-
-  role     UserRole @default(USER)
-  isActive Boolean
-
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  lastLogin DateTime?
+  id                        Int       @id @default(autoincrement())
+  email                     String    @unique
+  passwordHash              String
+  hashVersion               String
+  firstName                 String?
+  lastName                  String?
+  universityName            String?
+  fieldName                 String?
+  tenantId                  Int
+  role                      UserRole  @default(USER)
+  isVerified                Boolean   @default(true)
+  verificationCode          String?
+  verificationCodeExpiresAt DateTime?
+  isActive                  Boolean   @default(false)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  lastLogin                 DateTime?
+  tenant                    Tenant    @relation(fields: [tenantId], references: [id])
 
   @@index([email])
   @@map("users")
+}
+
+enum UserRole {
+  USER
+  ADMIN
 }
