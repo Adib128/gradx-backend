@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import { GetUser } from './decorators/get-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { VerifyDto } from './dto/verify.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -46,6 +48,16 @@ export class AuthController {
   async getProfile(@GetUser('userId') userId: number) {
     const user = await this.authService.findById(userId);
     return UserResponseSchema.parse(user);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Patch('update-profile')
+  updateProfile(
+    @GetUser('userId') userId: number,
+    @Body() updateProfileDto: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(userId, updateProfileDto);
   }
 
   @UseGuards(JwtAuthGuard)

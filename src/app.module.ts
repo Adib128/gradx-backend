@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ZodValidationPipe } from 'nestjs-zod';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { DepartementModule } from './departement/departement.module';
 
 @Module({
   imports: [PrismaModule, AuthModule, ConfigModule.forRoot({ isGlobal: true })],
@@ -17,6 +19,10 @@ import { ZodValidationPipe } from 'nestjs-zod';
     {
       provide: APP_PIPE,
       useClass: ZodValidationPipe,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ResponseInterceptor,
     },
   ],
 })

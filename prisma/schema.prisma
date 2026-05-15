@@ -9,9 +9,10 @@ datasource db {
 }
 
 model Tenant {
-  id        Int      @id @default(autoincrement())
-  createdAt DateTime @default(now())
-  users     User[]
+  id           Int           @id @default(autoincrement())
+  createdAt    DateTime      @default(now())
+  users        User[]
+  departements Departement[]
 
   @@map("tenants")
 }
@@ -19,6 +20,7 @@ model Tenant {
 model User {
   id                        Int       @id @default(autoincrement())
   email                     String    @unique
+  phone                     String?   @unique
   passwordHash              String
   hashVersion               String
   firstName                 String?
@@ -43,4 +45,15 @@ model User {
 enum UserRole {
   USER
   ADMIN
+}
+
+model Departement {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt()
 }

@@ -12,9 +12,9 @@ import { LoginDto } from './dto/login.dto';
 import { User, UserRole } from 'generated/prisma/browser';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { VerifyDto } from './dto/verify.dto';
-import { randomInt } from 'crypto';
 import { ResponseMessageKey } from 'src/common/constants/response-message';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AuthService {
@@ -24,15 +24,15 @@ export class AuthService {
   ) {}
 
   async register(registerDto: RegisterDto) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: registerDto.email },
+    console.log(registerDto);
+    await this.checkUniqueFields({
+      phone: registerDto.phone,
+      email: registerDto.email,
     });
-    if (existingUser) {
-      throw new ConflictException(ErrorMessageKey.USER_EXIST);
-    }
 
     const hash = await argon2.hash(registerDto.password);
-    const verificationCode = randomInt(100000, 999999).toString();
+    //const verificationCode = randomInt(100000, 999999).toString();
+    const verificationCode = '123456';
     const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await this.prisma.$transaction(async (tx) => {
@@ -42,11 +42,12 @@ export class AuthService {
           email: registerDto.email,
           passwordHash: hash,
           hashVersion: 'argon2',
-          fieldName: registerDto.firstName,
+          firstName: registerDto.firstName,
           lastName: registerDto.lastName,
           role: UserRole.USER,
           isActive: false,
           isVerified: false,
+          phone: registerDto.phone,
           verificationCode,
           verificationCodeExpiresAt,
           tenantId: tenant.id,
@@ -173,6 +174,52 @@ export class AuthService {
     return {
       message: ResponseMessageKey.CHANGE_PASSWORD_SUCCESS,
     };
+  }
+
+  async updateProfile(userId: number, updateProfileDto: UpdateProfileDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
+    }
+    await this.checkUniqueFields({
+      phone: updateProfileDto.phone,
+      email: updateProfileDto.email,
+    });
+
+    const updatedUser = await this.prisma.user.update({
+      where: { id: userId },
+      data: updateProfileDto,
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+      },
+    });
+    return {
+      message: ResponseMessageKey.USER_UPDATED_SUCCESS,
+      user: updatedUser,
+    };
+  }
+
+  private async checkUniqueFields({
+    phone,
+    email,
+  }: {
+    phone?: string;
+    email?: string;
+  }) {
+    const [phoneExists, emailExists] = await Promise.all([
+      phone ? this.prisma.user.findUnique({ where: { phone } }) : null,
+      email ? this.prisma.user.findUnique({ where: { email } }) : null,
+    ]);
+
+    if (phoneExists)
+      throw new ConflictException(ErrorMessageKey.PHONE_ALREADY_EXISTS);
+
+    if (emailExists)
+      throw new ConflictException(ErrorMessageKey.EMAIL_ALREADY_EXISTS);
   }
 
   async findById(userId: number): Promise<User> {

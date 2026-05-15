@@ -6,6 +6,7 @@ export const UserResponseSchema = z.object({
   email: z.string().email(),
   firstName: z.string().nullable(),
   lastName: z.string().nullable(),
+  phone: z.string().nullable(),
   tenantId: z.number(),
 });
 

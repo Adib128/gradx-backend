@@ -7,16 +7,21 @@ export const RegisterSchema = z.object({
     .trim()
     .email('Invalid email address'),
 
+  phone: z
+    .string()
+    .trim()
+    .pipe(z.string().regex(/^\+\d{12}$/, 'Invalid phone number format')),
+
   password: z
     .string({ message: 'Password is required' })
-    .min(6, 'Password must be at least 12 characters')
+    .min(6, 'Password must be at least 6 characters')
     .regex(
       /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^a-zA-Z0-9]).*$/,
       'Password must contain uppercase, lowercase, number, and special character',
     ),
 
-  firstName: z.string({ message: 'First name is required' }).min(3).optional(),
-  lastName: z.string({ message: 'Last name is required' }).min(3).optional(),
+  firstName: z.string().min(3).optional(),
+  lastName: z.string().min(3).optional(),
 });
 
 export class RegisterDto extends createZodDto(RegisterSchema) {}
