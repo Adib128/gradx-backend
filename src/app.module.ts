@@ -7,10 +7,18 @@ import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ZodValidationPipe } from 'nestjs-zod';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { DepartementModule } from './departement/departement.module';
+import { ClassModule } from './class/class.module';
+import { StudentModule } from './student/student.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, ConfigModule.forRoot({ isGlobal: true })],
-  controllers: [],
+  imports: [
+    PrismaModule,
+    AuthModule,
+    ConfigModule.forRoot({ isGlobal: true }),
+    DepartementModule,
+    ClassModule,
+    StudentModule,
+  ],
   providers: [
     {
       provide: APP_FILTER,

@@ -13,6 +13,8 @@ model Tenant {
   createdAt    DateTime      @default(now())
   users        User[]
   departements Departement[]
+  classes      Class[]
+  students     Student[]
 
   @@map("tenants")
 }
@@ -56,4 +58,44 @@ model Departement {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt()
+  classes   Class[]
+
+  @@unique([name, tenantId])
+  @@index([tenantId])
+  @@map("departements")
+}
+
+model Class {
+  id            Int         @id @default(autoincrement())
+  name          String      @unique
+  departementId Int
+  departement   Departement @relation(fields: [departementId], references: [id])
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  students  Student[]
+
+  @@index([tenantId])
+  @@map("classes")
+}
+
+model Student {
+  id   Int    @id @default(autoincrement())
+  name String
+  code String @unique
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  classId Int
+  class   Class @relation(fields: [classId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@map("students")
 }
