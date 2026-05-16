@@ -9,6 +9,7 @@ import { PrismaService } from 'prisma/prisma.service';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { StudentQueryDto } from 'src/class/dto/student-query.dto';
 import * as XLSX from 'xlsx';
+import { paginate } from 'src/common/helpers/paginate.helper';
 
 @Injectable()
 export class StudentService {
@@ -131,15 +132,7 @@ export class StudentService {
       this.prisma.student.count({ where }),
     ]);
 
-    return {
-      students,
-      total,
-      page,
-      limit,
-      totalPages: Math.ceil(total / limit),
-      hasNextPage: page < Math.ceil(total / limit),
-      hasPrevPage: page > 1,
-    };
+    return paginate(students, total, page, limit);
   }
 
   async findOne(id: number) {

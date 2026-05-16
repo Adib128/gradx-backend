@@ -1,4 +1,3 @@
-// src/common/interceptors/response.interceptor.ts
 import {
   Injectable,
   NestInterceptor,
@@ -7,12 +6,22 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { Request, Response } from 'express';
 
 export interface ISuccessResponse<T> {
   success: boolean;
   statusCode: number;
   data: T;
+  meta?: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPrevPage: boolean;
+  };
   timestamp: string;
+  path: string;
 }
 
 @Injectable()
@@ -24,14 +33,17 @@ export class ResponseInterceptor<T> implements NestInterceptor<
     context: ExecutionContext,
     next: CallHandler,
   ): Observable<ISuccessResponse<T>> {
-    const statusCode = context.switchToHttp().getResponse().statusCode;
+    const response = context.switchToHttp().getResponse<Response>();
+    const request = context.switchToHttp().getRequest<Request>();
 
     return next.handle().pipe(
-      map((data) => ({
+      map((payload) => ({
         success: true,
-        statusCode,
-        data,
+        statusCode: response.statusCode,
+        data: payload?.data ?? payload,
+        ...(payload?.meta && { meta: payload.meta }),
         timestamp: new Date().toISOString(),
+        path: request.url,
       })),
     );
   }

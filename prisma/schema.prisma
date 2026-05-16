@@ -15,6 +15,7 @@ model Tenant {
   departements Departement[]
   classes      Class[]
   students     Student[]
+  courses      Course[]
 
   @@map("tenants")
 }
@@ -98,4 +99,67 @@ model Student {
 
   @@index([code])
   @@map("students")
+}
+
+model Course {
+  id Int @id @default(autoincrement())
+
+  title             String
+  code              String?
+  program           String?
+  description       String?
+  creditHours       Int?
+  level             String?
+  teachingMode      String?
+  totalContactHours Int?
+  lectureHours      Int?
+  labHours          Int?
+  prerequisites     String[]
+  references        Json?
+  assessments       Json?
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  topics Topic[]
+
+  clos CLO[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("courses")
+}
+
+model Topic {
+  id           Int    @id @default(autoincrement())
+  topicNumber  Int
+  title        String
+  contactHours Int    @default(3)
+
+  courseId Int
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, topicNumber])
+  @@index([courseId])
+  @@map("topics")
+}
+
+model CLO {
+  id Int @id @default(autoincrement())
+
+  code               String
+  category           String
+  programCLOCode     String?
+  description        String
+  teachingStrategies String[]
+  assessmentMethods  String[]
+
+  courseId Int
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, code])
+  @@index([courseId])
+  @@map("clos")
 }
