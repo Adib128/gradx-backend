@@ -69,4 +69,12 @@ export class CourseController {
     return this.courseService.getExtractionStatus(jobId);
     // → { jobId: "1", status: "completed", progress: 100, result: {...} }
   }
+
+  @Post('confirm')
+  confirmAndSave(
+    @GetUser('tenantId') tenantId: number,
+    @Body() createCourseDto: CreateCourseDto, // ← typed now
+  ) {
+    return this.courseService.confirmAndSave(tenantId, createCourseDto);
+  }
 }

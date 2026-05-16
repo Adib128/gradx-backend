@@ -8,7 +8,6 @@ The JSON must follow this exact structure:
   "title": string,
   "code": string | null,
   "program": string | null,
-  "version": string,
   "description": string,
   "creditHours": number,
   "level": string | null,

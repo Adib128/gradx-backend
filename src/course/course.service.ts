@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PrismaService } from 'prisma/prisma.service';
@@ -7,6 +11,7 @@ import { title } from 'process';
 import { paginate } from 'src/common/helpers/paginate.helper';
 import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
 
 @Injectable()
 export class CourseService {
@@ -14,8 +19,51 @@ export class CourseService {
     private readonly prisma: PrismaService,
     @InjectQueue('course-extraction') private readonly extractionQueue: Queue,
   ) {}
+
   create(createCourseDto: CreateCourseDto) {
     return 'This action adds a new course';
+  }
+
+  async confirmAndSave(tenantId: number, createCourseDto: CreateCourseDto) {
+    const {
+      clos,
+      topics,
+      assessments,
+      references,
+      prerequisites,
+      ...courseData
+    } = createCourseDto;
+
+    return await this.prisma.course.create({
+      data: {
+        ...courseData,
+        tenantId,
+        prerequisites,
+        references,
+        assessments,
+        clos: {
+          create: clos.map((clo) => ({
+            code: clo.code,
+            category: clo.category,
+            programCLOCode: clo.programCLOCode,
+            description: clo.description,
+            teachingStrategies: clo.teachingStrategies,
+            assessmentMethods: clo.assessmentMethods,
+          })),
+        },
+        topics: {
+          create: topics.map((topic) => ({
+            topicNumber: topic.topicNumber,
+            title: topic.title,
+            contactHours: topic.contactHours,
+          })),
+        },
+      },
+      include: {
+        clos: true,
+        topics: true,
+      },
+    });
   }
 
   async findAll(tenantId: number, courseQueryDto: CourseQueryDto) {
@@ -77,8 +125,6 @@ export class CourseService {
 
     const state = await job.getState(); // waiting | active | completed | failed
 
-    console.log(job.returnvalue);
-
     return {
       jobId,
       status: state,
@@ -88,8 +134,19 @@ export class CourseService {
     };
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} course`;
+  async findOne(id: number) {
+    const course = await this.prisma.course.findUnique({
+      where: { id },
+      include: {
+        clos: true,
+        topics: true,
+      },
+    });
+
+    if (!course) {
+      throw new ConflictException(ErrorMessageKey.COURSE_NOT_FOUND);
+    }
+    return course;
   }
 
   update(id: number, updateCourseDto: UpdateCourseDto) {
