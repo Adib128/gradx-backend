@@ -12,6 +12,7 @@ import { paginate } from 'src/common/helpers/paginate.helper';
 import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { GenerationStatus } from 'generated/prisma/enums';
 
 @Injectable()
 export class CourseService {
@@ -139,7 +140,24 @@ export class CourseService {
       where: { id },
       include: {
         clos: true,
-        topics: true,
+        topics: {
+          include: {
+            // Drill down into the topicContents table for each topic
+            topicContents: {
+              where: {
+                // Only return content that is completely generated
+                status: GenerationStatus.COMPLETED,
+              },
+              select: {
+                id: true,
+                type: true,
+                status: true,
+                content: true, // This contains your raw generated JSON payload
+                createdAt: true,
+              },
+            },
+          },
+        },
       },
     });
 

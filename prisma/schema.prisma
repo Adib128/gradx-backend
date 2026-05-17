@@ -9,13 +9,14 @@ datasource db {
 }
 
 model Tenant {
-  id           Int           @id @default(autoincrement())
-  createdAt    DateTime      @default(now())
-  users        User[]
-  departements Departement[]
-  classes      Class[]
-  students     Student[]
-  courses      Course[]
+  id            Int            @id @default(autoincrement())
+  createdAt     DateTime       @default(now())
+  users         User[]
+  departements  Departement[]
+  classes       Class[]
+  students      Student[]
+  courses       Course[]
+  topicContents TopicContent[]
 
   @@map("tenants")
 }
@@ -125,8 +126,9 @@ model Course {
 
   clos CLO[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  topicContents TopicContent[]
 
   @@index([tenantId])
   @@map("courses")
@@ -138,8 +140,9 @@ model Topic {
   title        String
   contactHours Int    @default(3)
 
-  courseId Int
-  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseId      Int
+  course        Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  topicContents TopicContent[]
 
   @@unique([courseId, topicNumber])
   @@index([courseId])
@@ -162,4 +165,42 @@ model CLO {
   @@unique([courseId, code])
   @@index([courseId])
   @@map("clos")
+}
+
+enum ContentType {
+  LECTURE
+  SLIDES
+  QUIZ
+  LAB
+}
+
+enum GenerationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model TopicContent {
+  id      Int              @id @default(autoincrement())
+  type    ContentType
+  status  GenerationStatus @default(PENDING)
+  content Json?
+
+  topicId Int
+  topic   Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  courseId Int
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([topicId, type])
+  @@index([topicId])
+  @@index([tenantId])
+  @@map("topic_contents")
 }

@@ -9,6 +9,7 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { CourseService } from './course.service';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -19,6 +20,9 @@ import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { ApiConsumes } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CourseAIService } from './course-ai.service';
+import { CreateTopicDto } from './dto/create-topic.dto';
+import { TopicService } from './topic.service';
+import { UpdateTopicDto } from './dto/update-topic.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('courses')
@@ -26,6 +30,7 @@ export class CourseController {
   constructor(
     private readonly courseService: CourseService,
     private readonly courseAIService: CourseAIService,
+    private readonly topicService: TopicService,
   ) {}
 
   @Post()
@@ -76,5 +81,30 @@ export class CourseController {
     @Body() createCourseDto: CreateCourseDto, // ← typed now
   ) {
     return this.courseService.confirmAndSave(tenantId, createCourseDto);
+  }
+
+  @Post(':id/topics')
+  createTopic(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() createTopicDto: CreateTopicDto,
+  ) {
+    return this.topicService.create(id, createTopicDto);
+  }
+
+  @Patch(':id/topics/:topicId')
+  updateTopic(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() updateTopicDto: UpdateTopicDto,
+  ) {
+    return this.topicService.updateTopic(topicId, updateTopicDto);
+  }
+
+  @Delete(':id/topics/:topicId')
+  deleteTOpic(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+  ) {
+    return this.topicService.deleteTopic(topicId);
   }
 }
