@@ -24,7 +24,7 @@ export class TopicContentService {
     topicId: number,
     generationContentDto: GenerateContentDto,
   ) {
-    const topic = await this.prisma.topic.findFirst({
+    const topic = await this.prisma.topic.findUnique({
       where: { id: topicId, course: { tenantId } },
       include: {
         course: {
@@ -44,7 +44,7 @@ export class TopicContentService {
       topicId: topic.id,
       topicNumber: topic.topicNumber,
       contentId: topic.id,
-      type: 'LECTURE',
+      type: generationContentDto.type,
       topicTitle: topic.title,
       courseId: topic.course.id,
       courseTitle: topic.course.title ?? '',

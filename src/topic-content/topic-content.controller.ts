@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -19,7 +20,7 @@ export class TopicContentController {
   generate(
     @GetUser('tenantId') tenantId: number,
     @Param('topicId', ParseIntPipe) topicId: number,
-    generateContentDto: GenerateContentDto,
+    @Body() generateContentDto: GenerateContentDto,
   ) {
     return this.topicContentService.generate(
       tenantId,
