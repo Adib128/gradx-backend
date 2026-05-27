@@ -45,7 +45,8 @@ The JSON must follow this exact structure:
     {
       "title": string,
       "timing": string | null,
-      "percentage": number
+      "percentage": number,
+      "type": "QUIZ" | "EXAM" | "LAB" | "OTHER"
     }
   ]
 }`;

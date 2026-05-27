@@ -3,12 +3,7 @@ import { z } from 'zod';
 import { TopicSchema } from '../schemas/topic.schema';
 import { ReferenceSchema } from '../schemas/reference.schema';
 import { CLOSchema } from '../schemas/clo.schema';
-
-export const AssessmentSchema = z.object({
-  title: z.string().min(1),
-  timing: z.string().nullable().optional(),
-  percentage: z.number().int().min(0).max(100),
-});
+import { AssessmentSchema } from 'src/assessment/dto/assessment.schema';
 
 export const CreateCourseSchema = z.object({
   title: z.string().min(1, 'Title is required'),
@@ -27,10 +22,10 @@ export const CreateCourseSchema = z.object({
 
   prerequisites: z.array(z.string()).default([]),
   references: z.array(ReferenceSchema).default([]),
-  assessments: z.array(AssessmentSchema).default([]),
 
   clos: z.array(CLOSchema).default([]),
   topics: z.array(TopicSchema).default([]),
+  assessments: z.array(AssessmentSchema).default([]),
 });
 
 export class CreateCourseDto extends createZodDto(CreateCourseSchema) {}

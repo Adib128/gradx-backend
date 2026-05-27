@@ -33,11 +33,6 @@ export class CourseController {
     private readonly topicService: TopicService,
   ) {}
 
-  @Post()
-  create(@Body() createCourseDto: CreateCourseDto) {
-    return this.courseService.create(createCourseDto);
-  }
-
   @Get()
   findAll(
     @GetUser('tenantId') tenantId: number,

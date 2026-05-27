@@ -8,6 +8,51 @@ datasource db {
   provider = "postgresql"
 }
 
+enum ContentType {
+  LECTURE
+  SLIDES
+  QUIZ
+  LAB
+}
+
+enum GenerationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum QuestionType {
+  MCQ
+  TRUE_FALSE
+  SHORT_ANSWER
+  CODING
+  MATH
+}
+
+enum DifficultyLevel {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum AssessmentType {
+  QUIZ
+  EXAM
+  LAB
+  OTHER
+}
+
+enum Language {
+  ENGLISH
+  ARABIC
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
 model Tenant {
   id            Int            @id @default(autoincrement())
   createdAt     DateTime       @default(now())
@@ -17,6 +62,8 @@ model Tenant {
   students      Student[]
   courses       Course[]
   topicContents TopicContent[]
+  questions     Question[]
+  assessments   Assessment[]
 
   @@map("tenants")
 }
@@ -44,11 +91,6 @@ model User {
 
   @@index([email])
   @@map("users")
-}
-
-enum UserRole {
-  USER
-  ADMIN
 }
 
 model Departement {
@@ -117,18 +159,18 @@ model Course {
   labHours          Int?
   prerequisites     String[]
   references        Json?
-  assessments       Json?
 
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
   topics Topic[]
 
-  clos CLO[]
-
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   topicContents TopicContent[]
+  questions     Question[]
+  assessments   Assessment[]
+  clos          Clo[]
 
   @@index([tenantId])
   @@map("courses")
@@ -140,16 +182,18 @@ model Topic {
   title        String
   contactHours Int    @default(3)
 
-  courseId      Int
-  course        Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  topicContents TopicContent[]
+  courseId         Int
+  course           Course            @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  topicContents    TopicContent[]
+  questions        Question[]
+  assessmentTopics AssessmentTopic[]
 
   @@unique([courseId, topicNumber])
   @@index([courseId])
   @@map("topics")
 }
 
-model CLO {
+model Clo {
   id Int @id @default(autoincrement())
 
   code               String
@@ -160,25 +204,11 @@ model CLO {
   assessmentMethods  String[]
 
   courseId Int
-  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  course   Course @relation(fields: [courseId], references: [id])
 
-  @@unique([courseId, code])
+  @@unique([code])
   @@index([courseId])
   @@map("clos")
-}
-
-enum ContentType {
-  LECTURE
-  SLIDES
-  QUIZ
-  LAB
-}
-
-enum GenerationStatus {
-  PENDING
-  PROCESSING
-  COMPLETED
-  FAILED
 }
 
 model TopicContent {
@@ -203,4 +233,96 @@ model TopicContent {
   @@index([topicId])
   @@index([tenantId])
   @@map("topic_contents")
+}
+
+model Question {
+  id             Int             @id @default(autoincrement())
+  type           QuestionType
+  diffdifficulty DifficultyLevel @default(EASY)
+  text           String
+  explanation    String?
+  points         Int             @default(1)
+
+  correctAnswer  String?
+  codeTemplate   String?
+  codeLanguage   String?
+  expectedOutput String?
+  mathFormula    String?
+  mathSolution   String?
+
+  questionOptions QuestionOption[]
+
+  courseId Int?
+  course   Course? @relation(fields: [courseId], references: [id])
+
+  topicId Int?
+  topic   Topic? @relation(fields: [topicId], references: [id])
+
+  assessmentId Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id])
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([topicId])
+  @@index([courseId])
+  @@index([tenantId])
+  @@map("questions")
+}
+
+model QuestionOption {
+  id Int @id @default(autoincrement())
+
+  text      String
+  isCorrect Boolean @default(false)
+  order     Int
+
+  questionId Int
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("question_options")
+}
+
+model Assessment {
+  id          Int            @id @default(autoincrement())
+  type        AssessmentType
+  title       String
+  duration    Int?
+  totalPoints Int?
+  passMark    Int?
+  language    Language?
+  isPublished Boolean        @default(true)
+  timing      String?
+  score       Int?
+
+  courseId Int
+  course   Course @relation(fields: [courseId], references: [id])
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  questions        Question[]
+  assessmentTopics AssessmentTopic[]
+
+  @@index([courseId])
+  @@index([tenantId])
+  @@index([type])
+  @@map("assessments")
+}
+
+model AssessmentTopic {
+  assessmentId Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id])
+
+  topicId Int
+  topic   Topic @relation(fields: [topicId], references: [id])
+
+  @@id([assessmentId, topicId])
+  @@map("assessment_topic")
 }

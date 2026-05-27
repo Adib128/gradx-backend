@@ -12,6 +12,7 @@ import { StudentModule } from './student/student.module';
 import { CourseModule } from './course/course.module';
 import { BullModule } from '@nestjs/bullmq';
 import { TopicContentModule } from './topic-content/topic-content.module';
+import { AssessmentModule } from './assessment/assessment.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { TopicContentModule } from './topic-content/topic-content.module';
       }),
     }),
     TopicContentModule,
+    AssessmentModule,
   ],
   providers: [
     {

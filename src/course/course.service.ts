@@ -7,7 +7,6 @@ import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { CourseQueryDto } from './dto/course-query.dto';
-import { title } from 'process';
 import { paginate } from 'src/common/helpers/paginate.helper';
 import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -20,10 +19,6 @@ export class CourseService {
     private readonly prisma: PrismaService,
     @InjectQueue('course-extraction') private readonly extractionQueue: Queue,
   ) {}
-
-  create(createCourseDto: CreateCourseDto) {
-    return 'This action adds a new course';
-  }
 
   async confirmAndSave(tenantId: number, createCourseDto: CreateCourseDto) {
     const {
@@ -41,7 +36,13 @@ export class CourseService {
         tenantId,
         prerequisites,
         references,
-        assessments,
+        assessments: {
+          create: assessments.map((assessment) => ({
+            title: assessment.title,
+            type: assessment.type,
+            tenantId,
+          })),
+        },
         clos: {
           create: clos.map((clo) => ({
             code: clo.code,
@@ -140,6 +141,7 @@ export class CourseService {
       where: { id },
       include: {
         clos: true,
+        assessments: true,
         topics: {
           include: {
             // Drill down into the topicContents table for each topic

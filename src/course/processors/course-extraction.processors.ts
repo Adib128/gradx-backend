@@ -20,6 +20,8 @@ export class CourseProcessors extends WorkerHost {
       job.data.base64,
     );
 
+    console.log(result);
+
     await job.updateProgress(100);
 
     return result;
