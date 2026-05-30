@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { TopicSchema } from '../schemas/topic.schema';
 import { ReferenceSchema } from '../schemas/reference.schema';
 import { CLOSchema } from '../schemas/clo.schema';
-import { AssessmentSchema } from 'src/assessment/dto/assessment.schema';
+import { AssessmentSchema } from 'src/assessment/schema/assessment.schema';
 
 export const CreateCourseSchema = z.object({
   title: z.string().min(1, 'Title is required'),

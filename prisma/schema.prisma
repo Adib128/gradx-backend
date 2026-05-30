@@ -53,6 +53,15 @@ enum UserRole {
   ADMIN
 }
 
+enum Bloom {
+  REMEMBER
+  UNDERSTAND
+  APPLY
+  ANALYZE
+  EVALUATE
+  CREATE
+}
+
 model Tenant {
   id            Int            @id @default(autoincrement())
   createdAt     DateTime       @default(now())
@@ -203,10 +212,10 @@ model Clo {
   teachingStrategies String[]
   assessmentMethods  String[]
 
-  courseId Int
-  course   Course @relation(fields: [courseId], references: [id])
+  courseId     Int
+  course       Course        @relation(fields: [courseId], references: [id])
+  questionClos QuestionClo[]
 
-  @@unique([code])
   @@index([courseId])
   @@map("clos")
 }
@@ -236,12 +245,12 @@ model TopicContent {
 }
 
 model Question {
-  id             Int             @id @default(autoincrement())
-  type           QuestionType
-  diffdifficulty DifficultyLevel @default(EASY)
-  text           String
-  explanation    String?
-  points         Int             @default(1)
+  id          Int          @id @default(autoincrement())
+  type        QuestionType
+  text        String
+  bloom       Bloom?
+  explanation String?
+  points      Int          @default(1)
 
   correctAnswer  String?
   codeTemplate   String?
@@ -252,9 +261,6 @@ model Question {
 
   questionOptions QuestionOption[]
 
-  courseId Int?
-  course   Course? @relation(fields: [courseId], references: [id])
-
   topicId Int?
   topic   Topic? @relation(fields: [topicId], references: [id])
 
@@ -264,11 +270,13 @@ model Question {
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  questionClos QuestionClo[]
+  course       Course?       @relation(fields: [courseId], references: [id])
+  courseId     Int?
 
   @@index([topicId])
-  @@index([courseId])
   @@index([tenantId])
   @@map("questions")
 }
@@ -285,6 +293,17 @@ model QuestionOption {
 
   @@index([questionId])
   @@map("question_options")
+}
+
+model QuestionClo {
+  questionId Int
+  question   Question @relation(fields: [questionId], references: [id])
+
+  cloId Int
+  Clo   Clo @relation(fields: [cloId], references: [id])
+
+  @@id([questionId, cloId])
+  @@map("question_clos")
 }
 
 model Assessment {

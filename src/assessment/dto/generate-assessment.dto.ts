@@ -1,7 +1,7 @@
 import z from 'zod';
-import { AssessmentSchema } from './assessment.schema';
 import { QuestionType } from 'generated/prisma/enums';
 import { createZodDto } from 'nestjs-zod';
+import { AssessmentSchema } from '../schema/assessment.schema';
 
 const QuestionTypeConfigSchema = z.object({
   questionType: z.enum(QuestionType),

@@ -1,9 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { GenerateAssessmentDto } from './dto/generate-assessment.dto';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 import { GENERATE_COURSE_PROMPT } from './prompts/generate-assessment.prompt';
+import { CreateAssessmentDto } from './dto/create-assessment.dto';
+import { connect } from 'http2';
 
 @Injectable()
 export class AssessmentService {
@@ -26,16 +32,13 @@ export class AssessmentService {
     courseId: number,
     generateAssessmentDto: GenerateAssessmentDto,
   ) {
-    // 1. Resolve all asynchronous database queries concurrently
     const enrichedTopicGenerations = await Promise.all(
       generateAssessmentDto.topicGenerations.map(async (topicGen) => {
-        // Fetch the full topic details
         const topic = await this.prisma.topic.findUnique({
           where: { id: topicGen.topicId },
           select: { id: true, title: true, topicNumber: true },
         });
 
-        // Fetch the full CLO details for this specific topic configuration
         const clos = await this.prisma.clo.findMany({
           where: {
             id: { in: topicGen.cloIds },
@@ -43,23 +46,20 @@ export class AssessmentService {
           select: { code: true, description: true, category: true },
         });
 
-        // Combine the original DTO configurations with the rich DB data
         return {
-          ...topicGen, // topicId, cloIds, blooms, questionTypes
+          ...topicGen,
           topicTitle: topic?.title ?? 'Unknown Topic',
           topicNumber: topic?.topicNumber ?? 0,
-          closDetails: clos, // The rich array containing code, description, etc.
+          closDetails: clos,
         };
       }),
     );
 
-    // 2. Build the aggregate execution job payload for the prompt
     const promptPayload = {
       assessment: generateAssessmentDto.assessment,
       topicGenerations: enrichedTopicGenerations,
     };
 
-    // 3. Fire the OpenRouter/OpenAI generation completion
     const response = await this.client.chat.completions.create({
       model: this.model,
       messages: [
@@ -71,5 +71,118 @@ export class AssessmentService {
     });
 
     return response.choices[0].message.content;
+  }
+
+  async update(
+    tenantId: number,
+    assessmentId: number,
+    createAssessmentDto: CreateAssessmentDto,
+  ) {
+    const { questions, topicIds, cloIds, ...assessmentFields } =
+      createAssessmentDto;
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const assessment = await tx.assessment.update({
+            where: { id: assessmentId },
+            data: {
+              ...assessmentFields,
+              tenantId,
+              assessmentTopics: {
+                create: topicIds.map((topicId) => ({ topicId })),
+              },
+              questions: {
+                create: questions.map((question) => {
+                  const { questionOptions, ...questionFields } = question;
+                  return {
+                    ...questionFields,
+                    tenantId,
+                    questionClos: {
+                      create: cloIds.map((cloId) => ({ cloId })),
+                    },
+                    questionOptions: {
+                      create: questionOptions.map((option) => ({
+                        text: option.text,
+                        isCorrect: option.isCorrect,
+                        order: option.order,
+                      })),
+                    },
+                  };
+                }),
+              },
+            },
+            include: {
+              questions: {
+                include: {
+                  questionOptions: true,
+                },
+              },
+            },
+          });
+          return assessment;
+        },
+        {
+          maxWait: 15000,
+          timeout: 30000,
+        },
+      );
+    } catch (error) {
+      console.log(error);
+      throw new InternalServerErrorException('Could not create assessment');
+    }
+  }
+
+  async findOne(tenantId: number, assessmentId: number) {
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, tenantId },
+      include: {
+        assessmentTopics: {
+          include: {
+            topic: {
+              include: {
+                questions: {
+                  where: { assessmentId },
+                  include: {
+                    questionOptions: {
+                      orderBy: { order: 'asc' },
+                    },
+                  },
+                  orderBy: { id: 'asc' },
+                },
+              },
+            },
+          },
+          orderBy: { topicId: 'asc' },
+        },
+      },
+    });
+    if (!assessment) {
+      throw new NotFoundException('Assessment not found');
+    }
+    return assessment;
+  }
+
+  findAll(courseId: number) {
+    return this.prisma.assessment.findMany({
+      where: { courseId },
+      include: {
+        assessmentTopics: {
+          include: {
+            topic: {
+              include: {
+                questions: {
+                  include: {
+                    questionOptions: {
+                      orderBy: { order: 'asc' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { topicId: 'asc' },
+        },
+      },
+    });
   }
 }

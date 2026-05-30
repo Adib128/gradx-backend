@@ -144,17 +144,15 @@ export class CourseService {
         assessments: true,
         topics: {
           include: {
-            // Drill down into the topicContents table for each topic
             topicContents: {
               where: {
-                // Only return content that is completely generated
                 status: GenerationStatus.COMPLETED,
               },
               select: {
                 id: true,
                 type: true,
                 status: true,
-                content: true, // This contains your raw generated JSON payload
+                content: true,
                 createdAt: true,
               },
             },
