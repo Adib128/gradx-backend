@@ -8,8 +8,8 @@ import { GenerateAssessmentDto } from './dto/generate-assessment.dto';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 import { GENERATE_COURSE_PROMPT } from './prompts/generate-assessment.prompt';
+import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
-import { connect } from 'http2';
 
 @Injectable()
 export class AssessmentService {
@@ -25,6 +25,20 @@ export class AssessmentService {
       baseURL: this.config.get<string>('OPENROUTER_BASE_URL'),
     });
     this.model = this.config.get<string>('OPENROUTER_MODEL')!;
+  }
+
+  async create(
+    tenantId: number,
+    courseId: number,
+    createAssessmentDto: CreateAssessmentDto,
+  ) {
+    return await this.prisma.assessment.create({
+      data: {
+        ...createAssessmentDto,
+        tenantId,
+        courseId,
+      },
+    });
   }
 
   async generate(
@@ -76,10 +90,10 @@ export class AssessmentService {
   async update(
     tenantId: number,
     assessmentId: number,
-    createAssessmentDto: CreateAssessmentDto,
+    updateateAssessmentDto: UpdateAssessmentDto,
   ) {
     const { questions, topicIds, cloIds, ...assessmentFields } =
-      createAssessmentDto;
+      updateateAssessmentDto;
     try {
       return await this.prisma.$transaction(
         async (tx) => {
@@ -183,6 +197,18 @@ export class AssessmentService {
           orderBy: { topicId: 'asc' },
         },
       },
+    });
+  }
+
+  async remove(id: number) {
+    const assessment = await this.prisma.assessment.findUnique({
+      where: { id },
+    });
+    if (!assessment) {
+      throw new NotFoundException('Assessment is not found');
+    }
+    return await this.prisma.assessment.delete({
+      where: { id },
     });
   }
 }

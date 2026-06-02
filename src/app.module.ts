@@ -6,13 +6,14 @@ import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ZodValidationPipe } from 'nestjs-zod';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { DepartementModule } from './departement/departement.module';
 import { ClassModule } from './class/class.module';
 import { StudentModule } from './student/student.module';
 import { CourseModule } from './course/course.module';
 import { BullModule } from '@nestjs/bullmq';
 import { TopicContentModule } from './topic-content/topic-content.module';
 import { AssessmentModule } from './assessment/assessment.module';
+import { DepartementModule } from './departement/departement.module';
+import { CloModule } from './clo/clo.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { AssessmentModule } from './assessment/assessment.module';
     }),
     TopicContentModule,
     AssessmentModule,
+    CloModule,
   ],
   providers: [
     {

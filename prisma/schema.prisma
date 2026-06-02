@@ -212,8 +212,8 @@ model Clo {
   teachingStrategies String[]
   assessmentMethods  String[]
 
-  courseId     Int
-  course       Course        @relation(fields: [courseId], references: [id])
+  courseId     Int?
+  course       Course?       @relation(fields: [courseId], references: [id])
   questionClos QuestionClo[]
 
   @@index([courseId])

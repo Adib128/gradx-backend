@@ -1,4 +1,4 @@
 import { createZodDto } from 'nestjs-zod';
-import { CLOSchema } from '../schemas/clo.schema';
+import { CloSchema } from 'src/clo/schemas/clo.schema';
 
-export class CLOSchemaDto extends createZodDto(CLOSchema) {}
+export class CLOSchemaDto extends createZodDto(CloSchema) {}
