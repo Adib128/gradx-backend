@@ -7,7 +7,6 @@ import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
-import { StudentQueryDto } from 'src/class/dto/student-query.dto';
 import * as XLSX from 'xlsx';
 import { paginate } from 'src/common/helpers/paginate.helper';
 
@@ -15,7 +14,7 @@ import { paginate } from 'src/common/helpers/paginate.helper';
 export class StudentService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(tenantId: number, createStudentDto: CreateStudentDto) {
+  async create(courseId: number, createStudentDto: CreateStudentDto) {
     const student = await this.prisma.student.findUnique({
       where: { code: createStudentDto.code },
     });
@@ -26,28 +25,34 @@ export class StudentService {
 
     return await this.prisma.student.create({
       data: {
-        name: createStudentDto.name,
-        code: createStudentDto.code,
-        tenant: { connect: { id: tenantId } },
-        class: { connect: { id: createStudentDto.classId } },
+        ...createStudentDto,
+        courseId,
       },
     });
   }
 
-  async importExcel(
-    tenantId: number,
-    classId: number,
-    file: Express.Multer.File,
-  ) {
+  async importExcel(courseId: number, file: Express.Multer.File) {
+    if (!file?.buffer) {
+      throw new BadRequestException('Excel file is required');
+    }
+
     const workbook = XLSX.read(file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json<{
-      code: string;
-      name: string;
-    }>(sheet, {
-      header: ['code', 'name'],
-      range: 0,
+    const sheetRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: '',
     });
+
+    const hasHeader = this.isStudentImportHeader(sheetRows[0]);
+    const rows = sheetRows.slice(hasHeader ? 1 : 0).map((row, index) => ({
+      rowNumber: index + (hasHeader ? 2 : 1),
+      code: this.cellToString(row[0]),
+      name: this.cellToString(row[1]),
+      class: this.cellToString(row[2]),
+      departement: this.cellToString(row[3]),
+    }));
+
     if (!rows.length)
       throw new BadRequestException(ErrorMessageKey.EXCEL_EMPTY);
 
@@ -56,25 +61,24 @@ export class StudentService {
       failed: [] as { row: number; reason: string }[],
     };
 
-    for (const [index, row] of rows.entries()) {
+    for (const row of rows) {
       try {
         // validate required fields
         if (!row.code || !row.name) {
           results.failed.push({
-            row: index + 2,
+            row: row.rowNumber,
             reason: 'Missing required fields',
           });
           continue;
         }
 
-        // check duplicate email within tenant
-        const exists = await this.prisma.student.findFirst({
-          where: { code: row.code, tenantId },
+        const exists = await this.prisma.student.findUnique({
+          where: { code: row.code },
         });
 
         if (exists) {
           results.failed.push({
-            row: index + 2,
+            row: row.rowNumber,
             reason: `Code ${row.code} already exists`,
           });
           continue;
@@ -84,55 +88,44 @@ export class StudentService {
           data: {
             code: row.code,
             name: row.name,
-            tenant: { connect: { id: tenantId } },
-            class: { connect: { id: classId } },
+            class: row.class,
+            departement: row.departement,
+            courseId,
           },
         });
 
         results.success++;
       } catch {
-        results.failed.push({ row: index + 2, reason: 'Unexpected error' });
+        results.failed.push({ row: row.rowNumber, reason: 'Unexpected error' });
       }
     }
 
     return results;
   }
 
-  findAll() {
-    return `This action returns all student`;
+  private isStudentImportHeader(row?: unknown[]) {
+    if (!row) {
+      return false;
+    }
+
+    const headers = row.map((cell) =>
+      this.cellToString(cell).toLowerCase().replace(/\s+/g, ''),
+    );
+
+    return (
+      headers[0] === 'code' &&
+      headers[1] === 'name' &&
+      headers[2] === 'class' &&
+      (headers[3] === 'departement' || headers[3] === 'department')
+    );
   }
 
-  async findByClass(classId: number, tenantId: number, query: StudentQueryDto) {
-    const { page, limit, search } = query;
+  private cellToString(value: unknown) {
+    return value === undefined || value === null ? '' : String(value).trim();
+  }
 
-    const skip = (page - 1) * limit;
-
-    const where = {
-      classId,
-      tenantId,
-      ...(search && {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' as const } },
-          { code: { contains: search, mode: 'insensitive' as const } },
-        ],
-      }),
-    };
-
-    const [students, total] = await Promise.all([
-      this.prisma.student.findMany({
-        where,
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          name: true,
-          code: true,
-        },
-      }),
-      this.prisma.student.count({ where }),
-    ]);
-
-    return paginate(students, total, page, limit);
+  findAll() {
+    return `This action returns all student`;
   }
 
   async findOne(id: number) {
@@ -155,12 +148,19 @@ export class StudentService {
       throw new ConflictException(ErrorMessageKey.STUDENT_NOT_FOUND);
     }
 
+    if (updateStudentDto.code && updateStudentDto.code !== student.code) {
+      const codeExists = await this.prisma.student.findUnique({
+        where: { code: updateStudentDto.code },
+      });
+
+      if (codeExists) {
+        throw new ConflictException(ErrorMessageKey.STUDENT_EXIST);
+      }
+    }
+
     return await this.prisma.student.update({
       where: { id },
-      data: {
-        name: updateStudentDto.name,
-        code: updateStudentDto.code,
-      },
+      data: updateStudentDto,
     });
   }
 

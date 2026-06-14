@@ -26,6 +26,7 @@ export class ContentGeneratonProcessor extends WorkerHost {
         job.data.type,
         result,
       );
+      console.log(result);
       return result;
     } catch (error) {
       throw error;

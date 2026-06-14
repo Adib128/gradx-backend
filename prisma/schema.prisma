@@ -38,7 +38,8 @@ enum DifficultyLevel {
 
 enum AssessmentType {
   QUIZ
-  EXAM
+  FINAL_EXAM
+  MID_TERM_EXAM
   LAB
   OTHER
 }
@@ -62,13 +63,40 @@ enum Bloom {
   CREATE
 }
 
+enum DifficultyDistribution {
+  BEGINNER
+  EASY
+  BALANCED
+  MIXED
+  ADVANCED
+  EXPERT
+}
+
+enum AssessmentPaperSize {
+  LETTER
+  A3
+  A4
+  A5
+  A6
+}
+
+enum AssessmentAnswerSheetMode {
+  APPEND_SEPARATE_PDF
+  APPEND_SAME_PDF
+  NONE
+}
+
+enum AssessmentStudentIdLabel {
+  STUDENT_ID
+  STUDENT_NAME
+}
+
 model Tenant {
   id            Int            @id @default(autoincrement())
   createdAt     DateTime       @default(now())
   users         User[]
   departements  Departement[]
   classes       Class[]
-  students      Student[]
   courses       Course[]
   topicContents TopicContent[]
   questions     Question[]
@@ -127,24 +155,22 @@ model Class {
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  students  Student[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([tenantId])
   @@map("classes")
 }
 
 model Student {
-  id   Int    @id @default(autoincrement())
-  name String
-  code String @unique
+  id          Int     @id @default(autoincrement())
+  name        String
+  code        String  @unique
+  class       String?
+  departement String?
 
-  tenantId Int
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
-
-  classId Int
-  class   Class @relation(fields: [classId], references: [id])
+  courseId Int?
+  course   Course? @relation(fields: [courseId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -176,10 +202,12 @@ model Course {
 
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+  deletedAt     DateTime?
   topicContents TopicContent[]
   questions     Question[]
   assessments   Assessment[]
   clos          Clo[]
+  students      Student[]
 
   @@index([tenantId])
   @@map("courses")
@@ -196,6 +224,7 @@ model Topic {
   topicContents    TopicContent[]
   questions        Question[]
   assessmentTopics AssessmentTopic[]
+  topicClos        TopicClo[]
 
   @@unique([courseId, topicNumber])
   @@index([courseId])
@@ -215,6 +244,7 @@ model Clo {
   courseId     Int?
   course       Course?       @relation(fields: [courseId], references: [id])
   questionClos QuestionClo[]
+  topicClos    TopicClo[]
 
   @@index([courseId])
   @@map("clos")
@@ -270,11 +300,12 @@ model Question {
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  questionClos QuestionClo[]
-  course       Course?       @relation(fields: [courseId], references: [id])
-  courseId     Int?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+  questionClos               QuestionClo[]
+  course                     Course?                     @relation(fields: [courseId], references: [id])
+  courseId                   Int?
+  assessmentVersionQuestions AssessmentVersionQuestion[]
 
   @@index([topicId])
   @@index([tenantId])
@@ -307,16 +338,27 @@ model QuestionClo {
 }
 
 model Assessment {
-  id          Int            @id @default(autoincrement())
-  type        AssessmentType
-  title       String
-  duration    Int?
-  totalPoints Int?
-  passMark    Int?
-  language    Language?
-  isPublished Boolean        @default(true)
-  timing      String?
-  score       Int?
+  id                                      Int                       @id @default(autoincrement())
+  type                                    AssessmentType
+  title                                   String
+  duration                                Int?
+  totalMarks                              Int?
+  passMark                                Int?
+  language                                Language?
+  difficulty                              DifficultyDistribution?
+  isPublished                             Boolean                   @default(true)
+  numberOfVersions                        Int                       @default(2)
+  paperSize                               AssessmentPaperSize       @default(A4)
+  answerSheetMode                         AssessmentAnswerSheetMode @default(APPEND_SAME_PDF)
+  showMarksPerQuestion                    Boolean                   @default(false)
+  includeStudentInfoHeader                Boolean                   @default(false)
+  studentIdLabel                          AssessmentStudentIdLabel  @default(STUDENT_ID)
+  numberOfStudentIdDigits                 Int                       @default(3)
+  includeAssessmentInstructionsSection    Boolean                   @default(false)
+  assessmentInstructions                  String?
+  printCloCodeNextToEachQuestion          Boolean                   @default(false)
+  printBloomLevelNextToEachQuestion       Boolean                   @default(false)
+  printDifficultyLabelNextToEachQuestion  Boolean                   @default(false)
 
   courseId Int
   course   Course @relation(fields: [courseId], references: [id])
@@ -324,15 +366,49 @@ model Assessment {
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  questions        Question[]
-  assessmentTopics AssessmentTopic[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  questions          Question[]
+  assessmentTopics   AssessmentTopic[]
+  assessmentVersions AssessmentVersion[]
 
   @@index([courseId])
   @@index([tenantId])
   @@index([type])
   @@map("assessments")
+}
+
+model AssessmentVersion {
+  id          Int    @id @default(autoincrement())
+  versionName String
+
+  assessmentId Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  versionQuestions AssessmentVersionQuestion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([assessmentId])
+  @@map("assessment_versions")
+}
+
+model AssessmentVersionQuestion {
+  id Int @id @default(autoincrement())
+
+  assessmentVersionId Int
+  assessmentVersion   AssessmentVersion @relation(fields: [assessmentVersionId], references: [id], onDelete: Cascade)
+
+  questionId Int
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  order Int
+
+  @@unique([assessmentVersionId, questionId])
+  @@index([assessmentVersionId])
+  @@index([questionId])
+  @@map("assessment_version_questions")
 }
 
 model AssessmentTopic {
@@ -344,4 +420,15 @@ model AssessmentTopic {
 
   @@id([assessmentId, topicId])
   @@map("assessment_topic")
+}
+
+model TopicClo {
+  topicId Int
+  topic   Topic @relation(fields: [topicId], references: [id])
+
+  cloId Int
+  clo   Clo @relation(fields: [cloId], references: [id])
+
+  @@id([topicId, cloId])
+  @@map("topic_clos")
 }

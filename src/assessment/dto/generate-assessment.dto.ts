@@ -2,9 +2,10 @@ import z from 'zod';
 import { QuestionType } from 'generated/prisma/enums';
 import { createZodDto } from 'nestjs-zod';
 import { AssessmentSchema } from '../schema/assessment.schema';
+import { ACTIVE_GENERATION_QUESTION_TYPES } from '../config/question-types.config';
 
 const QuestionTypeConfigSchema = z.object({
-  questionType: z.enum(QuestionType),
+  questionType: z.enum(ACTIVE_GENERATION_QUESTION_TYPES),
   questionTypeNumber: z.number().int().positive(),
 });
 

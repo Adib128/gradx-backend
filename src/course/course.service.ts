@@ -30,41 +30,66 @@ export class CourseService {
       ...courseData
     } = createCourseDto;
 
-    return await this.prisma.course.create({
-      data: {
-        ...courseData,
-        tenantId,
-        prerequisites,
-        references,
-        assessments: {
-          create: assessments.map((assessment) => ({
-            title: assessment.title,
-            type: assessment.type,
-            tenantId,
-          })),
+    return await this.prisma.$transaction(async (tx) => {
+      const course = await tx.course.create({
+        data: {
+          ...courseData,
+          tenantId,
+          prerequisites,
+          references,
+          assessments: {
+            create: assessments.map((assessment) => ({
+              ...assessment,
+              tenantId,
+            })),
+          },
+          clos: {
+            create: clos.map((clo) => ({
+              code: clo.code,
+              category: clo.category,
+              programCLOCode: clo.programCLOCode,
+              description: clo.description,
+              teachingStrategies: clo.teachingStrategies,
+              assessmentMethods: clo.assessmentMethods,
+            })),
+          },
         },
-        clos: {
-          create: clos.map((clo) => ({
-            code: clo.code,
-            category: clo.category,
-            programCLOCode: clo.programCLOCode,
-            description: clo.description,
-            teachingStrategies: clo.teachingStrategies,
-            assessmentMethods: clo.assessmentMethods,
-          })),
+        include: {
+          clos: true,
         },
-        topics: {
-          create: topics.map((topic) => ({
-            topicNumber: topic.topicNumber,
-            title: topic.title,
-            contactHours: topic.contactHours,
-          })),
-        },
-      },
-      include: {
-        clos: true,
-        topics: true,
-      },
+      });
+
+      const cloCodeToId = new Map(course.clos.map((clo) => [clo.code, clo.id]));
+
+      const createdTopics = await Promise.all(
+        topics.map(async (topic) => {
+          const { mappedClos = [], ...topicData } = topic;
+
+          const createdTopic = await tx.topic.create({
+            data: {
+              ...topicData,
+              courseId: course.id,
+            },
+          });
+
+          if (mappedClos.length > 0) {
+            const topicCloRows = mappedClos
+              .filter((code) => cloCodeToId.has(code))
+              .map((code) => ({
+                topicId: createdTopic.id,
+                cloId: cloCodeToId.get(code)!,
+              }));
+
+            if (topicCloRows.length > 0) {
+              await tx.topicClo.createMany({ data: topicCloRows });
+            }
+          }
+
+          return createdTopic;
+        }),
+      );
+
+      return { ...course, topics: createdTopics };
     });
   }
 
@@ -84,7 +109,7 @@ export class CourseService {
     };
 
     const [courses, total] = await Promise.all([
-      this.prisma.course.findMany({
+      this.prisma.extended.course.findMany({
         where,
         skip,
         take: limit,
@@ -92,9 +117,16 @@ export class CourseService {
           id: true,
           title: true,
           code: true,
+          totalContactHours: true,
+          _count: {
+            select: {
+              students: true,
+              assessments: true,
+            },
+          },
         },
       }),
-      this.prisma.course.count({ where }),
+      this.prisma.extended.course.count({ where }),
     ]);
 
     return paginate(courses, total, page, limit);
@@ -156,8 +188,14 @@ export class CourseService {
                 createdAt: true,
               },
             },
+            topicClos: {
+              include: {
+                clo: true,
+              },
+            },
           },
         },
+        students: true,
       },
     });
 
@@ -167,11 +205,21 @@ export class CourseService {
     return course;
   }
 
-  update(id: number, updateCourseDto: UpdateCourseDto) {
-    return `This action updates a #${id} course`;
+  async update(id: number, updateCourseDto: UpdateCourseDto) {
+    return;
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} course`;
+  async remove(id: number) {
+    await this.findCourse(id);
+    return await this.prisma.extended.course.delete({
+      where: { id },
+    });
+  }
+
+  private async findCourse(id: number) {
+    const course = await this.prisma.course.findUnique({ where: { id } });
+    if (!course) {
+      throw new NotFoundException(ErrorMessageKey.COURSE_NOT_FOUND);
+    }
   }
 }

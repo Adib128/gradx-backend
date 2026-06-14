@@ -24,13 +24,21 @@ export class TopicContentService {
     topicId: number,
     generationContentDto: GenerateContentDto,
   ) {
-    const topic = await this.prisma.topic.findUnique({
+    const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
       include: {
         course: {
           include: {
             clos: true,
           },
+        },
+        topicContents: {
+          where: {
+            type: 'LECTURE',
+            status: 'COMPLETED',
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
         },
       },
     });
@@ -39,30 +47,45 @@ export class TopicContentService {
       throw new NotFoundException('Topic not found');
     }
 
-    const contentGenration: ContentGenerationJob = {
-      tenantId: tenantId,
+    const lectureContent = topic.topicContents[0];
+
+    if (
+      (generationContentDto.type === 'SLIDES' ||
+        generationContentDto.type === 'LAB') &&
+      !lectureContent?.content
+    ) {
+      throw new NotFoundException(
+        'Generate and accept lecture content before generating slides or lab content.',
+      );
+    }
+
+    const contentGeneration: ContentGenerationJob = {
+      ...generationContentDto,
+      tenantId,
       topicId: topic.id,
       topicNumber: topic.topicNumber,
       contentId: topic.id,
-      type: generationContentDto.type,
       topicTitle: topic.title,
       courseId: topic.course.id,
       courseTitle: topic.course.title ?? '',
       courseDescription: topic.course.description ?? '',
-      clos: topic.course.clos.map((c) => ({
-        code: c.code,
-        category: c.category,
-        programCLOCode: c.programCLOCode,
-        description: c.description,
-        teachingStrategies: c.teachingStrategies,
-        assessmentMethods: c.assessmentMethods,
+      clos: topic.course.clos.map((clo) => ({
+        code: clo.code,
+        category: clo.category,
+        programCLOCode: clo.programCLOCode,
+        description: clo.description,
+        teachingStrategies: clo.teachingStrategies,
+        assessmentMethods: clo.assessmentMethods,
+        courseId: clo.courseId,
       })),
       references: z.array(ReferenceSchema).parse(topic.course.references ?? []),
+      sourceLectureContentId: lectureContent?.id,
+      sourceLectureContent: lectureContent?.content,
     };
 
     const job = await this.contentQueue.add(
       'topic-content-generation',
-      contentGenration,
+      contentGeneration,
       {
         attempts: 3,
         removeOnComplete: false,

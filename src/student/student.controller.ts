@@ -15,7 +15,6 @@ import { StudentService } from './student.service';
 import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { ApiConsumes } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 
@@ -24,23 +23,22 @@ import { FileInterceptor } from '@nestjs/platform-express';
 export class StudentController {
   constructor(private readonly studentService: StudentService) {}
 
-  @Post()
+  @Post(':courseId/create')
   create(
-    @GetUser('tenantId') tenantId: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
     @Body() createStudentDto: CreateStudentDto,
   ) {
-    return this.studentService.create(tenantId, createStudentDto);
+    return this.studentService.create(courseId, createStudentDto);
   }
 
-  @Post('import/:classId')
+  @Post(':courseId/import')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
   importFromExcel(
-    @GetUser('tenantId') tenantId: number,
-    @Param('classId', ParseIntPipe) classId: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    return this.studentService.importExcel(tenantId, classId, file);
+    return this.studentService.importExcel(courseId, file);
   }
 
   @Get()

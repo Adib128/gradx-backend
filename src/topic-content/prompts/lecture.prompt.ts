@@ -1,23 +1,42 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 
 export const LECTURE_PROMPT = (data: ContentGenerationJob): string => `
-You are an elite university professor and instructional designer. Generate comprehensive, publication-quality lecture notes providing a rigorous 3-hour lesson on the target topic. Focus entirely on deep academic substance and compact, high-density technical value.
+You are an elite university professor and instructional designer. Generate comprehensive, publication-quality lecture notes providing a rigorous lesson on the target topic. Focus entirely on deep academic substance and compact, high-density technical value.
 
 ## Academic & Course Context
 - **Course Title:** ${data.courseTitle}
 - **Topic ${data.topicNumber}:** ${data.topicTitle}
 - **Course Overview & Scope:** ${data.courseDescription}
 
-## Target Course Learning Outcomes (CLOs)
-Explicitly weave these CLOs throughout the content fabric:
-${data.clos.map((c) => `- [${c.code}] (${c.category}): ${c.description}`).join('\n')}
+## Tailored Generation Configurations
+- **Note Type Focus:** ${data.courseNoteType}
+- **Target Audience:** ${data.audience}
+- **Content Complexity Depth:** ${data.contentDepth}
+- **Expected Length Scale:** ${data.length}
+- **Content Difficulty Tier:** ${data.difficulty}
+- **AI Processing Priority Profile:** ${data.aiQualityMode}
 
-## Operational Constraints & Formatting Rules
+## Target Course Learning Outcomes (CLOs)
+Explicitly weave the broad CLOs throughout the content fabric:
+${data.clos.map((c) => `- [${c.code}] (${c.code}): ${c.description}`).join('\n')}
+
+### Strict Priority CLO Focus
+The user has manually isolated and flagged specific Target Outcomes for this content package. You MUST heavily emphasize and explicitly prioritize the following mappings inside the pedagogical modules:
+${data.targetedCloIds.map((id) => `- Target Focus ID Reference: ${id}`).join('\n')}
+
+## Required Pedagogical & Design Matrix Rules
+1. **Bloom's Taxonomy Alignment:** Ensure the learning pathways, explanations, and checkpoints target these cognitive levels explicitly: ${data.bloomsTaxonomyLevels.join(', ')}.
+2. **Mandatory Learning Components:** You must include structured data/sections for each of these requested component modules: ${data.learningComponents.join(', ')}.
+3. **Example Strategy Profiles:** Frame all implementations, use cases, and problem domains around these context depths: ${data.exampleLevels.join(', ')}.
+4. **Visual Implementations:** Incorporate structured visualization concepts matching these profiles: ${data.visuals.join(', ')}.
+5. **Assessment Vectors:** Structure your comprehensive assessment blocks using these specific formats: ${data.assessmentIntegrations.join(', ')}.
+6. **Academic Review Compliance:** Pre-verify that the generated content fully satisfies these strict automated quality controls: ${data.humanReviewChecks.join(', ')}.
+
+## Operational Constraints & Formatting Rules (CRITICAL FOR PARSING)
 1. **JSON Integrity:** Return ONLY a raw, valid JSON object. Do not wrap in markdown code blocks (\`\`\`json). No preambles or postscripts.
-2. **Strict Escaping Rules:** Escape all double quotes (\") and newlines (\\n) inside text blocks.
-3. **Flexible Math Notation:** - **STEM/Technical**: Use text-based math expressions (e.g., "theta", "sigma", "partial f / partial y^2", "matrix transpose A^T"). Do NOT use raw LaTeX backslashes (\\).
-   - **Non-STEM/Narrative**: Avoid forced formulas; use formal structural frameworks, industry methodologies, or systematic models.
-4. **Pedagogical Density Over Verbosity:** Do not summarize, skip steps, or use placeholders. Be concise but conceptually exhaustive.
+2. **Strict Escaping Rules:** You MUST strictly escape all double quotes (\\") and all internal newlines (\\\\n) inside text blocks. 
+3. **Math String Safety:** When outputting algebraic equations, matrix operations, or multiplications (e.g., dot products or matrix updates like s_k * y_k^T), use word descriptions or plain text formats (e.g., "s_k multiplied by y_k transpose"). Do not use unescaped asterisks or mathematical brackets that can disrupt structural string processing.
+4. **Pedagogical Density Over Verbosity:** Do not summarize, skip steps, or use placeholders. Be concise but conceptually exhaustive matching the requested "${data.length}" constraint.
 
 ## Expected JSON Schema Output Structure
 Match this structural signature exactly:
@@ -25,38 +44,41 @@ Match this structural signature exactly:
 {
   "metadata": {
     "targetTopic": "${data.topicTitle}",
-    "estimatedLectureDurationMinutes": 180,
-    "pedagogicalFramework": "Constructivist alignment mapping directly to course performance criteria."
+    "noteType": "${data.courseNoteType}",
+    "audienceTier": "${data.audience}",
+    "depthProfile": "${data.contentDepth}",
+    "difficultyLevel": "${data.difficulty}",
+    "qualityComplianceMode": "${data.aiQualityMode}"
   },
   "lectureOverview": {
-    "abstract": "Provide a dense, exactly 2-paragraph academic abstract framing the topic's systemic necessity, operational value, and industry importance.",
+    "abstract": "Provide a dense academic abstract framing the topic's systemic necessity and industry importance tailored to an ${data.audience} audience.",
     "learningObjectives": [
-      "Objective 1: Deconstruct the fundamental principles, mechanisms, or core theories underlying this topic.",
-      "Objective 2: Analyze real-world failure modes, strategic implementation constraints, or analytical processes connected to this domain."
+      "Incorporate mandatory aspects targeting: ${data.learningComponents.join(', ')}"
     ],
     "prerequisiteKnowledgeCheck": [
-      "Prerequisite 1: Explicit foundational concepts, industry paradigms, or prerequisite technical skills required to grasp this material."
+      "Explicit foundational concepts or prerequisite technical skills required to grasp this material."
     ]
   },
   "modules": [
     {
       "moduleIndex": 1,
-      "title": "Historical Context, Foundational Principles, and Structural Frameworks",
-      "associatedCloCodes": ["${data.clos[0]?.code ?? 'CLO-1'}"],
+      "title": "Core Analytical Principles and Structural Frameworks",
+      "associatedCloIds": ${JSON.stringify(data.targetedCloIds)},
+      "targetedBloomsLevels": ${JSON.stringify(data.bloomsTaxonomyLevels)},
       "theoreticalFoundations": {
-        "formalDefinition": "Provide a definitive, high-density 2-sentence statement defining the concept using strict technical, mathematical, legal, or industry-standard terminology.",
-        "firstPrinciplesDerivation": "A focused, step-by-step logical, mathematical, or empirical derivation of the strategic framework or formula from underlying principles.",
-        "structuralInterpretation": "Explain precisely how this concept operates dynamically (e.g., architectural layers, corporate value chains, market dynamics, or multi-dimensional spaces)."
+        "formalDefinition": "Provide a definitive, high-density statement defining the concept using strict terminology suited for ${data.contentDepth} depth.",
+        "firstPrinciplesDerivation": "A focused, step-by-step logical, mathematical, or empirical derivation of the strategic framework or formula from underlying principles. Ensure any equations are completely escaped safe strings.",
+        "structuralInterpretation": "Explain precisely how this concept operates dynamically matching the ${data.exampleLevels.join('/')} contexts."
       },
       "algorithmicOrProcessBreakdown": {
         "stepByStepExecution": [
-          "Step 1: Initial operational phase, assessment setup, or boundary configuration.",
-          "Step 2: Core processing layer, iterative analysis milestone, or strategic validation metrics."
+          "Step 1: Initial operational phase or baseline configuration parameters."
         ],
-        "edgeCasesAndFailureModes": "Detail exactly where this framework breaks down in practice (e.g., scale bottlenecks, non-convex constraints, cognitive biases) and the explicit mitigation techniques experts use."
+        "edgeCasesAndFailureModes": "Detail exactly where this framework breaks down in practice and the explicit mitigation techniques experts use."
       },
       "visualRepresentations": [
         {
+          "visualProfileType": "Must target: ${data.visuals.join('/')}",
           "diagramTitle": "System Architecture / Process Flow Chart",
           "mermaidDiagramCode": "graph TD; A[State A] --> B[State B];",
           "diagramPedagogicalExplanation": "A detailed technical breakdown of how the visual paths in the Mermaid diagram align with the operational modules."
@@ -64,38 +86,36 @@ Match this structural signature exactly:
       ],
       "appliedDemonstrations": [
         {
+          "contextStyle": "Configured to match: ${data.exampleLevels.join('/')}",
           "caseStudyTitle": "Comprehensive Real-World Implementation Case Study",
-          "realWorldProblemContext": "Describe an enterprise, industrial, or scientific scenario where this topic serves as a critical operational bottleneck.",
-          "concreteProblemStatement": "State a complete problem scenario with explicit data points, operational parameters, or system constraints.",
-          "stepByStepSolution": "Provide a clear, unabridged solution path showing key calculations, policy decisions, or strategic moves.",
-          "executableArtifactSnippet": "Provide either: (a) Clean, industry-grade source code for technical topics, OR (b) A structured strategic template, markdown checklist, or architectural blueprint.",
-          "artifactTypeOrLanguage": "Identify the type of snippet provided (e.g., 'python', 'typescript', 'markdown', 'yaml')."
+          "realWorldProblemContext": "Describe an operational scenario where this topic serves as a critical focus.",
+          "concreteProblemStatement": "State a complete problem scenario with explicit data points or parameters.",
+          "stepByStepSolution": "Provide a clear, unabridged solution path showing key calculations or strategic moves.",
+          "executableArtifactSnippet": "Provide code blocks or configuration schemas (e.g. JSON/YAML) if technical, or a structured architectural blueprint markdown list if conceptual.",
+          "artifactTypeOrLanguage": "Identify the syntax formatting wrapper language used."
         }
       ],
       "professorSpeakingNotes": [
-        "Whiteboard Plan: Specify exactly what to diagram or outline on the board and which core variables to emphasize.",
-        "Student Misconception: Highlight a severe, frequent misunderstanding students have when applying this concept in field environments."
+        "Whiteboard Plan: Specify exactly what to diagram or outline on the board.",
+        "Student Misconception: Highlight a severe, frequent misunderstanding students have regarding this specific layout."
       ],
       "moduleKeyTakeaways": [
-        "Takeaway 1: Core academic or validation accuracy.",
-        "Takeaway 2: Immediate industry implementation and application."
+        "Core academic or verification takeaways."
       ]
     }
   ],
   "comprehensiveAssessment": [
     {
-      "questionType": "Analytical Proof / Comprehensive Case Analysis",
-      "targetCloCode": "${data.clos[0]?.code ?? 'CLO-1'}",
-      "questionStatement": "State a highly challenging, exam-quality question requiring mathematical verification, critical architectural deduction, or strategic evaluation.",
-      "solvingHint": "Provide a tactical hint highlighting the specific core theorem, model, matrix property, or business paradigm required to unlock the answer.",
-      "exhaustiveAnswerKey": "Provide the complete, step-by-step solution path including all structural transitions, formulations, or corporate strategy justifications."
+      "enforcedAssessmentFormats": ${JSON.stringify(data.assessmentIntegrations)},
+      "questionType": "Targeting ${data.difficulty} evaluation challenge",
+      "questionStatement": "State an exam-quality question matching the targeted strategies.",
+      "solvingHint": "Provide a tactical hint highlighting the specific core model, metric, or paradigm required to unlock the answer.",
+      "exhaustiveAnswerKey": "Provide the complete, step-by-step solution path including all transitions or justifications."
     }
   ],
-  "curatedAcademicReferences": [
-    {
-      "literatureTitle": "Standard Authoritative Text or Industry Standard Blueprint",
-      "authorsAndAffiliation": "Full author credentials, publication source, or institutional affiliation.",
-      "directResourceUrl": "https://example.com/authoritative-source"
-    }
-  ]
+  "providedReferences": ${JSON.stringify(data.references)},
+  "academicReviewVerification": {
+    "checksPassed": ${JSON.stringify(data.humanReviewChecks)},
+    "status": "VERIFIED_COMPLIANT"
+  }
 }`;

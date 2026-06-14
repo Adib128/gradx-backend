@@ -11,14 +11,21 @@ You are an expert university professor creating a professional lab manual.
 ## CLOs to Cover
 ${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n')}
 
+## Source Lecture Content
+Use the already generated and accepted lecture content below as the authoritative source. Build the lab as a practical extension of this exact lecture. Do not introduce unrelated tools, algorithms, datasets, or learning outcomes unless they directly support the lecture.
+
+${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
+
 ## Instructions
 Create a detailed hands-on lab manual that:
 - Has clear step-by-step instructions
 - Includes complete working code examples
-- Covers both theory and practical implementation
+- Converts the lecture's theory, examples, formulas, and key concepts into practical implementation tasks
 - Has checkpoints to verify progress
-- Includes real datasets or realistic scenarios
+- Includes realistic scenarios that are directly aligned with the lecture content
 - Is completable in a 2-3 hour lab session
+- Reuses the lecture's CLO alignment, prerequisites, and learning objectives
+- Avoids adding unrelated concepts that were not established by the source lecture
 
 Return ONLY valid JSON:
 

@@ -102,4 +102,9 @@ export class CourseController {
   ) {
     return this.topicService.deleteTopic(topicId);
   }
+
+  @Delete(':courseId')
+  deleteCourse(@Param('courseId', ParseIntPipe) courseId: number) {
+    return this.courseService.remove(courseId);
+  }
 }
