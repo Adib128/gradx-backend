@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -133,11 +134,19 @@ export class CourseService {
   }
 
   async extractFromPdfFile(file: Express.Multer.File) {
+    if (!file?.buffer) {
+      throw new BadRequestException('File is required');
+    }
+
     const base64 = file.buffer.toString('base64');
 
     const job = await this.extractionQueue.add(
       'extract',
-      { base64 },
+      {
+        base64,
+        mimeType: file.mimetype,
+        filename: file.originalname,
+      },
       {
         attempts: 3, // ← retry 3 times on failure
         backoff: {
