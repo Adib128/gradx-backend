@@ -91,6 +91,13 @@ enum AssessmentStudentIdLabel {
   STUDENT_NAME
 }
 
+enum GradingScanStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
 model Tenant {
   id            Int            @id @default(autoincrement())
   createdAt     DateTime       @default(now())
@@ -101,6 +108,7 @@ model Tenant {
   topicContents TopicContent[]
   questions     Question[]
   assessments   Assessment[]
+  gradingScans  GradingScan[]
 
   @@map("tenants")
 }
@@ -125,6 +133,7 @@ model User {
   updatedAt                 DateTime  @updatedAt
   lastLogin                 DateTime?
   tenant                    Tenant    @relation(fields: [tenantId], references: [id])
+  gradingScans              GradingScan[]
 
   @@index([email])
   @@map("users")
@@ -189,10 +198,13 @@ model Course {
   creditHours       Int?
   level             String?
   teachingMode      String?
+  teachingModes     Json?
   totalContactHours Int?
   lectureHours      Int?
   labHours          Int?
   prerequisites     String[]
+  coRequisites      String[] @default([])
+  requiredFacilitiesAndEquipment Json?
   references        Json?
 
   tenantId Int
@@ -371,11 +383,37 @@ model Assessment {
   questions          Question[]
   assessmentTopics   AssessmentTopic[]
   assessmentVersions AssessmentVersion[]
+  gradingScans       GradingScan[]
 
   @@index([courseId])
   @@index([tenantId])
   @@index([type])
   @@map("assessments")
+}
+
+model GradingScan {
+  id               Int               @id @default(autoincrement())
+  assessmentId     Int
+  assessment       Assessment        @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  tenantId         Int
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  graderUserId     Int
+  graderUser       User              @relation(fields: [graderUserId], references: [id])
+  status           GradingScanStatus @default(PENDING)
+  imagePath        String?
+  decodedFormId    Int?
+  confidence       Float?
+  detectedAnswers  Json?
+  score            Float?
+  maxScore         Float?
+  errorMessage     String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([assessmentId])
+  @@index([tenantId])
+  @@index([graderUserId])
+  @@map("grading_scans")
 }
 
 model AssessmentVersion {

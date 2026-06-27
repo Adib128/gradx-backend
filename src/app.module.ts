@@ -12,6 +12,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TopicContentModule } from './topic-content/topic-content.module';
 import { AssessmentModule } from './assessment/assessment.module';
 import { CloModule } from './clo/clo.module';
+import { GradingModule } from './grading/grading.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { CloModule } from './clo/clo.module';
     TopicContentModule,
     AssessmentModule,
     CloModule,
+    GradingModule,
   ],
   providers: [
     {

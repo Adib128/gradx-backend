@@ -49,6 +49,41 @@ const CourseAssessmentSchema = z.preprocess(
   AssessmentSchema,
 );
 
+const emptyStringToUndefined = (value: unknown) =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+
+const normalizeStringList = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const nullableNumber = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+};
+
+const TeachingModeRowSchema = z.object({
+  modeOfInstruction: z.string().default(''),
+  contactHours: z.preprocess(nullableNumber, z.number().int().nullable()),
+  percentage: z.preprocess(nullableNumber, z.number().nullable()),
+});
+
+const RequiredFacilitiesAndEquipmentRowSchema = z.object({
+  item: z.string().default(''),
+  resources: z.string().nullable().optional().default(''),
+});
+
 export const CreateCourseSchema = z.object({
   title: z.string().min(1, 'Title is required'),
   code: z.string().nullable().optional(),
@@ -57,14 +92,42 @@ export const CreateCourseSchema = z.object({
 
   creditHours: z.number().int().positive().nullable().optional(),
   level: z.string().nullable().optional(),
-  teachingMode: z
-    .enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB'])
-    .default('TRADITIONAL'),
+  // Backwards compatible single teachingMode (optional).
+  teachingMode: z.preprocess(
+    emptyStringToUndefined,
+    z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB']).optional(),
+  ),
+
+  // New teachingModes table extracted from the document (array of rows).
+  teachingModes: z
+    .preprocess(
+      (value) => (Array.isArray(value) ? value : []),
+      z.array(TeachingModeRowSchema),
+    )
+    .transform((rows) =>
+      rows.filter(
+        (row) =>
+          row.modeOfInstruction.trim() ||
+          row.contactHours !== null ||
+          row.percentage !== null,
+      ),
+    )
+    .default([]),
   totalContactHours: z.number().int().positive().nullable().optional(),
   lectureHours: z.number().int().positive().nullable().optional(),
   labHours: z.number().int().positive().nullable().optional(),
 
-  prerequisites: z.array(z.string()).default([]),
+  prerequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
+  coRequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
+  requiredFacilitiesAndEquipment: z
+    .preprocess(
+      (value) => (Array.isArray(value) ? value : []),
+      z.array(RequiredFacilitiesAndEquipmentRowSchema),
+    )
+    .transform((rows) =>
+      rows.filter((row) => row.item.trim() || String(row.resources ?? '').trim()),
+    )
+    .default([]),
   references: z.array(ReferenceSchema).default([]),
 
   clos: z.array(CloSchema).default([]),

@@ -25,11 +25,15 @@ export class CourseService {
     const {
       clos,
       topics,
-      assessments,
+      assessments: _assessments,
       references,
       prerequisites,
+      coRequisites,
+      teachingModes,
+      requiredFacilitiesAndEquipment,
       ...courseData
     } = createCourseDto;
+    void _assessments;
 
     return await this.prisma.$transaction(async (tx) => {
       const course = await tx.course.create({
@@ -37,13 +41,10 @@ export class CourseService {
           ...courseData,
           tenantId,
           prerequisites,
+          coRequisites,
+          teachingModes,
+          requiredFacilitiesAndEquipment,
           references,
-          assessments: {
-            create: assessments.map((assessment) => ({
-              ...assessment,
-              tenantId,
-            })),
-          },
           clos: {
             create: clos.map((clo) => ({
               code: clo.code,

@@ -5,6 +5,19 @@ Do NOT include any markdown, explanation, or extra text — just raw JSON.
 
 Make sure to map the relationship between topics and Course Learning Outcomes (CLOs) by populating the "mappedClos" array inside each topic with the matching CLO codes, corresponding to the CLO-Topic matrix found in the document.
 
+Some course specifications include a Teaching Mode table inside the course description (see example below). Instead of a single enum value for teaching mode, extract the table rows and return them as an array named "teachingModes".
+
+If the document contains a table like:
+
+No | Mode of Instruction | Contact Hours | Percentage
+1. | Traditional classroom | 45 | 100
+
+Then produce:
+
+"teachingModes": [
+  { "modeOfInstruction": "Traditional classroom", "contactHours": 45, "percentage": 100 }
+]
+
 The JSON must follow this exact structure:
 {
   "title": string,
@@ -13,11 +26,24 @@ The JSON must follow this exact structure:
   "description": string,
   "creditHours": number,
   "level": string | null,
-  "teachingMode": "TRADITIONAL" | "ONLINE" | "HYBRID" | "LAB",
+  "teachingModes": [
+    {
+      "modeOfInstruction": string,
+      "contactHours": number | null,
+      "percentage": number | null
+    }
+  ],
   "totalContactHours": number,
   "lectureHours": number,
   "labHours": number,
   "prerequisites": string[],
+  "coRequisites": string[],
+  "requiredFacilitiesAndEquipment": [
+    {
+      "item": string,
+      "resources": string
+    }
+  ],
   "references": [
     {
       "type": "ESSENTIAL" | "SUPPORTIVE" | "ELECTRONIC" | "OTHER",

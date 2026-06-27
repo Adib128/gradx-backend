@@ -1,5 +1,28 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 
+const formatReferenceCitation = (reference: unknown): string => {
+  if (!reference) return '';
+  if (typeof reference === 'string') return reference;
+  if (typeof reference !== 'object') return String(reference);
+
+  const ref = reference as Record<string, unknown>;
+  const directCitation = ref.citation || ref.text;
+  if (directCitation) return String(directCitation);
+
+  return [
+    ref.authors,
+    ref.title,
+    ref.publisher,
+    ref.year,
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join('. ');
+};
+
+const formatReferences = (references: unknown[]) =>
+  references.map(formatReferenceCitation).filter(Boolean);
+
 export const LECTURE_PROMPT = (data: ContentGenerationJob): string => `
 You are an elite university professor and instructional designer. Generate comprehensive, publication-quality lecture notes providing a rigorous lesson on the target topic. Focus entirely on deep academic substance and compact, high-density technical value.
 
@@ -113,7 +136,7 @@ Match this structural signature exactly:
       "exhaustiveAnswerKey": "Provide the complete, step-by-step solution path including all transitions or justifications."
     }
   ],
-  "providedReferences": ${JSON.stringify(data.references)},
+  "providedReferences": ${JSON.stringify(formatReferences(data.references))},
   "academicReviewVerification": {
     "checksPassed": ${JSON.stringify(data.humanReviewChecks)},
     "status": "VERIFIED_COMPLIANT"

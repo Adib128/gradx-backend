@@ -30,7 +30,7 @@ export const UpdateAssessmentSchema = z.object({
   showMarksPerQuestion: z.boolean().optional(),
   includeStudentInfoHeader: z.boolean().optional(),
   studentIdLabel: prismaEnumToZod(AssessmentStudentIdLabel).optional(),
-  numberOfStudentIdDigits: z.number().int().min(3).max(6).optional(),
+  numberOfStudentIdDigits: z.number().int().min(3).max(12).optional(),
   includeAssessmentInstructionsSection: z.boolean().optional(),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().optional(),

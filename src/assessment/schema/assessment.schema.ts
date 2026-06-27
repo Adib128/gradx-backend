@@ -25,7 +25,7 @@ export const AssessmentSchema = z.object({
   studentIdLabel: prismaEnumToZod(AssessmentStudentIdLabel).default(
     'STUDENT_ID',
   ),
-  numberOfStudentIdDigits: z.number().int().min(3).max(6).default(3),
+  numberOfStudentIdDigits: z.number().int().min(3).max(12).default(3),
   includeAssessmentInstructionsSection: z.boolean().default(false),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().default(false),
