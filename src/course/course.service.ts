@@ -13,6 +13,7 @@ import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { GenerationStatus } from 'generated/prisma/enums';
+import { Prisma } from 'generated/prisma/client';
 
 @Injectable()
 export class CourseService {
@@ -36,32 +37,42 @@ export class CourseService {
     void _assessments;
 
     return await this.prisma.$transaction(async (tx) => {
+      const courseCreateData: Prisma.CourseUncheckedCreateInput = {
+        ...(courseData as Prisma.CourseUncheckedCreateInput),
+        tenantId,
+        prerequisites,
+        coRequisites,
+        teachingModes: (teachingModes ?? []) as Prisma.InputJsonValue,
+        requiredFacilitiesAndEquipment:
+          (requiredFacilitiesAndEquipment ?? []) as Prisma.InputJsonValue,
+        references: (references ?? []) as Prisma.InputJsonValue,
+      };
+
       const course = await tx.course.create({
-        data: {
-          ...courseData,
-          tenantId,
-          prerequisites,
-          coRequisites,
-          teachingModes,
-          requiredFacilitiesAndEquipment,
-          references,
-          clos: {
-            create: clos.map((clo) => ({
+        data: courseCreateData,
+      });
+
+      const createdClos = await Promise.all(
+        clos.map((clo) =>
+          tx.clo.create({
+            data: {
               code: clo.code,
               category: clo.category,
               programCLOCode: clo.programCLOCode,
               description: clo.description,
               teachingStrategies: clo.teachingStrategies,
               assessmentMethods: clo.assessmentMethods,
-            })),
-          },
-        },
-        include: {
-          clos: true,
-        },
-      });
+              courseId: course.id,
+            },
+          }),
+        ),
+      );
 
-      const cloCodeToId = new Map(course.clos.map((clo) => [clo.code, clo.id]));
+      const cloCodeToId = new Map<string, number>(
+        createdClos
+          .filter((clo) => typeof clo.code === 'string' && clo.code.trim())
+          .map((clo) => [clo.code, clo.id]),
+      );
 
       const createdTopics = await Promise.all(
         topics.map(async (topic) => {
@@ -74,13 +85,18 @@ export class CourseService {
             },
           });
 
-          if (mappedClos.length > 0) {
-            const topicCloRows = mappedClos
-              .filter((code) => cloCodeToId.has(code))
+          const mappedClosCodes = Array.isArray(mappedClos) ? mappedClos : [];
+          if (mappedClosCodes.length > 0) {
+            const topicCloRows: Array<{ topicId: number; cloId: number }> =
+              mappedClosCodes
+              .filter((code): code is string => typeof code === 'string')
               .map((code) => ({
                 topicId: createdTopic.id,
-                cloId: cloCodeToId.get(code)!,
-              }));
+                cloId: cloCodeToId.get(code),
+              }))
+              .filter((row): row is { topicId: number; cloId: number } =>
+                typeof row.cloId === 'number',
+              );
 
             if (topicCloRows.length > 0) {
               await tx.topicClo.createMany({ data: topicCloRows });
