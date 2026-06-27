@@ -126,23 +126,49 @@ export class GradingService {
     detectedAnswers: Record<string, string>,
     questions: Array<{
       correctAnswer: string | null;
-      questionOptions: Array<{ text: string; isCorrect: boolean }>;
+      questionOptions: Array<{ text: string; isCorrect: boolean; order?: number }>;
       points: number;
     }>,
   ) {
+    const normalizeToken = (value: string) =>
+      value.trim().toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
+
+    const getAcceptedAnswers = (question: {
+      correctAnswer: string | null;
+      questionOptions: Array<{ text: string; isCorrect: boolean; order?: number }>;
+    }) => {
+      const accepted = new Set<string>();
+      const sortedOptions = [...question.questionOptions].sort(
+        (a, b) => (a.order ?? 0) - (b.order ?? 0),
+      );
+
+      sortedOptions.forEach((option, index) => {
+        if (!option.isCorrect) return;
+        const letter = String.fromCharCode(65 + index); // A, B, C...
+        accepted.add(normalizeToken(letter));
+        const textToken = normalizeToken(option.text || '');
+        if (textToken) accepted.add(textToken);
+      });
+
+      const rawCorrectAnswer = question.correctAnswer || '';
+      rawCorrectAnswer
+        .split(/[;,|/]/)
+        .map((part) => normalizeToken(part))
+        .filter(Boolean)
+        .forEach((token) => accepted.add(token));
+
+      return accepted;
+    };
+
     let score = 0;
     let maxScore = 0;
     questions.forEach((question, index) => {
       const questionNumber = String(index + 1);
-      const answer = (detectedAnswers[questionNumber] || '').trim().toUpperCase();
-      const correctOption =
-        question.questionOptions.find((option) => option.isCorrect)?.text ||
-        question.correctAnswer ||
-        '';
-      const normalizedCorrect = correctOption.trim().toUpperCase();
+      const answer = normalizeToken(detectedAnswers[questionNumber] || '');
+      const acceptedAnswers = getAcceptedAnswers(question);
       const points = question.points || 1;
       maxScore += points;
-      if (answer && normalizedCorrect && answer === normalizedCorrect) {
+      if (answer && acceptedAnswers.has(answer)) {
         score += points;
       }
     });
