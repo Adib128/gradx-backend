@@ -67,11 +67,23 @@ const normalizeStringList = (value: unknown) => {
   return [];
 };
 
+const zeroOrEmptyToNull = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null;
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue <= 0) return null;
+  return numberValue;
+};
+
 const nullableNumber = (value: unknown) => {
   if (value === null || value === undefined || value === '') return null;
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : null;
 };
+
+const nullablePositiveInt = z.preprocess(
+  zeroOrEmptyToNull,
+  z.number().int().positive().nullable().optional(),
+);
 
 const TeachingModeRowSchema = z.object({
   modeOfInstruction: z.string().default(''),
@@ -90,12 +102,14 @@ export const CreateCourseSchema = z.object({
   program: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
 
-  creditHours: z.number().int().positive().nullable().optional(),
+  creditHours: nullablePositiveInt,
   level: z.string().nullable().optional(),
   // Backwards compatible single teachingMode (optional).
   teachingMode: z.preprocess(
     emptyStringToUndefined,
-    z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB']).optional(),
+    z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB'], {
+      message: 'Teaching mode is invalid',
+    }).optional(),
   ),
 
   // New teachingModes table extracted from the document (array of rows).
@@ -113,9 +127,9 @@ export const CreateCourseSchema = z.object({
       ),
     )
     .default([]),
-  totalContactHours: z.number().int().positive().nullable().optional(),
-  lectureHours: z.number().int().positive().nullable().optional(),
-  labHours: z.number().int().positive().nullable().optional(),
+  totalContactHours: nullablePositiveInt,
+  lectureHours: nullablePositiveInt,
+  labHours: nullablePositiveInt,
 
   prerequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
   coRequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),

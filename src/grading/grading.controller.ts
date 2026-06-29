@@ -1,8 +1,11 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   UploadedFile,
   UseGuards,
@@ -47,5 +50,37 @@ export class GradingController {
     @Param('scanId', ParseIntPipe) scanId: number,
   ) {
     return this.gradingService.getScan(user, scanId);
+  }
+
+  /** Confirm a completed grading scan (verifies it is saved and returns it). */
+  @Patch('scans/:scanId/confirm')
+  confirmScan(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+  ) {
+    return this.gradingService.confirmScan(user, scanId);
+  }
+
+  @Delete('scans/:scanId')
+  deleteScan(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+  ) {
+    return this.gradingService.deleteScan(user, scanId);
+  }
+
+  /** Full grading history for the tenant (all completed scans). */
+  @Get('history')
+  getGradingHistory(@GetUser() user: JwtUser) {
+    return this.gradingService.getGradingHistory(user);
+  }
+
+  /** All grading scans attributed to a student (by their detected student code). */
+  @Get('students/:studentCode/history')
+  getStudentHistory(
+    @GetUser() user: JwtUser,
+    @Param('studentCode') studentCode: string,
+  ) {
+    return this.gradingService.getStudentHistory(user, studentCode);
   }
 }

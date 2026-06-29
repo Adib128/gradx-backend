@@ -131,15 +131,20 @@ export class CourseService {
         where,
         skip,
         take: limit,
+        orderBy: { updatedAt: 'desc' },
         select: {
           id: true,
           title: true,
           code: true,
+          program: true,
+          creditHours: true,
           totalContactHours: true,
+          updatedAt: true,
           _count: {
             select: {
               students: true,
               assessments: true,
+              topics: true,
             },
           },
         },
@@ -232,7 +237,80 @@ export class CourseService {
   }
 
   async update(id: number, updateCourseDto: UpdateCourseDto) {
-    return;
+    await this.findCourse(id);
+
+    const {
+      title, code, program, description, creditHours, level,
+      teachingMode, teachingModes, totalContactHours, lectureHours, labHours,
+      prerequisites, coRequisites, requiredFacilitiesAndEquipment, references,
+    } = updateCourseDto;
+
+    return this.prisma.course.update({
+      where: { id },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(code !== undefined && { code }),
+        ...(program !== undefined && { program }),
+        ...(description !== undefined && { description }),
+        ...(creditHours !== undefined && { creditHours }),
+        ...(level !== undefined && { level }),
+        ...(teachingMode !== undefined && { teachingMode }),
+        ...(teachingModes !== undefined && { teachingModes: teachingModes as unknown as Prisma.InputJsonValue }),
+        ...(totalContactHours !== undefined && { totalContactHours }),
+        ...(lectureHours !== undefined && { lectureHours }),
+        ...(labHours !== undefined && { labHours }),
+        ...(prerequisites !== undefined && { prerequisites }),
+        ...(coRequisites !== undefined && { coRequisites }),
+        ...(requiredFacilitiesAndEquipment !== undefined && {
+          requiredFacilitiesAndEquipment: requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
+        }),
+        ...(references !== undefined && { references: references as unknown as Prisma.InputJsonValue }),
+      },
+    });
+  }
+
+  /** Update only meta fields — safe shorthand used by the Course Details edit modal. */
+  async updateMeta(
+    id: number,
+    body: {
+      title?: string;
+      code?: string;
+      program?: string;
+      description?: string;
+      creditHours?: number | null;
+      level?: string;
+      totalContactHours?: number | null;
+      lectureHours?: number | null;
+      labHours?: number | null;
+      prerequisites?: string[];
+      coRequisites?: string[];
+      teachingModes?: Array<{ modeOfInstruction: string; contactHours?: number | null; percentage?: number | null }>;
+      requiredFacilitiesAndEquipment?: Array<{ item: string; resources?: string | null }>;
+    },
+  ) {
+    await this.findCourse(id);
+    return this.prisma.course.update({
+      where: { id },
+      data: {
+        ...(body.title !== undefined && { title: body.title }),
+        ...(body.code !== undefined && { code: body.code }),
+        ...(body.program !== undefined && { program: body.program }),
+        ...(body.description !== undefined && { description: body.description }),
+        ...(body.creditHours !== undefined && { creditHours: body.creditHours }),
+        ...(body.level !== undefined && { level: body.level }),
+        ...(body.totalContactHours !== undefined && { totalContactHours: body.totalContactHours }),
+        ...(body.lectureHours !== undefined && { lectureHours: body.lectureHours }),
+        ...(body.labHours !== undefined && { labHours: body.labHours }),
+        ...(body.prerequisites !== undefined && { prerequisites: body.prerequisites }),
+        ...(body.coRequisites !== undefined && { coRequisites: body.coRequisites }),
+        ...(body.teachingModes !== undefined && {
+          teachingModes: body.teachingModes as unknown as Prisma.InputJsonValue,
+        }),
+        ...(body.requiredFacilitiesAndEquipment !== undefined && {
+          requiredFacilitiesAndEquipment: body.requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
+        }),
+      },
+    });
   }
 
   async remove(id: number) {

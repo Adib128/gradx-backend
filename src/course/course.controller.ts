@@ -51,6 +51,12 @@ export class CourseController {
     return this.courseService.update(+id, updateCourseDto);
   }
 
+  /** Lightweight meta-only update — used by the Course Details edit modal */
+  @Patch(':id/meta')
+  updateMeta(@Param('id', ParseIntPipe) id: number, @Body() body: Record<string, any>) {
+    return this.courseService.updateMeta(id, body);
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.courseService.remove(+id);

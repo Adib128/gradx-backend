@@ -8,6 +8,9 @@ export type OpenCvProcessResult = {
   confidence: number;
   decodedFormId: number | null;
   answers: Record<string, string>;
+  questionDetails?: unknown[];
+  detectedStudentId?: string | null;
+  error?: string;
   debug?: Record<string, unknown>;
 };
 
@@ -23,10 +26,12 @@ export class OpenCvGradingService {
     }
   }
 
-  async processAnswerSheet(imagePath: string): Promise<OpenCvProcessResult> {
+  async processAnswerSheet(imagePath: string, configJson?: string): Promise<OpenCvProcessResult> {
     const scriptPath = await this.resolveScriptPath();
+    const args = [scriptPath, imagePath];
+    if (configJson) args.push(configJson);
     return new Promise((resolve, reject) => {
-      const child = spawn('python3', [scriptPath, imagePath], {
+      const child = spawn('python3', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 

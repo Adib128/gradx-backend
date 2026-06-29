@@ -10,7 +10,7 @@ import {
 import { prismaEnumToZod } from 'src/common/helpers/zod.enum.helper';
 
 export const AssessmentSchema = z.object({
-  title: z.string().min(1, 'Title is required'),
+  title: z.string().min(1, 'Assessment title is required'),
   type: prismaEnumToZod(AssessmentType),
   duration: z.number().int().positive().nullable().optional(),
   totalMarks: z.number().int().positive().nullable().optional(),

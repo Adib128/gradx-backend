@@ -1234,6 +1234,14 @@ export class AssessmentService {
     const assessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId },
       include: {
+        course: {
+          select: {
+            id: true,
+            title: true,
+            code: true,
+            _count: { select: { students: true } },
+          },
+        },
         assessmentTopics: {
           include: {
             topic: {
@@ -1253,6 +1261,11 @@ export class AssessmentService {
         questions: {
           include: {
             questionOptions: { orderBy: { order: 'asc' } },
+            questionClos: {
+              include: {
+                Clo: { select: { id: true, code: true } },
+              },
+            },
           },
           orderBy: { id: 'asc' },
         },
@@ -1277,6 +1290,21 @@ export class AssessmentService {
       throw new NotFoundException('Assessment not found');
     }
     return assessment;
+  }
+
+  findByTenant(tenantId: number) {
+    return this.prisma.assessment.findMany({
+      where: { tenantId },
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        totalMarks: true,
+        duration: true,
+        course: { select: { id: true, title: true, code: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   findAll(courseId: number) {

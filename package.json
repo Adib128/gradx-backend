@@ -17,7 +17,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "verify:pdf-extraction": "ts-node -r tsconfig-paths/register scripts/verify-pdf-extraction.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
@@ -38,10 +39,13 @@
     "openai": "^6.38.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "sharp": "^0.35.2",
     "swagger-ui-express": "^5.0.1",
+    "tesseract.js": "^7.0.0",
     "xlsx": "^0.18.5",
     "zod": "^4.4.3",
     "zod-to-ts": "^2.0.0"

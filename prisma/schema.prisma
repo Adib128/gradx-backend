@@ -181,6 +181,8 @@ model Student {
   courseId Int?
   course   Course? @relation(fields: [courseId], references: [id])
 
+  gradingScans GradingScan[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -404,15 +406,27 @@ model GradingScan {
   decodedFormId    Int?
   confidence       Float?
   detectedAnswers  Json?
+  questionDetails  Json?
   score            Float?
   maxScore         Float?
   errorMessage     String?
+  /// Student ID detected from the bubble grid (e.g. "12345")
+  detectedStudentId String?
+  /// Matched student code from the students table (may be null if student not found)
+  matchedStudentCode String?
+  /// Direct FK to Student record — set when the teacher confirms the result
+  studentId        Int?
+  student          Student?          @relation(fields: [studentId], references: [id])
+  /// Timestamp when the teacher confirmed and saved the result
+  confirmedAt      DateTime?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
   @@index([assessmentId])
   @@index([tenantId])
   @@index([graderUserId])
+  @@index([detectedStudentId])
+  @@index([studentId])
   @@map("grading_scans")
 }
 

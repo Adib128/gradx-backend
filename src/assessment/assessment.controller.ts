@@ -52,6 +52,12 @@ export class AssessmentController {
     );
   }
 
+  /** List all assessments for the current tenant (used by mobile app). */
+  @Get()
+  findByTenant(@GetUser('tenantId') tenantId: number) {
+    return this.assessmentService.findByTenant(tenantId);
+  }
+
   @Get(':courseId')
   findAll(@Param('courseId', ParseIntPipe) courseId: number) {
     return this.assessmentService.findAll(courseId);
