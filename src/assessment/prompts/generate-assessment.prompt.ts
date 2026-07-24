@@ -1,14 +1,42 @@
-// src/topic-content/prompts/generate-assessment.prompt.ts
-
 import { getDifficultyRuleString } from 'src/assessment/config/difficulty-distribution.config';
+
+const sharedRules = `
+========================================================================
+OPERATIONAL CONSTRAINTS & FORMATTING RULES (CRITICAL)
+========================================================================
+1. **JSON Integrity:** Return ONLY a raw, valid JSON object. Do NOT wrap the JSON inside markdown code blocks. No conversational preambles or postscripts.
+2. **Strict Character Escaping:** Escape all double quotes (\\") and literal newlines inside string attributes.
+3. **Flexible Math Formats:** Avoid raw LaTeX backslashes. Use descriptive text notations (e.g., "integral from a to b of f(x)dx").
+4. **Single Master List:** Provide all questions in a single flat "questions" array.
+`.trim();
+
+const outputContract = `
+========================================================================
+EXPECTED OUTPUT JSON CONTRACT
+========================================================================
+{
+  "questions": [
+    {
+      "topicId": 1,
+      "cloCode": "1.1",
+      "type": "MCQ or TRUE_FALSE",
+      "text": "The exam question statement.",
+      "explanation": "Step-by-step solution / verification.",
+      "points": 5,
+      "options": [
+        { "text": "Option text", "isCorrect": true, "order": 1 },
+        { "text": "Distractor text", "isCorrect": false, "order": 2 }
+      ]
+    }
+  ]
+}
+`.trim();
 
 export const GENERATE_COURSE_PROMPT = (payload: {
   assessment: any;
   topicGenerations: any[];
 }): string => {
   const { assessment, topicGenerations } = payload;
-
-  // Resolve the string profile directly from our external config rule mapping
   const difficultyStrategy = getDifficultyRuleString(assessment.difficulty);
 
   return `
@@ -17,7 +45,7 @@ You are an elite university professor and distinguished instructional designer s
 The output must be authoritative, rigorous, and tailored precisely to the domain of the course.
 
 ========================================================================
-REQUEST FORMAT 1: CONTEXTUAL INPUT METADATA (What you are analyzing)
+CONTEXTUAL INPUT METADATA
 ========================================================================
 - **Title:** ${assessment.title}
 - **Assessment Type:** ${assessment.type}
@@ -45,42 +73,79 @@ ${tg.questionTypes.map((q: any) => `  * Generate exactly ${q.questionTypeNumber}
   )
   .join('\n')}
 
-========================================================================
-OPERATIONAL CONSTRAINTS & FORMATTING RULES (CRITICAL)
-========================================================================
-1. **JSON Integrity:** Return ONLY a raw, valid JSON object matching Request Format 2 below. Do NOT wrap the JSON inside markdown code blocks (\`\`\`json ... \`\`\`). No conversational preambles or postscripts.
-2. **Strict Character Escaping:** Every text block will be evaluated inside a strict machine parser. You MUST thoroughly escape all double quotes (\\") and literal newlines (\\\\n) inside string attributes.
-3. **Flexible Math Formats:** Avoid raw LaTeX backslashes (\\\\) inside plain JSON strings to prevent token parsing crashes. Use descriptive text notations for technical components (e.g., "integral from a to b of f(x)dx", "delta_t", "matrix dimension [n x m]").
-4. **Distribution Fidelity & Difficulty Calibration:** The final item tally grouped inside your "questions" array must perfectly equal the mathematical sum of all required question counts defined in the blueprint records above. 
-   * CRITICAL INTELLECTUAL WEIGHTING: You must calibrate the internal complexity of your generated questions to strictly follow the requested distribution metrics: ${difficultyStrategy}.
-5. **Single Master List:** Provide all questions in a single flat array. (Note: Do not worry about multiple exam versions or sequencing variations; the backend system handles shuffling programmatically).
+${sharedRules}
+5. **Distribution Fidelity & Difficulty Calibration:** The final item tally must equal the sum of all required question counts. Calibrate complexity to: ${difficultyStrategy}.
+
+${outputContract}
+`.trim();
+};
+
+/** Focused prompt used for incremental (one-question-at-a-time) generation. */
+export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
+  assessment: any;
+  topicGeneration: any;
+  questionType: string;
+  questionIndex: number;
+  totalQuestions: number;
+  existingQuestionTexts: string[];
+}): string => {
+  const {
+    assessment,
+    topicGeneration,
+    questionType,
+    questionIndex,
+    totalQuestions,
+    existingQuestionTexts,
+  } = payload;
+  const difficultyStrategy = getDifficultyRuleString(assessment.difficulty);
+  const tg = topicGeneration;
+
+  const avoidList =
+    existingQuestionTexts.length > 0
+      ? existingQuestionTexts
+          .slice(-12)
+          .map((text, i) => `  ${i + 1}. ${text.slice(0, 160)}`)
+          .join('\n')
+      : '  (none yet)';
+
+  return `
+You are an elite university professor creating ONE exam question for a higher-education assessment.
+
+Generate exactly ONE question of type "${questionType}" (question ${questionIndex} of ${totalQuestions}).
 
 ========================================================================
-REQUEST FORMAT 2: EXPECTED OUTPUT JSON CONTRACT (What you must return)
+ASSESSMENT CONTEXT
 ========================================================================
-Ensure your output matches this structural signature exactly. Property names match backend database schema columns directly:
+- **Title:** ${assessment.title}
+- **Assessment Type:** ${assessment.type}
+- **Language:** ${assessment.language}
+- **Difficulty Profile:** ${assessment.difficulty ?? 'BALANCED'} (${difficultyStrategy})
 
-{
-  "questions": [
-    {
-      "topicId": 1, 
-      "type": "Must exactly match one of the requested backend enum values: MCQ or TRUE_FALSE",
-      "text": "The comprehensive exam question statement prompt body text.",
-      "explanation": "Provide a complete, unambiguous step-by-step master verification explanation, validation path, or core solution strategy required to achieve full credit.",
-      "points": 5,
-      "options": [
-        {
-          "text": "Option content text goes here",
-          "isCorrect": true,
-          "order": 1
-        },
-        {
-          "text": "Distractor choice text goes here",
-          "isCorrect": false,
-          "order": 2
-        }
-      ]
-    }
-  ]
-}`.trim();
+========================================================================
+TOPIC TARGET
+========================================================================
+- **Topic ID:** ${tg.topicId}
+- **Topic Title:** ${tg.topicTitle}
+- **CLOs:**
+${(tg.closDetails || [])
+  .map((c: any) => `  * [${c.code}] (${c.category || 'Skill'}): ${c.description}`)
+  .join('\n')}
+- **Bloom levels:** ${(tg.blooms || []).join(', ') || 'APPLY'}
+
+Pick ONE CLO code from the list above for this question and include it as "cloCode" (example: "1.1").
+
+========================================================================
+AVOID DUPLICATES
+========================================================================
+Do NOT repeat or closely paraphrase these already-generated questions:
+${avoidList}
+
+${sharedRules}
+5. Return a "questions" array with exactly ONE item.
+6. Set "topicId" to ${tg.topicId}.
+7. Set "type" exactly to "${questionType}".
+8. For TRUE_FALSE provide exactly 2 options (True/False). For MCQ provide 4 options with exactly one correct.
+
+${outputContract}
+`.trim();
 };

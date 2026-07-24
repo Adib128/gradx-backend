@@ -12,8 +12,14 @@ import { paginate } from 'src/common/helpers/paginate.helper';
 import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
 import { GenerationStatus } from 'generated/prisma/enums';
 import { Prisma } from 'generated/prisma/client';
+import {
+  normalizeClosForStorage,
+  remapMappedClos,
+} from './utils/normalize-clos';
+import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 
 @Injectable()
 export class CourseService {
@@ -24,9 +30,9 @@ export class CourseService {
 
   async confirmAndSave(tenantId: number, createCourseDto: CreateCourseDto) {
     const {
-      clos,
-      topics,
-      assessments: _assessments,
+      clos: rawClos,
+      topics: rawTopics,
+      assessments = [],
       references,
       prerequisites,
       coRequisites,
@@ -34,9 +40,27 @@ export class CourseService {
       requiredFacilitiesAndEquipment,
       ...courseData
     } = createCourseDto;
-    void _assessments;
+
+    const { clos, codeRemap } = normalizeClosForStorage(rawClos ?? []);
+    const topics = (rawTopics ?? []).map((topic) => ({
+      ...topic,
+      mappedClos: remapMappedClos(topic.mappedClos, codeRemap),
+    }));
 
     return await this.prisma.$transaction(async (tx) => {
+      const assessmentPlan = (assessments ?? [])
+        .map((assessment) => ({
+          title: String(assessment.title ?? '').trim() || null,
+          type: assessment.type,
+          timing: assessment.timing ?? null,
+          percentage:
+            assessment.percentage != null &&
+            Number.isFinite(Number(assessment.percentage))
+              ? Math.round(Number(assessment.percentage))
+              : null,
+        }))
+        .filter((item) => Boolean(item.type));
+
       const courseCreateData: Prisma.CourseUncheckedCreateInput = {
         ...(courseData as Prisma.CourseUncheckedCreateInput),
         tenantId,
@@ -46,6 +70,7 @@ export class CourseService {
         requiredFacilitiesAndEquipment:
           (requiredFacilitiesAndEquipment ?? []) as Prisma.InputJsonValue,
         references: (references ?? []) as Prisma.InputJsonValue,
+        assessmentPlan: assessmentPlan as Prisma.InputJsonValue,
       };
 
       const course = await tx.course.create({
@@ -107,7 +132,15 @@ export class CourseService {
         }),
       );
 
-      return { ...course, topics: createdTopics };
+      // Syllabus only stores assessment type plan metadata on the course.
+      // Real Assessment records are created later by the user.
+
+      return {
+        ...course,
+        topics: createdTopics,
+        assessments: [],
+        assessmentPlan,
+      };
     });
   }
 
@@ -157,54 +190,67 @@ export class CourseService {
 
   async extractFromPdfFile(file: Express.Multer.File) {
     if (!file?.buffer) {
-      throw new BadRequestException('File is required');
+      throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_FILE_REQUIRED);
     }
 
     const base64 = file.buffer.toString('base64');
 
-    const job = await this.extractionQueue.add(
-      'extract',
-      {
-        base64,
-        mimeType: file.mimetype,
-        filename: file.originalname,
-      },
-      {
-        attempts: 3, // ← retry 3 times on failure
-        backoff: {
-          type: 'exponential',
-          delay: 2000, // ← wait 2s, 4s, 8s between retries
+    try {
+      const job = await this.extractionQueue.add(
+        'extract',
+        {
+          base64,
+          mimeType: file.mimetype,
+          filename: file.originalname,
         },
-        removeOnComplete: false, // ← keep result in Redis for polling
-        removeOnFail: false,
-      },
-    );
+        {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000,
+          },
+          removeOnComplete: false,
+          removeOnFail: false,
+        },
+      );
 
-    return { jobId: job.id, status: 'processing' };
+      return { jobId: job.id, status: 'processing' };
+    } catch {
+      throw new BadRequestException(ErrorMessageKey.GENERATION_QUEUE_UNAVAILABLE);
+    }
   }
 
   async getExtractionStatus(jobId: string) {
     const job = await Job.fromId(this.extractionQueue, jobId);
 
-    if (!job) throw new NotFoundException('Job not found');
+    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
 
-    const state = await job.getState(); // waiting | active | completed | failed
+    const state = await job.getState();
+    const failure = generationErrorPayload(
+      state === 'failed' ? job.failedReason : null,
+      ErrorMessageKey.COURSE_EXTRACT_FAILED,
+    );
 
     return {
       jobId,
       status: state,
       progress: job.progress,
       result: state === 'completed' ? job.returnvalue : null,
-      error: state === 'failed' ? job.failedReason : null,
+      error: failure.error,
+      errorKey: failure.errorKey,
     };
   }
 
-  async findOne(id: number) {
-    const course = await this.prisma.course.findUnique({
-      where: { id },
+  async findOne(tenantId: number, id: number) {
+    const tid = requireTenantId(tenantId);
+    const course = await this.prisma.course.findFirst({
+      where: { id, tenantId: tid },
       include: {
         clos: true,
-        assessments: true,
+        assessments: {
+          where: { tenantId: tid },
+          orderBy: { createdAt: 'desc' },
+        },
         topics: {
           include: {
             topicContents: {
@@ -236,11 +282,11 @@ export class CourseService {
     return course;
   }
 
-  async update(id: number, updateCourseDto: UpdateCourseDto) {
-    await this.findCourse(id);
+  async update(tenantId: number, id: number, updateCourseDto: UpdateCourseDto) {
+    await this.findCourse(tenantId, id);
 
     const {
-      title, code, program, description, creditHours, level,
+      title, code, program, description, creditHours, level, passRate,
       teachingMode, teachingModes, totalContactHours, lectureHours, labHours,
       prerequisites, coRequisites, requiredFacilitiesAndEquipment, references,
     } = updateCourseDto;
@@ -254,6 +300,11 @@ export class CourseService {
         ...(description !== undefined && { description }),
         ...(creditHours !== undefined && { creditHours }),
         ...(level !== undefined && { level }),
+        ...(passRate !== undefined &&
+          passRate !== null &&
+          Number.isFinite(Number(passRate)) && {
+            passRate: Math.min(100, Math.max(0, Math.round(Number(passRate)))),
+          }),
         ...(teachingMode !== undefined && { teachingMode }),
         ...(teachingModes !== undefined && { teachingModes: teachingModes as unknown as Prisma.InputJsonValue }),
         ...(totalContactHours !== undefined && { totalContactHours }),
@@ -271,6 +322,7 @@ export class CourseService {
 
   /** Update only meta fields — safe shorthand used by the Course Details edit modal. */
   async updateMeta(
+    tenantId: number,
     id: number,
     body: {
       title?: string;
@@ -279,6 +331,7 @@ export class CourseService {
       description?: string;
       creditHours?: number | null;
       level?: string;
+      passRate?: number | null;
       totalContactHours?: number | null;
       lectureHours?: number | null;
       labHours?: number | null;
@@ -288,7 +341,12 @@ export class CourseService {
       requiredFacilitiesAndEquipment?: Array<{ item: string; resources?: string | null }>;
     },
   ) {
-    await this.findCourse(id);
+    await this.findCourse(tenantId, id);
+    const passRate =
+      body.passRate === null || body.passRate === undefined
+        ? undefined
+        : Math.min(100, Math.max(0, Math.round(Number(body.passRate))));
+
     return this.prisma.course.update({
       where: { id },
       data: {
@@ -298,6 +356,7 @@ export class CourseService {
         ...(body.description !== undefined && { description: body.description }),
         ...(body.creditHours !== undefined && { creditHours: body.creditHours }),
         ...(body.level !== undefined && { level: body.level }),
+        ...(passRate !== undefined && Number.isFinite(passRate) && { passRate }),
         ...(body.totalContactHours !== undefined && { totalContactHours: body.totalContactHours }),
         ...(body.lectureHours !== undefined && { lectureHours: body.lectureHours }),
         ...(body.labHours !== undefined && { labHours: body.labHours }),
@@ -313,17 +372,21 @@ export class CourseService {
     });
   }
 
-  async remove(id: number) {
-    await this.findCourse(id);
+  async remove(tenantId: number, id: number) {
+    await this.findCourse(tenantId, id);
     return await this.prisma.extended.course.delete({
       where: { id },
     });
   }
 
-  private async findCourse(id: number) {
-    const course = await this.prisma.course.findUnique({ where: { id } });
+  private async findCourse(tenantId: number, id: number) {
+    const tid = requireTenantId(tenantId);
+    const course = await this.prisma.course.findFirst({
+      where: { id, tenantId: tid },
+    });
     if (!course) {
       throw new NotFoundException(ErrorMessageKey.COURSE_NOT_FOUND);
     }
+    return course;
   }
 }

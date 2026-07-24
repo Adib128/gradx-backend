@@ -13,6 +13,7 @@ import { TopicContentModule } from './topic-content/topic-content.module';
 import { AssessmentModule } from './assessment/assessment.module';
 import { CloModule } from './clo/clo.module';
 import { GradingModule } from './grading/grading.module';
+import { CourseAnswerSheetModule } from './course-answer-sheet/course-answer-sheet.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { GradingModule } from './grading/grading.module';
     AssessmentModule,
     CloModule,
     GradingModule,
+    CourseAnswerSheetModule,
   ],
   providers: [
     {

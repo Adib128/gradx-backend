@@ -1,12 +1,13 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
+import { ValidationMessageKey as V } from 'src/common/constants/validation-message';
 
 const PasswordSchema = z
-  .string({ message: 'Password is required' })
-  .min(6, 'Password must be at least 6 characters')
+  .string({ message: V.PASSWORD_REQUIRED })
+  .min(6, V.PASSWORD_MIN_LENGTH)
   .regex(
     /^(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9])(?=.*[^a-zA-Z0-9]).*$/,
-    'Password must contain uppercase, lowercase, number, and special character',
+    V.PASSWORD_COMPLEXITY,
   );
 
 const PhoneSchema = z
@@ -14,10 +15,7 @@ const PhoneSchema = z
   .trim()
   .transform((value) => value.replace(/[\s()-]/g, ''))
   .transform((value) => (value === '' ? undefined : value))
-  .refine(
-    (value) => !value || /^\+?\d{8,15}$/.test(value),
-    'Invalid phone number format',
-  )
+  .refine((value) => !value || /^\+?\d{8,15}$/.test(value), V.PHONE_INVALID)
   .transform((value) => {
     if (!value) {
       return undefined;
@@ -29,16 +27,16 @@ const PhoneSchema = z
 
 export const RegisterSchema = z.object({
   email: z
-    .string({ message: 'Email is required' }) // Use 'message' instead of 'required_error'
+    .string({ message: V.EMAIL_REQUIRED })
     .trim()
-    .email('Invalid email address'),
+    .email(V.EMAIL_INVALID),
 
   phone: PhoneSchema,
 
   password: PasswordSchema,
 
-  firstName: z.string().min(3).optional(),
-  lastName: z.string().min(3).optional(),
+  firstName: z.string().min(3, V.FIRST_NAME_MIN_LENGTH).optional(),
+  lastName: z.string().min(3, V.LAST_NAME_MIN_LENGTH).optional(),
 });
 
 export class RegisterDto extends createZodDto(RegisterSchema) {}

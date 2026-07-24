@@ -3,16 +3,25 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Job, Queue } from 'bullmq';
 import { PrismaService } from 'prisma/prisma.service';
 import { GenerateAssessmentDto } from './dto/generate-assessment.dto';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
-import { GENERATE_COURSE_PROMPT } from './prompts/generate-assessment.prompt';
+import { GENERATE_COURSE_PROMPT, GENERATE_SINGLE_QUESTION_PROMPT } from './prompts/generate-assessment.prompt';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
 import { AssessmentType, Bloom } from 'generated/prisma/enums';
+import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
+import {
+  AssessmentGenerationJob,
+  AssessmentGenerationProgress,
+} from './interfaces/assessment-generation-job.interface';
 
 @Injectable()
 export class AssessmentService {
@@ -22,6 +31,8 @@ export class AssessmentService {
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    @InjectQueue('assessment-generation')
+    private readonly assessmentQueue: Queue,
   ) {
     this.client = new OpenAI({
       apiKey: this.config.get<string>('OPENROUTER_API_KEY'),
@@ -34,10 +45,21 @@ export class AssessmentService {
    * 1. Create Assessment Metadata Shell Only
    */
   async create(tenantId: number, courseId: number, dto: CreateAssessmentDto) {
+    const tid = requireTenantId(tenantId);
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId: tid },
+      select: { id: true },
+    });
+    if (!course) {
+      throw new NotFoundException('Course not found');
+    }
+
     return await this.prisma.assessment.create({
       data: {
         title: dto.title,
         type: dto.type,
+        timing: dto.timing ?? null,
+        percentage: dto.percentage ?? null,
         duration: dto.duration,
         totalMarks: dto.totalMarks,
         passMark: dto.passMark,
@@ -58,46 +80,415 @@ export class AssessmentService {
           dto.printDifficultyLabelNextToEachQuestion,
         language: dto.language,
         difficulty: dto.difficulty,
-        tenantId,
+        tenantId: tid,
         courseId,
       },
     });
   }
 
   /**
-   * 2. Orchestrated Generator: Populates/Updates an Existing Assessment Record
+   * 2. Orchestrated Generator: enqueue async job and return immediately
    */
   async generate(
     tenantId: number,
     courseId: number,
-    assessmentId: number, // Target existing assessment record ID
+    assessmentId: number,
     dto: GenerateAssessmentDto,
   ) {
-    // Verify target assessment shell exists first
     const targetAssessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId, tenantId, courseId },
     });
 
     if (!targetAssessment) {
-      throw new NotFoundException('Assessment container shell not found.');
+      throw new NotFoundException(ErrorMessageKey.ASSESSMENT_SHELL_NOT_FOUND);
     }
 
-    // A. Enrich blueprint arrays for context window
-    const promptPayload = await this.preparePromptPayload(dto);
-
-    // B. Run LLM operations
-    const aiRawResponse = await this.callAiModel(promptPayload);
-    const generatedData = this.parseAiResponse(aiRawResponse);
-
-    console.log(generatedData);
-
-    // C. Write variations and items into the verified record
-    return await this.updateAssessmentDataWithAi(
+    const jobPayload: AssessmentGenerationJob = {
       tenantId,
       courseId,
       assessmentId,
       dto,
-      generatedData,
+    };
+
+    const job = await this.assessmentQueue.add(
+      'assessment-generation',
+      jobPayload,
+      {
+        attempts: 2,
+        removeOnComplete: false,
+        removeOnFail: false,
+      },
+    );
+
+    return {
+      jobId: job.id,
+      status: 'processing',
+      assessmentId,
+      courseId,
+    };
+  }
+
+  async getGenerateStatus(jobId: string) {
+    const job = await this.assessmentQueue.getJob(jobId);
+
+    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
+
+    const state = await job.getState();
+    const failure = generationErrorPayload(
+      state === 'failed' ? job.failedReason : null,
+      ErrorMessageKey.ASSESSMENT_GENERATE_FAILED,
+    );
+
+    return {
+      jobId,
+      status: state,
+      progress: job.progress,
+      result: state === 'completed' ? job.returnvalue : null,
+      error: failure.error,
+      errorKey: failure.errorKey,
+    };
+  }
+
+  async runGenerationJob(
+    data: AssessmentGenerationJob,
+    onProgress?: (progress: AssessmentGenerationProgress) => Promise<void> | void,
+  ) {
+    const expectedQuestionCount = this.countExpectedQuestions(data.dto);
+
+    const report = async (progress: AssessmentGenerationProgress) => {
+      if (onProgress) await onProgress(progress);
+    };
+
+    await report({
+      stage: 'preparing',
+      percent: 5,
+      message: 'Preparing assessment context…',
+      expectedQuestionCount,
+      savedQuestionCount: 0,
+    });
+
+    const promptPayload = await this.preparePromptPayload(data.dto);
+    const assessmentMeta = await this.resetAssessmentShell(
+      data.tenantId,
+      data.courseId,
+      data.assessmentId,
+      data.dto,
+    );
+
+    const units = this.buildGenerationUnits(promptPayload.topicGenerations);
+    const accumulatedQuestions: any[] = [];
+    const savedQuestionIds: { id: number }[] = [];
+    const totalUnits = units.length || expectedQuestionCount || 1;
+
+    for (let index = 0; index < units.length; index++) {
+      const unit = units[index];
+      const questionNumber = index + 1;
+      const percent = Math.min(
+        92,
+        Math.round(8 + (questionNumber / totalUnits) * 84),
+      );
+
+      await report({
+        stage: 'generating',
+        percent,
+        message: `Generating question ${questionNumber} of ${totalUnits}…`,
+        expectedQuestionCount: totalUnits,
+        savedQuestionCount: accumulatedQuestions.length,
+        partial: { questions: accumulatedQuestions },
+      });
+
+      const aiRawResponse = await this.callAiModelForSingleQuestion({
+        assessment: promptPayload.assessment,
+        topicGeneration: unit.topicGeneration,
+        questionType: unit.questionType,
+        questionIndex: questionNumber,
+        totalQuestions: totalUnits,
+        existingQuestionTexts: accumulatedQuestions.map((q) =>
+          String(q?.text || ''),
+        ),
+      });
+
+      const generatedData = this.parseAiResponse(aiRawResponse);
+      const nextQuestion = Array.isArray(generatedData?.questions)
+        ? generatedData.questions[0]
+        : null;
+
+      if (!nextQuestion || typeof nextQuestion !== 'object') {
+        throw new InternalServerErrorException(
+          ErrorMessageKey.ASSESSMENT_AI_QUESTION_FAILED,
+        );
+      }
+
+      const normalizedQuestion = {
+        ...nextQuestion,
+        topicId: nextQuestion.topicId ?? unit.topicId,
+        type: nextQuestion.type || unit.questionType,
+      };
+
+      const cloCodesFromTopic = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(unit.topicGeneration.closDetails)
+              ? unit.topicGeneration.closDetails.map((clo: any) =>
+                  String(clo?.code || '').trim(),
+                )
+              : []),
+            ...(Array.isArray(unit.topicGeneration.cloCodes)
+              ? unit.topicGeneration.cloCodes.map((code: any) =>
+                  String(code || '').trim(),
+                )
+              : []),
+          ].filter(Boolean),
+        ),
+      );
+      const preferredCloCode = String(
+        normalizedQuestion.cloCode || cloCodesFromTopic[0] || '',
+      ).trim();
+      const cloCodes = preferredCloCode
+        ? [
+            preferredCloCode,
+            ...cloCodesFromTopic.filter((code) => code !== preferredCloCode),
+          ]
+        : cloCodesFromTopic;
+
+      // Prefer matching cloId for the chosen code when available.
+      const cloIdsForQuestion = (() => {
+        const details = Array.isArray(unit.topicGeneration.closDetails)
+          ? unit.topicGeneration.closDetails
+          : [];
+        const matched = details.find(
+          (clo: any) => String(clo?.code || '').trim() === preferredCloCode,
+        );
+        if (matched?.id != null) return [Number(matched.id)];
+        return (unit.topicGeneration.cloIds as number[] | undefined) || [];
+      })();
+
+      const saved = await this.saveGeneratedQuestion(
+        data.tenantId,
+        data.courseId,
+        data.assessmentId,
+        normalizedQuestion,
+        cloIdsForQuestion,
+      );
+
+      savedQuestionIds.push({ id: saved.id });
+      accumulatedQuestions.push({
+        ...normalizedQuestion,
+        id: saved.id,
+        cloCode: preferredCloCode || cloCodes[0] || null,
+        cloCodes,
+        clo: preferredCloCode || cloCodes[0] || null,
+        questionClos: saved.questionClos,
+        questionOptions: saved.questionOptions,
+        options:
+          saved.questionOptions?.map((opt) => ({
+            text: opt.text,
+            isCorrect: opt.isCorrect,
+            order: opt.order,
+          })) ??
+          normalizedQuestion.options ??
+          [],
+      });
+
+      await report({
+        stage: 'saving',
+        percent: Math.min(95, percent + 1),
+        message: `Question ${questionNumber} of ${totalUnits} ready`,
+        expectedQuestionCount: totalUnits,
+        savedQuestionCount: accumulatedQuestions.length,
+        partial: { questions: accumulatedQuestions },
+      });
+    }
+
+    await report({
+      stage: 'saving',
+      percent: 96,
+      message: 'Building assessment versions…',
+      expectedQuestionCount: totalUnits,
+      savedQuestionCount: accumulatedQuestions.length,
+      partial: { questions: accumulatedQuestions },
+    });
+
+    await this.createAssessmentVersionsWithShuffle(
+      this.prisma,
+      assessmentMeta.id,
+      savedQuestionIds,
+      assessmentMeta.numberOfVersions,
+    );
+
+    const result = await this.getAssessmentWithQuestions(data.assessmentId);
+
+    await report({
+      stage: 'complete',
+      percent: 100,
+      message: 'Assessment generation complete',
+      expectedQuestionCount: totalUnits,
+      savedQuestionCount: accumulatedQuestions.length,
+      partial: { questions: accumulatedQuestions },
+    });
+
+    return result;
+  }
+
+  private buildGenerationUnits(
+    topicGenerations: Array<{
+      topicId: number;
+      questionTypes: Array<{ questionType: string; questionTypeNumber: number }>;
+      [key: string]: unknown;
+    }>,
+  ) {
+    const units: Array<{
+      topicId: number;
+      questionType: string;
+      topicGeneration: (typeof topicGenerations)[number];
+    }> = [];
+
+    for (const topicGeneration of topicGenerations) {
+      for (const questionType of topicGeneration.questionTypes || []) {
+        const count = Math.max(0, Number(questionType.questionTypeNumber) || 0);
+        for (let i = 0; i < count; i++) {
+          units.push({
+            topicId: topicGeneration.topicId,
+            questionType: questionType.questionType,
+            topicGeneration,
+          });
+        }
+      }
+    }
+
+    return units;
+  }
+
+  private async resetAssessmentShell(
+    tenantId: number,
+    courseId: number,
+    assessmentId: number,
+    dto: GenerateAssessmentDto,
+  ) {
+    await this.prisma.assessmentVersion.deleteMany({ where: { assessmentId } });
+    await this.prisma.questionClo.deleteMany({
+      where: { question: { assessmentId } },
+    });
+    await this.prisma.assessmentTopic.deleteMany({ where: { assessmentId } });
+    await this.prisma.question.deleteMany({ where: { assessmentId } });
+
+    const updatedAssessment = await this.prisma.assessment.update({
+      where: { id: assessmentId },
+      data: dto.assessment,
+      select: { id: true, numberOfVersions: true },
+    });
+
+    if (dto.topicGenerations.length) {
+      await this.prisma.assessmentTopic.createMany({
+        data: dto.topicGenerations.map((tg) => ({
+          assessmentId,
+          topicId: tg.topicId,
+        })),
+      });
+    }
+
+    return updatedAssessment;
+  }
+
+  private async saveGeneratedQuestion(
+    tenantId: number,
+    courseId: number,
+    assessmentId: number,
+    question: any,
+    cloIds: number[] = [],
+  ) {
+    const uniqueCloIds = Array.from(
+      new Set(
+        (cloIds || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    return this.prisma.question.create({
+      data: {
+        text: question.text,
+        type: question.type,
+        explanation: question.explanation,
+        points: question.points ?? 1,
+        assessmentId,
+        tenantId,
+        courseId,
+        topicId: question.topicId,
+        questionOptions: {
+          create: (question.options ?? []).map((opt: any, index: number) => ({
+            text: opt.text,
+            isCorrect: Boolean(opt.isCorrect),
+            order: opt.order ?? index + 1,
+          })),
+        },
+        questionClos: uniqueCloIds.length
+          ? {
+              create: uniqueCloIds.map((cloId) => ({ cloId })),
+            }
+          : undefined,
+      },
+      include: {
+        questionOptions: { orderBy: { order: 'asc' } },
+        questionClos: {
+          include: {
+            Clo: { select: { id: true, code: true } },
+          },
+        },
+      },
+    });
+  }
+
+  private async getAssessmentWithQuestions(assessmentId: number) {
+    return this.prisma.assessment.findUnique({
+      where: { id: assessmentId },
+      include: {
+        assessmentTopics: true,
+        questions: {
+          include: {
+            questionOptions: { orderBy: { order: 'asc' } },
+            questionClos: {
+              include: {
+                Clo: { select: { id: true, code: true } },
+              },
+            },
+          },
+          orderBy: { id: 'asc' },
+        },
+        assessmentVersions: {
+          include: {
+            versionQuestions: {
+              orderBy: { order: 'asc' },
+              include: {
+                question: {
+                  include: {
+                    questionOptions: { orderBy: { order: 'asc' } },
+                    questionClos: {
+                      include: {
+                        Clo: { select: { id: true, code: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          orderBy: { id: 'asc' },
+        },
+      },
+    });
+  }
+
+  private countExpectedQuestions(dto: GenerateAssessmentDto) {
+    return dto.topicGenerations.reduce(
+      (total, topic) =>
+        total +
+        topic.questionTypes.reduce(
+          (topicTotal, questionType) =>
+            topicTotal + (questionType.questionTypeNumber || 0),
+          0,
+        ),
+      0,
     );
   }
 
@@ -116,16 +507,98 @@ export class AssessmentService {
           select: { id: true, title: true, topicNumber: true },
         });
 
-        const clos = await this.prisma.clo.findMany({
-          where: { id: { in: topicGen.cloIds } },
-          select: { code: true, description: true, category: true },
-        });
+        const cloIds = Array.from(
+          new Set(
+            (topicGen.cloIds || [])
+              .map((id) => Number(id))
+              .filter((id) => Number.isInteger(id) && id > 0),
+          ),
+        );
+
+        const closFromIds =
+          cloIds.length > 0
+            ? await this.prisma.clo.findMany({
+                where: { id: { in: cloIds } },
+                select: {
+                  id: true,
+                  code: true,
+                  description: true,
+                  category: true,
+                },
+              })
+            : [];
+
+        const codesFromPayload = (topicGen.cloCodes || [])
+          .map((code) => String(code || '').trim())
+          .filter(Boolean);
+
+        const missingCodes = codesFromPayload.filter(
+          (code) =>
+            !closFromIds.some(
+              (clo) => String(clo.code).trim().toLowerCase() === code.toLowerCase(),
+            ),
+        );
+
+        const closFromCodes =
+          missingCodes.length > 0
+            ? await this.prisma.clo.findMany({
+                where: {
+                  OR: [
+                    { code: { in: missingCodes } },
+                    { programCLOCode: { in: missingCodes } },
+                  ],
+                },
+                select: {
+                  id: true,
+                  code: true,
+                  description: true,
+                  category: true,
+                },
+              })
+            : [];
+
+        const closByKey = new Map<string, (typeof closFromIds)[number]>();
+        for (const clo of [...closFromIds, ...closFromCodes]) {
+          closByKey.set(String(clo.id), clo);
+        }
+
+        // Keep payload code order when possible.
+        const orderedClos = [
+          ...codesFromPayload
+            .map((code) =>
+              [...closByKey.values()].find(
+                (clo) =>
+                  String(clo.code).trim().toLowerCase() === code.toLowerCase(),
+              ),
+            )
+            .filter(Boolean),
+          ...[...closByKey.values()].filter(
+            (clo) =>
+              !codesFromPayload.some(
+                (code) =>
+                  String(clo.code).trim().toLowerCase() === code.toLowerCase(),
+              ),
+          ),
+        ] as typeof closFromIds;
+
+        // If DB lookup failed, still keep plain codes for prompts + UI badges.
+        const closDetails =
+          orderedClos.length > 0
+            ? orderedClos
+            : codesFromPayload.map((code) => ({
+                id: null as number | null,
+                code,
+                description: '',
+                category: '',
+              }));
 
         return {
           ...topicGen,
+          cloIds: orderedClos.map((clo) => clo.id).filter(Boolean) as number[],
+          cloCodes: closDetails.map((clo) => clo.code).filter(Boolean),
           topicTitle: topic?.title ?? 'Unknown Topic',
           topicNumber: topic?.topicNumber ?? 0,
-          closDetails: clos,
+          closDetails,
         };
       }),
     );
@@ -155,7 +628,35 @@ export class AssessmentService {
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
       throw new InternalServerErrorException(
-        'Failed to communicate with AI Model generation service',
+        ErrorMessageKey.GENERATION_AI_API_FAILED,
+      );
+    }
+  }
+
+  private async callAiModelForSingleQuestion(payload: {
+    assessment: any;
+    topicGeneration: any;
+    questionType: string;
+    questionIndex: number;
+    totalQuestions: number;
+    existingQuestionTexts: string[];
+  }): Promise<string> {
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: GENERATE_SINGLE_QUESTION_PROMPT(payload),
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      return response.choices[0].message.content ?? '{}';
+    } catch (error) {
+      throw new InternalServerErrorException(
+        ErrorMessageKey.GENERATION_AI_API_FAILED,
       );
     }
   }
@@ -165,7 +666,7 @@ export class AssessmentService {
       return JSON.parse(rawContent);
     } catch {
       throw new InternalServerErrorException(
-        'AI returned an invalid JSON string layout.',
+        ErrorMessageKey.GENERATION_AI_INVALID_JSON,
       );
     }
   }
@@ -179,10 +680,14 @@ export class AssessmentService {
     assessmentId: number,
     dto: GenerateAssessmentDto,
     generatedData: any,
+    onQuestionSaved?: (
+      savedCount: number,
+      total: number,
+    ) => Promise<void> | void,
   ) {
     if (!Array.isArray(generatedData.questions)) {
       throw new InternalServerErrorException(
-        'AI returned an invalid questions payload.',
+        ErrorMessageKey.ASSESSMENT_AI_INVALID_QUESTIONS_PAYLOAD,
       );
     }
 
@@ -212,6 +717,7 @@ export class AssessmentService {
 
         // Step C: Save generated questions and concrete configurations
         const savedQuestions: { id: number }[] = [];
+        const totalQuestions = generatedData.questions.length;
 
         for (const q of generatedData.questions) {
           const question = await tx.question.create({
@@ -236,6 +742,10 @@ export class AssessmentService {
           });
 
           savedQuestions.push(question);
+
+          if (onQuestionSaved) {
+            await onQuestionSaved(savedQuestions.length, totalQuestions);
+          }
         }
 
         await this.createAssessmentVersionsWithShuffle(
@@ -274,7 +784,7 @@ export class AssessmentService {
           },
         });
       },
-      { maxWait: 10000, timeout: 30000 },
+      { maxWait: 10000, timeout: 60000 },
     );
   }
 
@@ -285,7 +795,7 @@ export class AssessmentService {
   ) {
     const assessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId, tenantId },
-      select: { id: true },
+      select: { id: true, courseId: true },
     });
 
     if (!assessment) {
@@ -300,6 +810,8 @@ export class AssessmentService {
       ...assessmentFields
     } = dto;
 
+    const courseId = assessment.courseId;
+
     return await this.prisma.$transaction(async (tx) => {
       await tx.assessment.update({
         where: { id: assessmentId },
@@ -310,11 +822,23 @@ export class AssessmentService {
       });
 
       if (topicIds) {
+        const validTopics =
+          topicIds.length > 0
+            ? await tx.topic.findMany({
+                where: {
+                  id: { in: topicIds },
+                  courseId,
+                },
+                select: { id: true },
+              })
+            : [];
+        const validTopicIds = validTopics.map((topic) => topic.id);
+
         await tx.assessmentTopic.deleteMany({ where: { assessmentId } });
 
-        if (topicIds.length) {
+        if (validTopicIds.length) {
           await tx.assessmentTopic.createMany({
-            data: topicIds.map((topicId) => ({
+            data: validTopicIds.map((topicId) => ({
               assessmentId,
               topicId,
             })),
@@ -1230,9 +1754,10 @@ export class AssessmentService {
   // CORE FETCH / DATA MANAGEMENT OPERATIONS
   // =========================================================================
 
-  async findOne(assessmentId: number) {
+  async findOne(tenantId: number, assessmentId: number) {
+    const tid = requireTenantId(tenantId);
     const assessment = await this.prisma.assessment.findFirst({
-      where: { id: assessmentId },
+      where: { id: assessmentId, tenantId: tid },
       include: {
         course: {
           select: {
@@ -1293,32 +1818,46 @@ export class AssessmentService {
   }
 
   findByTenant(tenantId: number) {
+    const tid = requireTenantId(tenantId);
     return this.prisma.assessment.findMany({
-      where: { tenantId },
+      where: { tenantId: tid },
       select: {
         id: true,
         title: true,
         type: true,
         totalMarks: true,
         duration: true,
-        course: { select: { id: true, title: true, code: true } },
+        tenantId: true,
+        course: { select: { id: true, title: true, code: true, tenantId: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  findAll(courseId: number) {
+  findAll(tenantId: number, courseId: number) {
+    const tid = requireTenantId(tenantId);
+    const questionCloInclude = {
+      questionClos: {
+        include: {
+          Clo: { select: { id: true, code: true } },
+        },
+      },
+      questionOptions: { orderBy: { order: 'asc' as const } },
+    };
+
     return this.prisma.assessment.findMany({
-      where: { courseId },
+      where: { tenantId: tid, courseId },
       include: {
+        questions: {
+          include: questionCloInclude,
+          orderBy: { id: 'asc' },
+        },
         assessmentTopics: {
           include: {
             topic: {
               include: {
                 questions: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionCloInclude,
                 },
               },
             },
@@ -1331,9 +1870,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionCloInclude,
                 },
               },
             },
@@ -1344,9 +1881,10 @@ export class AssessmentService {
     });
   }
 
-  async remove(id: number) {
-    const assessment = await this.prisma.assessment.findUnique({
-      where: { id },
+  async remove(tenantId: number, id: number) {
+    const tid = requireTenantId(tenantId);
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id, tenantId: tid },
     });
     if (!assessment) {
       throw new NotFoundException('Assessment is not found');

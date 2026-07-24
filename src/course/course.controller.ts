@@ -10,6 +10,8 @@ import {
   UseInterceptors,
   UploadedFile,
   ParseIntPipe,
+  Query,
+  BadRequestException,
 } from '@nestjs/common';
 import { CourseService } from './course.service';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -23,6 +25,7 @@ import { CourseAIService } from './course-ai.service';
 import { CreateTopicDto } from './dto/create-topic.dto';
 import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
+import { CourseReportsService } from './course-reports.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('courses')
@@ -31,35 +34,170 @@ export class CourseController {
     private readonly courseService: CourseService,
     private readonly courseAIService: CourseAIService,
     private readonly topicService: TopicService,
+    private readonly courseReportsService: CourseReportsService,
   ) {}
 
   @Get()
   findAll(
     @GetUser('tenantId') tenantId: number,
-    @Body() courseQueryDto: CourseQueryDto,
+    @Query() courseQueryDto: CourseQueryDto,
   ) {
     return this.courseService.findAll(tenantId, courseQueryDto);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.courseService.findOne(+id);
+  findOne(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id') id: string,
+  ) {
+    return this.courseService.findOne(tenantId, +id);
+  }
+
+  @Get(':id/reports/clo-achievement')
+  getCloAchievementReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.courseReportsService.getCloAchievementReport(tenantId, id);
+  }
+
+  @Get(':id/reports/grade-distribution')
+  getGradeDistributionReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.courseReportsService.getGradeDistributionReport(tenantId, id);
+  }
+
+  @Get(':id/reports/assessments')
+  getAssessmentsReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.courseReportsService.getAssessmentsReport(tenantId, id);
+  }
+
+  @Get(':id/reports/plo-alignment')
+  getPloAlignmentReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.courseReportsService.getPloAlignmentReport(tenantId, id);
+  }
+
+  @Post(':id/reports/clo-analysis')
+  async analyzeCloAchievement(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { cloId: number },
+  ) {
+    const report = await this.courseReportsService.getCloAchievementReport(tenantId, id);
+    const row = report.rows.find((item) => item.id === body.cloId) ?? report.rows[0];
+    if (!row) {
+      throw new BadRequestException('No CLO data available for analysis.');
+    }
+
+    const assessmentSourcesSummary = this.formatAssessmentSourcesSummary(
+      row.assessmentSources ?? [],
+    );
+
+    return this.courseAIService.analyzeCloAchievement({
+      code: row.code,
+      description: row.description,
+      achievementRate: row.achievementRate,
+      thresholdScore: row.thresholdScore,
+      maxScore: row.maxScore,
+      studentsMet: row.studentsMet,
+      totalStudents: row.totalStudents,
+      avgScore: row.avgScore,
+      avgScoreLabel: row.avgScoreLabel,
+      achieved: row.achieved,
+      statusLabel: row.statusLabel,
+      passRatePercent: report.thresholdPercent,
+      hasGradingData: row.hasGradingData,
+      assessmentSources: row.assessmentSources ?? [],
+      assessmentSourcesSummary,
+    });
+  }
+
+  @Get(':id/reports/clo-analysis-all')
+  getAllCloAchievements(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('force') force?: string,
+  ) {
+    return this.courseReportsService.getOrGenerateAllCloAnalysis(tenantId, id, {
+      force: force === '1' || force === 'true',
+    });
+  }
+
+  @Post(':id/reports/clo-analysis-all')
+  analyzeAllCloAchievements(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('force') force?: string,
+  ) {
+    return this.courseReportsService.getOrGenerateAllCloAnalysis(tenantId, id, {
+      force: force === '1' || force === 'true',
+    });
+  }
+
+  private formatAssessmentSourcesSummary(
+    sources: Array<{
+      title: string;
+      cloMarks: number;
+      questionNumbers: number[];
+    }>,
+  ) {
+    if (!sources.length) {
+      return 'Assessment sources for this CLO are not linked yet.';
+    }
+
+    const parts = sources.map((source) => {
+      const questions = (source.questionNumbers ?? []).filter((n) =>
+        Number.isFinite(n),
+      );
+      if (questions.length === 1) {
+        return `Question ${questions[0]} on the ${source.title}`;
+      }
+      if (questions.length > 1) {
+        return `Questions ${questions.join(', ')} on the ${source.title}`;
+      }
+      return source.title;
+    });
+
+    if (parts.length === 1) {
+      return `This CLO is primarily assessed by ${parts[0]}.`;
+    }
+
+    return `This CLO is assessed by ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}.`;
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateCourseDto: UpdateCourseDto) {
-    return this.courseService.update(+id, updateCourseDto);
+  update(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id') id: string,
+    @Body() updateCourseDto: UpdateCourseDto,
+  ) {
+    return this.courseService.update(tenantId, +id, updateCourseDto);
   }
 
   /** Lightweight meta-only update — used by the Course Details edit modal */
   @Patch(':id/meta')
-  updateMeta(@Param('id', ParseIntPipe) id: number, @Body() body: Record<string, any>) {
-    return this.courseService.updateMeta(id, body);
+  updateMeta(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: Record<string, any>,
+  ) {
+    return this.courseService.updateMeta(tenantId, id, body);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.courseService.remove(+id);
+  remove(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id') id: string,
+  ) {
+    return this.courseService.remove(tenantId, +id);
   }
 
   @Post('extract')
@@ -110,7 +248,10 @@ export class CourseController {
   }
 
   @Delete(':courseId')
-  deleteCourse(@Param('courseId', ParseIntPipe) courseId: number) {
-    return this.courseService.remove(courseId);
+  deleteCourse(
+    @GetUser('tenantId') tenantId: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
+  ) {
+    return this.courseService.remove(tenantId, courseId);
   }
 }

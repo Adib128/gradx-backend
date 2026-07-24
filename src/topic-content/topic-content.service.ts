@@ -18,14 +18,59 @@ import { ReferenceSchema } from 'src/course/schemas/reference.schema';
 import { ContentType } from 'generated/prisma/enums';
 import { extractPdfDocument } from './utils/extract-pdf-text.util';
 import { buildLectureContentFromPdfExtraction } from './utils/pdf-lecture-content.util';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
 
-type UploadedLectureMeta = {
+type UploadedFileMeta = {
   source: 'upload';
   fileName: string;
   filePath: string;
   size: number;
   mimeType: string;
 };
+
+type UploadMaterialType = 'LECTURE' | 'SLIDES' | 'LAB';
+
+const DOCUMENT_MIME = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+]);
+
+const SLIDE_MIME = new Set([
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+
+function isDocumentFile(mimeType: string, originalName: string) {
+  const name = originalName.toLowerCase();
+  return (
+    DOCUMENT_MIME.has(mimeType) ||
+    name.endsWith('.pdf') ||
+    name.endsWith('.doc') ||
+    name.endsWith('.docx')
+  );
+}
+
+function isSlideFile(mimeType: string, originalName: string) {
+  const name = originalName.toLowerCase();
+  return (
+    SLIDE_MIME.has(mimeType) ||
+    name.endsWith('.ppt') ||
+    name.endsWith('.pptx')
+  );
+}
+
+function isPdfFile(mimeType: string, originalName: string) {
+  return mimeType === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf');
+}
+
+function folderForType(type: UploadMaterialType) {
+  if (type === 'SLIDES') return 'slide-uploads';
+  if (type === 'LAB') return 'lab-uploads';
+  return 'lecture-uploads';
+}
+
 
 @Injectable()
 export class TopicContentService {
@@ -63,7 +108,7 @@ export class TopicContentService {
     });
 
     if (!topic) {
-      throw new NotFoundException('Topic not found');
+      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
     }
 
     const lectureContent = topic.topicContents[0];
@@ -73,9 +118,7 @@ export class TopicContentService {
         generationContentDto.type === 'LAB') &&
       !lectureContent?.content
     ) {
-      throw new NotFoundException(
-        'Generate and accept lecture content before generating slides or lab content.',
-      );
+      throw new NotFoundException(ErrorMessageKey.TOPIC_CONTENT_LECTURE_REQUIRED);
     }
 
     const contentGeneration: ContentGenerationJob = {
@@ -118,24 +161,29 @@ export class TopicContentService {
   async getGenerateStatus(jobId: string) {
     const job = await this.contentQueue.getJob(jobId);
 
-    if (!job) throw new NotFoundException('Job not found');
+    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
 
     const state = await job.getState();
+    const failure = generationErrorPayload(
+      state === 'failed' ? job.failedReason : null,
+      ErrorMessageKey.TOPIC_CONTENT_GENERATE_FAILED,
+    );
 
     return {
       jobId,
       status: state,
       progress: job.progress,
       result: state === 'completed' ? job.returnvalue : null,
-      error: state === 'failed' ? job.failedReason : null,
+      error: failure.error,
+      errorKey: failure.errorKey,
     };
   }
 
-  private parseUploadedLectureMeta(content: unknown): UploadedLectureMeta | null {
+  private parseUploadedFileMeta(content: unknown): UploadedFileMeta | null {
     if (!content || typeof content !== 'object') return null;
     const data = content as Record<string, unknown>;
 
-    const readMeta = (meta: Record<string, unknown>): UploadedLectureMeta | null => {
+    const readMeta = (meta: Record<string, unknown>): UploadedFileMeta | null => {
       if (
         meta.source !== 'upload' ||
         typeof meta.fileName !== 'string' ||
@@ -150,13 +198,12 @@ export class TopicContentService {
         filePath: meta.filePath,
         size: typeof meta.size === 'number' ? meta.size : 0,
         mimeType:
-          typeof meta.mimeType === 'string' ? meta.mimeType : 'application/pdf',
+          typeof meta.mimeType === 'string' ? meta.mimeType : 'application/octet-stream',
       };
     };
 
-    if (data.source === 'upload') {
-      return readMeta(data);
-    }
+    const direct = readMeta(data);
+    if (direct) return direct;
 
     if (data.metadata && typeof data.metadata === 'object') {
       return readMeta(data.metadata as Record<string, unknown>);
@@ -165,29 +212,49 @@ export class TopicContentService {
     return null;
   }
 
+  /** @deprecated use parseUploadedFileMeta */
+  private parseUploadedLectureMeta(content: unknown): UploadedFileMeta | null {
+    return this.parseUploadedFileMeta(content);
+  }
+
   async uploadLecture(
     tenantId: number,
     topicId: number,
     file: Express.Multer.File,
   ) {
+    return this.uploadTopicMaterial(tenantId, topicId, 'LECTURE', file);
+  }
+
+  async uploadTopicMaterial(
+    tenantId: number,
+    topicId: number,
+    type: UploadMaterialType,
+    file: Express.Multer.File,
+  ) {
     if (!file) {
-      throw new BadRequestException('Lecture PDF file is required.');
+      throw new BadRequestException(`${type} file is required.`);
     }
 
     const mimeType = file.mimetype?.toLowerCase() ?? '';
-    const originalName = file.originalname?.toLowerCase() ?? '';
-    const isPdf =
-      mimeType === 'application/pdf' || originalName.endsWith('.pdf');
+    const originalName = file.originalname ?? 'upload';
 
-    if (!isPdf) {
-      throw new BadRequestException('Only PDF files are supported.');
+    if (type === 'SLIDES') {
+      if (!isSlideFile(mimeType, originalName)) {
+        throw new BadRequestException(
+          'Slides must be a PowerPoint file (.ppt or .pptx).',
+        );
+      }
+    } else if (!isDocumentFile(mimeType, originalName)) {
+      throw new BadRequestException(
+        `${type === 'LAB' ? 'Lab manual' : 'Lecture'} must be a Word or PDF file (.doc, .docx, .pdf).`,
+      );
     }
 
     const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
       include: {
         topicContents: {
-          where: { type: 'LECTURE' },
+          where: { type },
           take: 1,
         },
       },
@@ -197,9 +264,12 @@ export class TopicContentService {
       throw new NotFoundException('Topic not found');
     }
 
-    const existingMeta = this.parseUploadedLectureMeta(
-      topic.topicContents[0]?.content,
-    );
+    const existingMeta =
+      this.parseUploadedFileMeta(topic.topicContents[0]?.content) ||
+      (type === 'SLIDES'
+        ? this.parseSkyworkSlidesMeta(topic.topicContents[0]?.content)
+        : null);
+
     if (existingMeta?.filePath) {
       try {
         await unlink(join(process.cwd(), existingMeta.filePath));
@@ -208,68 +278,79 @@ export class TopicContentService {
       }
     }
 
-    const uploadDir = join(
-      process.cwd(),
-      'tmp',
-      'lecture-uploads',
-      String(tenantId),
-    );
+    const folder = folderForType(type);
+    const uploadDir = join(process.cwd(), 'tmp', folder, String(tenantId));
     await mkdir(uploadDir, { recursive: true });
 
-    const safeName = file.originalname.replace(/[^\w.\-() ]+/g, '-');
-    const storedFileName = `topic-${topicId}-${Date.now()}-${safeName}`;
-    const relativePath = join('tmp', 'lecture-uploads', String(tenantId), storedFileName);
+    const safeName = originalName.replace(/[^\w.\-() ]+/g, '-');
+    const storedFileName = `topic-${topicId}-${type.toLowerCase()}-${Date.now()}-${safeName}`;
+    const relativePath = join('tmp', folder, String(tenantId), storedFileName);
     const absolutePath = join(process.cwd(), relativePath);
 
     await writeFile(absolutePath, file.buffer);
 
-    const extraction = await extractPdfDocument(file.buffer);
-    if (!extraction.text || extraction.nonEmptyPageCount === 0) {
-      try {
-        await unlink(absolutePath);
-      } catch {
-        // Ignore cleanup errors.
+    // PDF lectures: extract text for downstream AI use. Word/PPT uploads are stored as files.
+    if (type === 'LECTURE' && isPdfFile(mimeType, originalName)) {
+      const extraction = await extractPdfDocument(file.buffer);
+      if (!extraction.text || extraction.nonEmptyPageCount === 0) {
+        try {
+          await unlink(absolutePath);
+        } catch {
+          // Ignore cleanup errors.
+        }
+        throw new BadRequestException(
+          extraction.warnings.length > 0
+            ? `PDF text extraction failed: ${extraction.warnings.join(' ')}`
+            : 'PDF does not contain readable text. Upload a text-based PDF or a clearer scan.',
+        );
       }
-      throw new BadRequestException(
-        extraction.warnings.length > 0
-          ? `PDF text extraction failed: ${extraction.warnings.join(' ')}`
-          : 'PDF does not contain readable text. Upload a text-based PDF or a clearer scan.',
+
+      const content = buildLectureContentFromPdfExtraction({
+        topicTitle: topic.title,
+        fileName: originalName,
+        filePath: relativePath,
+        size: file.size,
+        extraction,
+      });
+
+      this.logger.log(
+        `Uploaded lecture extracted for topic ${topicId}: method=${extraction.method}, pages=${extraction.pageCount}, characters=${extraction.characterCount}`,
       );
+
+      return this.saveContent(topicId, topic.courseId, tenantId, 'LECTURE', content);
     }
 
-    const content = buildLectureContentFromPdfExtraction({
-      topicTitle: topic.title,
-      fileName: file.originalname,
+    const content: UploadedFileMeta & { uploadedAt: string; materialType: UploadMaterialType } = {
+      source: 'upload',
+      fileName: originalName,
       filePath: relativePath,
       size: file.size,
-      extraction,
-    });
+      mimeType: mimeType || 'application/octet-stream',
+      uploadedAt: new Date().toISOString(),
+      materialType: type,
+    };
 
-    this.logger.log(
-      `Uploaded lecture extracted for topic ${topicId}: method=${extraction.method}, pages=${extraction.pageCount}, nonEmpty=${extraction.nonEmptyPageCount}, characters=${extraction.characterCount}`,
-    );
-
-    if (extraction.warnings.length > 0) {
-      this.logger.warn(
-        `Uploaded lecture extraction warnings for topic ${topicId}: ${extraction.warnings.join(' ')}`,
-      );
-    }
-
-    return this.saveContent(
-      topicId,
-      topic.courseId,
-      tenantId,
-      'LECTURE',
-      content,
-    );
+    return this.saveContent(topicId, topic.courseId, tenantId, type, content);
   }
 
   async getLectureFile(tenantId: number, topicId: number) {
+    return this.getUploadedMaterialFile(tenantId, topicId, 'LECTURE');
+  }
+
+  async getLabFile(tenantId: number, topicId: number) {
+    return this.getUploadedMaterialFile(tenantId, topicId, 'LAB');
+  }
+
+  private async getUploadedMaterialFile(
+    tenantId: number,
+    topicId: number,
+    type: UploadMaterialType,
+  ) {
     const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
       include: {
         topicContents: {
-          where: { type: 'LECTURE', status: 'COMPLETED' },
+          where: { type, status: 'COMPLETED' },
           take: 1,
         },
       },
@@ -279,12 +360,15 @@ export class TopicContentService {
       throw new NotFoundException('Topic not found');
     }
 
-    const meta = this.parseUploadedLectureMeta(
-      topic.topicContents[0]?.content,
-    );
+    let meta: { fileName: string; filePath: string; mimeType: string } | null =
+      this.parseUploadedFileMeta(topic.topicContents[0]?.content);
+
+    if (!meta && type === 'SLIDES') {
+      meta = this.parseSkyworkSlidesMeta(topic.topicContents[0]?.content);
+    }
 
     if (!meta) {
-      throw new NotFoundException('Uploaded lecture not found');
+      throw new NotFoundException(`Uploaded ${type.toLowerCase()} file not found`);
     }
 
     return {
@@ -295,11 +379,19 @@ export class TopicContentService {
   }
 
   async deleteUploadedLecture(tenantId: number, topicId: number) {
+    return this.deleteUploadedMaterial(tenantId, topicId, 'LECTURE');
+  }
+
+  async deleteUploadedMaterial(
+    tenantId: number,
+    topicId: number,
+    type: UploadMaterialType,
+  ) {
     const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
       include: {
         topicContents: {
-          where: { type: 'LECTURE' },
+          where: { type },
           take: 1,
         },
       },
@@ -309,12 +401,14 @@ export class TopicContentService {
       throw new NotFoundException('Topic not found');
     }
 
-    const meta = this.parseUploadedLectureMeta(
-      topic.topicContents[0]?.content,
-    );
+    const meta =
+      this.parseUploadedFileMeta(topic.topicContents[0]?.content) ||
+      (type === 'SLIDES'
+        ? this.parseSkyworkSlidesMeta(topic.topicContents[0]?.content)
+        : null);
 
     if (!meta) {
-      throw new NotFoundException('Uploaded lecture not found');
+      throw new NotFoundException(`Uploaded ${type.toLowerCase()} file not found`);
     }
 
     try {
@@ -324,10 +418,83 @@ export class TopicContentService {
     }
 
     await this.prisma.topicContent.delete({
-      where: { topicId_type: { topicId, type: 'LECTURE' } },
+      where: { topicId_type: { topicId, type } },
     });
 
     return { success: true };
+  }
+
+  private parseSkyworkSlidesMeta(content: unknown): {
+    source: 'skywork';
+    fileName: string;
+    filePath: string;
+    mimeType: string;
+  } | null {
+    if (!content || typeof content !== 'object') return null;
+    const data = content as Record<string, unknown>;
+    if (
+      data.source !== 'skywork' ||
+      typeof data.fileName !== 'string' ||
+      typeof data.filePath !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      source: 'skywork',
+      fileName: data.fileName,
+      filePath: data.filePath,
+      mimeType:
+        typeof data.mimeType === 'string'
+          ? data.mimeType
+          : 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+  }
+
+  async getSlidesMeta(tenantId: number, topicId: number) {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type: 'SLIDES' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!topic?.topicContents?.[0]) return null;
+    return (
+      this.parseSkyworkSlidesMeta(topic.topicContents[0].content) ||
+      this.parseUploadedFileMeta(topic.topicContents[0].content)
+    );
+  }
+
+  async getSlidesFile(tenantId: number, topicId: number) {
+    return this.getUploadedMaterialFile(tenantId, topicId, 'SLIDES');
+  }
+
+  async savePartialContent(
+    topicId: number,
+    courseId: number,
+    tenantId: number,
+    type: ContentType,
+    content: any,
+  ) {
+    return await this.prisma.topicContent.upsert({
+      where: { topicId_type: { topicId, type } },
+      create: {
+        topicId,
+        courseId,
+        tenantId,
+        type,
+        status: 'PROCESSING',
+        content,
+      },
+      update: {
+        status: 'PROCESSING',
+        content,
+      },
+    });
   }
 
   async saveContent(

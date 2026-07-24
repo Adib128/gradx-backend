@@ -2,8 +2,9 @@ import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 import { TopicSchema } from '../schemas/topic.schema';
 import { ReferenceSchema } from '../schemas/reference.schema';
-import { AssessmentSchema } from 'src/assessment/schema/assessment.schema';
+import { AssessmentObjectSchema } from 'src/assessment/schema/assessment.schema';
 import { CloSchema } from 'src/clo/schemas/clo.schema';
+import { ValidationMessageKey as V } from 'src/common/constants/validation-message';
 
 const normalizeCourseAssessment = (value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -37,8 +38,24 @@ const normalizeCourseAssessment = (value: unknown) => {
     assessment.difficulty = difficultyAliases[rawDifficulty] ?? rawDifficulty;
   }
 
-  if (!assessment.totalMarks && typeof assessment.percentage === 'number') {
-    assessment.totalMarks = assessment.percentage;
+  if (
+    (assessment.percentage == null || assessment.percentage === '') &&
+    assessment.score != null &&
+    assessment.score !== ''
+  ) {
+    assessment.percentage = assessment.score;
+  }
+
+  if (assessment.timing != null) {
+    assessment.timing = String(assessment.timing).trim() || null;
+  }
+
+  if (assessment.percentage != null && assessment.percentage !== '') {
+    const rawPercentage = String(assessment.percentage).replace(/%/g, '').trim();
+    const percentageValue = Number(rawPercentage);
+    assessment.percentage = Number.isFinite(percentageValue)
+      ? Math.round(percentageValue)
+      : null;
   }
 
   return assessment;
@@ -46,7 +63,7 @@ const normalizeCourseAssessment = (value: unknown) => {
 
 const CourseAssessmentSchema = z.preprocess(
   normalizeCourseAssessment,
-  AssessmentSchema,
+  AssessmentObjectSchema,
 );
 
 const emptyStringToUndefined = (value: unknown) =>
@@ -82,7 +99,7 @@ const nullableNumber = (value: unknown) => {
 
 const nullablePositiveInt = z.preprocess(
   zeroOrEmptyToNull,
-  z.number().int().positive().nullable().optional(),
+  z.number({ message: V.CREDIT_HOURS_INVALID }).int().positive(V.CREDIT_HOURS_INVALID).nullable().optional(),
 );
 
 const TeachingModeRowSchema = z.object({
@@ -97,22 +114,25 @@ const RequiredFacilitiesAndEquipmentRowSchema = z.object({
 });
 
 export const CreateCourseSchema = z.object({
-  title: z.string().min(1, 'Title is required'),
+  title: z.string().min(1, V.TITLE_REQUIRED),
   code: z.string().nullable().optional(),
   program: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
 
   creditHours: nullablePositiveInt,
   level: z.string().nullable().optional(),
-  // Backwards compatible single teachingMode (optional).
+  passRate: z.preprocess((value) => {
+    if (value === null || value === undefined || value === '') return 70;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? Math.round(numberValue) : 70;
+  }, z.number().int().min(0, V.PASS_RATE_INVALID).max(100, V.PASS_RATE_INVALID).default(70)),
   teachingMode: z.preprocess(
     emptyStringToUndefined,
     z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB'], {
-      message: 'Teaching mode is invalid',
+      message: V.TEACHING_MODE_INVALID,
     }).optional(),
   ),
 
-  // New teachingModes table extracted from the document (array of rows).
   teachingModes: z
     .preprocess(
       (value) => (Array.isArray(value) ? value : []),

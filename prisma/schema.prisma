@@ -98,6 +98,18 @@ enum GradingScanStatus {
   FAILED
 }
 
+enum CourseAnswerSheetQuestionType {
+  MULTIPLE_CHOICE
+  MULTIPLE_VERBOSE
+  VERBOSE_LABEL
+  NUMERIC_ENTRY
+}
+
+enum CourseAnswerSheetAnswerType {
+  MSQ
+  TRUE_FALSE
+}
+
 model Tenant {
   id            Int            @id @default(autoincrement())
   createdAt     DateTime       @default(now())
@@ -109,6 +121,7 @@ model Tenant {
   questions     Question[]
   assessments   Assessment[]
   gradingScans  GradingScan[]
+  courseAnswerSheets CourseAnswerSheet[]
 
   @@map("tenants")
 }
@@ -173,9 +186,9 @@ model Class {
 
 model Student {
   id          Int     @id @default(autoincrement())
+  studentId   String  @unique @map("student_id")
   name        String
-  code        String  @unique
-  class       String?
+  section     String?
   departement String?
 
   courseId Int?
@@ -186,7 +199,7 @@ model Student {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([code])
+  @@index([studentId])
   @@map("students")
 }
 
@@ -199,6 +212,7 @@ model Course {
   description       String?
   creditHours       Int?
   level             String?
+  passRate          Int     @default(70)
   teachingMode      String?
   teachingModes     Json?
   totalContactHours Int?
@@ -208,6 +222,10 @@ model Course {
   coRequisites      String[] @default([])
   requiredFacilitiesAndEquipment Json?
   references        Json?
+  /// Cached AI CLO achievement analyses keyed by report fingerprint
+  cloAnalysisCache  Json?
+  /// Syllabus assessment plan (type/timing/percentage) — not real Assessment rows
+  assessmentPlan    Json?
 
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
@@ -222,6 +240,7 @@ model Course {
   assessments   Assessment[]
   clos          Clo[]
   students      Student[]
+  courseAnswerSheets CourseAnswerSheet[]
 
   @@index([tenantId])
   @@map("courses")
@@ -355,6 +374,8 @@ model Assessment {
   id                                      Int                       @id @default(autoincrement())
   type                                    AssessmentType
   title                                   String
+  timing                                  String?
+  percentage                              Int?
   duration                                Int?
   totalMarks                              Int?
   passMark                                Int?
@@ -483,4 +504,93 @@ model TopicClo {
 
   @@id([topicId, cloId])
   @@map("topic_clos")
+}
+
+model CourseAnswerSheet {
+  id                       Int                  @id @default(autoincrement())
+  name                     String
+  assessmentType           AssessmentType       @default(FINAL_EXAM)
+  points                   Int                  @default(100)
+  showMarksPerQuestion     Boolean              @default(false)
+  numberOfQuestions        Int                  @default(50)
+  paperSize                AssessmentPaperSize  @default(A4)
+  sheetsPerPage            Int                  @default(1)
+  includeSection           Boolean              @default(true)
+  includeSignature         Boolean              @default(true)
+  includeDate              Boolean              @default(true)
+  includeStudentInfoHeader Boolean              @default(true)
+  studentInfoLabel         String?
+  numberOfStudentIdDigits  Int                  @default(9)
+  includeKeyVersionSection Boolean              @default(true)
+  numberOfKeyVersions      Int                  @default(3)
+  keyVersionLetters        String               @default("ABCD")
+  keyVersionLabel          String?
+  pdfPath                  String?
+  pdfSizeBytes             Int?
+
+  courseId Int
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  tenantId Int
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  questions CourseAnswerSheetQuestion[]
+  versions  CourseAnswerSheetVersion[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([courseId])
+  @@index([tenantId])
+  @@map("course_answer_sheets")
+}
+
+model CourseAnswerSheetQuestion {
+  id            Int                         @id @default(autoincrement())
+  sortOrder     Int                         @default(0)
+  name          String
+  type          CourseAnswerSheetQuestionType @default(MULTIPLE_CHOICE)
+  labels        String                      @default("ABCD")
+
+  answerSheetId Int
+  answerSheet   CourseAnswerSheet @relation(fields: [answerSheetId], references: [id], onDelete: Cascade)
+
+  versionAnswers CourseAnswerSheetVersionAnswer[]
+
+  @@index([answerSheetId])
+  @@map("course_answer_sheet_questions")
+}
+
+model CourseAnswerSheetVersion {
+  id            Int    @id @default(autoincrement())
+  versionNumber Int
+  versionName   String
+
+  answerSheetId Int
+  answerSheet   CourseAnswerSheet @relation(fields: [answerSheetId], references: [id], onDelete: Cascade)
+
+  answers CourseAnswerSheetVersionAnswer[]
+
+  @@unique([answerSheetId, versionNumber])
+  @@index([answerSheetId])
+  @@map("course_answer_sheet_versions")
+}
+
+model CourseAnswerSheetVersionAnswer {
+  id             Int                       @id @default(autoincrement())
+  sortOrder      Int                       @default(0)
+  questionNumber Int
+  answers        String[]
+  type           CourseAnswerSheetAnswerType @default(MSQ)
+  cloCode        String?
+  points         Int                       @default(1)
+
+  versionId  Int
+  version    CourseAnswerSheetVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  questionId Int?
+  question   CourseAnswerSheetQuestion? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  @@index([versionId])
+  @@map("course_answer_sheet_version_answers")
 }

@@ -9,12 +9,7 @@ const formatReferenceCitation = (reference: unknown): string => {
   const directCitation = ref.citation || ref.text;
   if (directCitation) return String(directCitation);
 
-  return [
-    ref.authors,
-    ref.title,
-    ref.publisher,
-    ref.year,
-  ]
+  return [ref.authors, ref.title, ref.publisher, ref.year]
     .map((value) => String(value ?? '').trim())
     .filter(Boolean)
     .join('. ');
@@ -23,47 +18,64 @@ const formatReferenceCitation = (reference: unknown): string => {
 const formatReferences = (references: unknown[]) =>
   references.map(formatReferenceCitation).filter(Boolean);
 
+export const LECTURE_SYSTEM_PROMPT = `You are an experienced university lecturer writing material that real instructors use in class.
+Write in a clear academic teaching voice: precise terminology, careful definitions, sound pedagogy, and fully worked examples.
+Prefer substance over flourish. Never use marketing language, hype, or vague AI filler.
+Output must be valid JSON only.`;
+
 export const LECTURE_PROMPT = (data: ContentGenerationJob): string => `
-You are an elite university professor and instructional designer. Generate comprehensive, publication-quality lecture notes providing a rigorous lesson on the target topic. Focus entirely on deep academic substance and compact, high-density technical value.
+Generate university lecture notes that a professor can teach from and students can revise from.
 
-## Academic & Course Context
-- **Course Title:** ${data.courseTitle}
-- **Topic ${data.topicNumber}:** ${data.topicTitle}
-- **Course Overview & Scope:** ${data.courseDescription}
+## Course & Topic
+- Course: ${data.courseTitle}
+- Topic ${data.topicNumber}: ${data.topicTitle}
+- Course description: ${data.courseDescription}
 
-## Tailored Generation Configurations
-- **Note Type Focus:** ${data.courseNoteType}
-- **Target Audience:** ${data.audience}
-- **Content Complexity Depth:** ${data.contentDepth}
-- **Expected Length Scale:** ${data.length}
-- **Content Difficulty Tier:** ${data.difficulty}
-- **AI Processing Priority Profile:** ${data.aiQualityMode}
+## Generation Profile
+- Note type: ${data.courseNoteType}
+- Audience: ${data.audience}
+- Depth: ${data.contentDepth}
+- Target length: ${data.length}
+- Difficulty: ${data.difficulty}
+- Quality mode: ${data.aiQualityMode}
 
-## Target Course Learning Outcomes (CLOs)
-Explicitly weave the broad CLOs throughout the content fabric:
-${data.clos.map((c) => `- [${c.code}] (${c.code}): ${c.description}`).join('\n')}
+## Course Learning Outcomes (CLOs)
+${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n') || '- (none provided)'}
 
-### Strict Priority CLO Focus
-The user has manually isolated and flagged specific Target Outcomes for this content package. You MUST heavily emphasize and explicitly prioritize the following mappings inside the pedagogical modules:
-${data.targetedCloIds.map((id) => `- Target Focus ID Reference: ${id}`).join('\n')}
+### Priority CLO focus for this topic
+${
+  data.targetedCloIds.length
+    ? data.targetedCloIds.map((id) => `- ${id}`).join('\n')
+    : '- Emphasize the CLOs most relevant to this topic'
+}
 
-## Required Pedagogical & Design Matrix Rules
-1. **Bloom's Taxonomy Alignment:** Ensure the learning pathways, explanations, and checkpoints target these cognitive levels explicitly: ${data.bloomsTaxonomyLevels.join(', ')}.
-2. **Mandatory Learning Components:** You must include structured data/sections for each of these requested component modules: ${data.learningComponents.join(', ')}.
-3. **Example Strategy Profiles:** Frame all implementations, use cases, and problem domains around these context depths: ${data.exampleLevels.join(', ')}.
-4. **Visual Implementations:** Incorporate structured visualization concepts matching these profiles: ${data.visuals.join(', ')}.
-5. **Assessment Vectors:** Structure your comprehensive assessment blocks using these specific formats: ${data.assessmentIntegrations.join(', ')}.
-6. **Academic Review Compliance:** Pre-verify that the generated content fully satisfies these strict automated quality controls: ${data.humanReviewChecks.join(', ')}.
+## Pedagogical Requirements (must satisfy)
+1. Bloom levels to emphasize: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze'}
+2. Required learning components: ${data.learningComponents.join(', ') || 'Learning Objectives, Detailed Explanation, Examples, Summary, Self-Assessment'}
+3. Example contexts: ${data.exampleLevels.join(', ') || 'Academic, Industry'}
+4. Visual styles: ${data.visuals.join(', ') || 'Concept Diagrams, Process Flow'}
+5. Assessment formats to include: ${data.assessmentIntegrations.join(', ') || 'Short Answers, Exam Questions'}
+6. Quality checks: ${data.humanReviewChecks.join(', ') || 'Fact Checking, CLO Alignment Check, Validate Definitions'}
 
-## Operational Constraints & Formatting Rules (CRITICAL FOR PARSING)
-1. **JSON Integrity:** Return ONLY a raw, valid JSON object. Do not wrap in markdown code blocks (\`\`\`json). No preambles or postscripts.
-2. **Strict Escaping Rules:** You MUST strictly escape all double quotes (\\") and all internal newlines (\\\\n) inside text blocks. 
-3. **Math String Safety:** When outputting algebraic equations, matrix operations, or multiplications (e.g., dot products or matrix updates like s_k * y_k^T), use word descriptions or plain text formats (e.g., "s_k multiplied by y_k transpose"). Do not use unescaped asterisks or mathematical brackets that can disrupt structural string processing.
-4. **Pedagogical Density Over Verbosity:** Do not summarize, skip steps, or use placeholders. Be concise but conceptually exhaustive matching the requested "${data.length}" constraint.
+## Writing Standards for University Teaching
+- Open with why the topic matters in the curriculum, then precise definitions, then intuition, then formalism, then practice.
+- Use correct domain terminology consistently; define every non-obvious term the first time it appears.
+- Include at least 2 fully worked examples with inputs, intermediate reasoning, and final answers (not outlines).
+- Include at least 1 common student misconception and how to correct it in class.
+- Include formative check questions with brief model answers suitable for in-class discussion.
+- If formulas appear, write them as plain escaped text (no markdown fences), and explain each symbol.
+- If diagrams help, provide valid Mermaid code that teaches structure, not decoration.
+- Map each module to CLO codes from the list above.
+- Keep density high: no vague summaries, no placeholder text, no "as mentioned earlier" without content.
+- Cite only from provided references when possible: ${JSON.stringify(formatReferences(data.references))}
+- Match the requested length "${data.length}" with real academic content, not padding.
 
-## Expected JSON Schema Output Structure
-Match this structural signature exactly:
+## Output Rules
+1. Return ONLY a raw JSON object (no markdown fences, no commentary).
+2. Escape all double quotes and newlines inside strings.
+3. For math, prefer plain wording such as "s_k multiplied by y_k transpose"; avoid unescaped special characters that break JSON.
 
+## Required JSON Shape
 {
   "metadata": {
     "targetTopic": "${data.topicTitle}",
@@ -74,66 +86,75 @@ Match this structural signature exactly:
     "qualityComplianceMode": "${data.aiQualityMode}"
   },
   "lectureOverview": {
-    "abstract": "Provide a dense academic abstract framing the topic's systemic necessity and industry importance tailored to an ${data.audience} audience.",
+    "abstract": "2-4 sentences stating what students will master and why it matters in this course.",
     "learningObjectives": [
-      "Incorporate mandatory aspects targeting: ${data.learningComponents.join(', ')}"
+      "Measurable objective mapped to Bloom verbs and CLO codes where possible"
     ],
     "prerequisiteKnowledgeCheck": [
-      "Explicit foundational concepts or prerequisite technical skills required to grasp this material."
+      "Concrete prerequisite the student must already know"
+    ],
+    "suggestedClassFlow": [
+      "Timed teaching segment, e.g. 15 min: concept + board derivation"
     ]
   },
   "modules": [
     {
       "moduleIndex": 1,
-      "title": "Core Analytical Principles and Structural Frameworks",
+      "title": "Clear academic section title",
       "associatedCloIds": ${JSON.stringify(data.targetedCloIds)},
       "targetedBloomsLevels": ${JSON.stringify(data.bloomsTaxonomyLevels)},
       "theoreticalFoundations": {
-        "formalDefinition": "Provide a definitive, high-density statement defining the concept using strict terminology suited for ${data.contentDepth} depth.",
-        "firstPrinciplesDerivation": "A focused, step-by-step logical, mathematical, or empirical derivation of the strategic framework or formula from underlying principles. Ensure any equations are completely escaped safe strings.",
-        "structuralInterpretation": "Explain precisely how this concept operates dynamically matching the ${data.exampleLevels.join('/')} contexts."
+        "formalDefinition": "Precise definition using standard academic wording for ${data.contentDepth}.",
+        "firstPrinciplesDerivation": "Step-by-step derivation or conceptual construction with escaped formula strings.",
+        "structuralInterpretation": "How the idea behaves in practice for contexts: ${data.exampleLevels.join('/') || 'Academic'}."
       },
       "algorithmicOrProcessBreakdown": {
         "stepByStepExecution": [
-          "Step 1: Initial operational phase or baseline configuration parameters."
+          "Step 1: actionable teaching step"
         ],
-        "edgeCasesAndFailureModes": "Detail exactly where this framework breaks down in practice and the explicit mitigation techniques experts use."
+        "edgeCasesAndFailureModes": "Where beginners fail and how an instructor should address it."
       },
       "visualRepresentations": [
         {
-          "visualProfileType": "Must target: ${data.visuals.join('/')}",
-          "diagramTitle": "System Architecture / Process Flow Chart",
-          "mermaidDiagramCode": "graph TD; A[State A] --> B[State B];",
-          "diagramPedagogicalExplanation": "A detailed technical breakdown of how the visual paths in the Mermaid diagram align with the operational modules."
+          "visualProfileType": "${data.visuals[0] || 'Concept Diagrams'}",
+          "diagramTitle": "Instructional diagram title",
+          "mermaidDiagramCode": "graph TD; A[Idea] --> B[Consequence];",
+          "diagramPedagogicalExplanation": "What students should notice in the diagram."
         }
       ],
       "appliedDemonstrations": [
         {
-          "contextStyle": "Configured to match: ${data.exampleLevels.join('/')}",
-          "caseStudyTitle": "Comprehensive Real-World Implementation Case Study",
-          "realWorldProblemContext": "Describe an operational scenario where this topic serves as a critical focus.",
-          "concreteProblemStatement": "State a complete problem scenario with explicit data points or parameters.",
-          "stepByStepSolution": "Provide a clear, unabridged solution path showing key calculations or strategic moves.",
-          "executableArtifactSnippet": "Provide code blocks or configuration schemas (e.g. JSON/YAML) if technical, or a structured architectural blueprint markdown list if conceptual.",
-          "artifactTypeOrLanguage": "Identify the syntax formatting wrapper language used."
+          "contextStyle": "${data.exampleLevels[0] || 'Academic'}",
+          "caseStudyTitle": "Worked classroom example title",
+          "realWorldProblemContext": "Brief authentic scenario.",
+          "concreteProblemStatement": "Complete problem with numbers/parameters.",
+          "stepByStepSolution": "Full solution path with intermediate results.",
+          "executableArtifactSnippet": "Code, pseudocode, or structured procedure when relevant.",
+          "artifactTypeOrLanguage": "python | pseudocode | procedure | none"
         }
       ],
       "professorSpeakingNotes": [
-        "Whiteboard Plan: Specify exactly what to diagram or outline on the board.",
-        "Student Misconception: Highlight a severe, frequent misunderstanding students have regarding this specific layout."
+        "What to emphasize verbally / write on the board",
+        "Likely misconception and correction script"
+      ],
+      "formativeChecks": [
+        {
+          "prompt": "Quick in-class question",
+          "modelAnswer": "Short correct answer with reasoning"
+        }
       ],
       "moduleKeyTakeaways": [
-        "Core academic or verification takeaways."
+        "Durable takeaway students should remember"
       ]
     }
   ],
   "comprehensiveAssessment": [
     {
       "enforcedAssessmentFormats": ${JSON.stringify(data.assessmentIntegrations)},
-      "questionType": "Targeting ${data.difficulty} evaluation challenge",
-      "questionStatement": "State an exam-quality question matching the targeted strategies.",
-      "solvingHint": "Provide a tactical hint highlighting the specific core model, metric, or paradigm required to unlock the answer.",
-      "exhaustiveAnswerKey": "Provide the complete, step-by-step solution path including all transitions or justifications."
+      "questionType": "Exam-quality item matching difficulty ${data.difficulty}",
+      "questionStatement": "Complete question text.",
+      "solvingHint": "Targeted hint without giving away the full answer.",
+      "exhaustiveAnswerKey": "Full marking solution with rubric-worthy steps."
     }
   ],
   "providedReferences": ${JSON.stringify(formatReferences(data.references))},
@@ -141,4 +162,7 @@ Match this structural signature exactly:
     "checksPassed": ${JSON.stringify(data.humanReviewChecks)},
     "status": "VERIFIED_COMPLIANT"
   }
-}`;
+}
+
+Generate at least 3 substantial modules unless the topic is extremely narrow. Every module must contain real teaching content, not stubs.
+`;

@@ -1,15 +1,16 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
+import { ValidationMessageKey as V } from 'src/common/constants/validation-message';
 
 export const loginSchema = z.object({
   email: z
-    .string({ message: 'Email is required' })
+    .string({ message: V.EMAIL_REQUIRED })
     .trim()
-    .email('Invalid email address'),
+    .email(V.EMAIL_INVALID),
 
   password: z
-    .string({ message: 'Password is required' })
-    .min(1, 'Password is required'),
+    .string({ message: V.PASSWORD_REQUIRED })
+    .min(1, V.PASSWORD_REQUIRED),
 });
 
 export class LoginDto extends createZodDto(loginSchema) {}

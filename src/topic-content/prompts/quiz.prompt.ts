@@ -1,22 +1,33 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 
+export const QUIZ_SYSTEM_PROMPT = `You are an experienced university examiner writing fair, diagnostic assessments.
+Questions must test understanding and application, use realistic distractors, and include teaching explanations.
+Return valid JSON only.`;
+
 export const QUIZ_PROMPT = (data: ContentGenerationJob): string => `
-You are an expert university professor creating a comprehensive quiz.
+Create a university quiz for:
 
 ## Course Context
 - Course: ${data.courseTitle}
 - Topic ${data.topicNumber}: ${data.topicTitle}
 
 ## CLOs to Assess
-${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n')}
+${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n') || '- (none provided)'}
 
-## Instructions
-Create a balanced quiz that:
-- Covers all CLOs with at least 2 questions each
-- Includes a mix of MCQ, True/False, and Short Answer
-- Ranges from easy to hard difficulty
-- Provides detailed explanations for all answers
-- Tests both conceptual understanding and application
+## Assessment Standards
+- Cover each listed CLO with at least 2 questions when CLOs exist.
+- Mix MCQ, True/False, and Short Answer.
+- Difficulty mix: easy conceptual checks, medium application, hard analysis.
+- MCQ distractors must reflect common student mistakes (not silly options).
+- Explanations must teach the correct reasoning and name the misconception when relevant.
+- Use precise academic wording; avoid trick wording that confuses language rather than knowledge.
+- If source lecture content is present, ground items in that scope only.
+
+${
+  data.sourceLectureContent
+    ? `## Source Lecture Content\n${JSON.stringify(data.sourceLectureContent, null, 2)}`
+    : ''
+}
 
 Return ONLY valid JSON:
 
@@ -31,6 +42,7 @@ Return ONLY valid JSON:
       "difficulty": "EASY" | "MEDIUM" | "HARD",
       "marks": number,
       "cloCode": string,
+      "bloomLevel": "Remember" | "Understand" | "Apply" | "Analyze" | "Evaluate" | "Create",
       "question": string,
       "options": string[] | null,
       "correctAnswer": string,
@@ -38,4 +50,5 @@ Return ONLY valid JSON:
       "commonMistakes": string[]
     }
   ]
-}`;
+}
+`;

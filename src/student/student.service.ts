@@ -8,7 +8,6 @@ import { UpdateStudentDto } from './dto/update-student.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import * as XLSX from 'xlsx';
-import { paginate } from 'src/common/helpers/paginate.helper';
 
 @Injectable()
 export class StudentService {
@@ -16,7 +15,7 @@ export class StudentService {
 
   async create(courseId: number, createStudentDto: CreateStudentDto) {
     const student = await this.prisma.student.findUnique({
-      where: { code: createStudentDto.code },
+      where: { studentId: createStudentDto.studentId },
     });
 
     if (student) {
@@ -47,14 +46,15 @@ export class StudentService {
     const hasHeader = this.isStudentImportHeader(sheetRows[0]);
     const rows = sheetRows.slice(hasHeader ? 1 : 0).map((row, index) => ({
       rowNumber: index + (hasHeader ? 2 : 1),
-      code: this.cellToString(row[0]),
+      studentId: this.cellToString(row[0]),
       name: this.cellToString(row[1]),
-      class: this.cellToString(row[2]),
+      section: this.cellToString(row[2]),
       departement: this.cellToString(row[3]),
     }));
 
-    if (!rows.length)
+    if (!rows.length) {
       throw new BadRequestException(ErrorMessageKey.EXCEL_EMPTY);
+    }
 
     const results = {
       success: 0,
@@ -63,8 +63,7 @@ export class StudentService {
 
     for (const row of rows) {
       try {
-        // validate required fields
-        if (!row.code || !row.name) {
+        if (!row.studentId || !row.name) {
           results.failed.push({
             row: row.rowNumber,
             reason: 'Missing required fields',
@@ -73,23 +72,23 @@ export class StudentService {
         }
 
         const exists = await this.prisma.student.findUnique({
-          where: { code: row.code },
+          where: { studentId: row.studentId },
         });
 
         if (exists) {
           results.failed.push({
             row: row.rowNumber,
-            reason: `Code ${row.code} already exists`,
+            reason: `Student ID ${row.studentId} already exists`,
           });
           continue;
         }
 
         await this.prisma.student.create({
           data: {
-            code: row.code,
+            studentId: row.studentId,
             name: row.name,
-            class: row.class,
-            departement: row.departement,
+            section: row.section || null,
+            departement: row.departement || null,
             courseId,
           },
         });
@@ -109,15 +108,15 @@ export class StudentService {
     }
 
     const headers = row.map((cell) =>
-      this.cellToString(cell).toLowerCase().replace(/\s+/g, ''),
+      this.cellToString(cell).toLowerCase().replace(/[\s_]+/g, ''),
     );
 
-    return (
-      headers[0] === 'code' &&
-      headers[1] === 'name' &&
-      headers[2] === 'class' &&
-      (headers[3] === 'departement' || headers[3] === 'department')
-    );
+    const studentIdHeader = ['studentid', 'id', 'code'].includes(headers[0]);
+    const nameHeader = headers[1] === 'name';
+    const sectionHeader = ['section', 'class'].includes(headers[2]);
+    const departmentHeader = ['departement', 'department'].includes(headers[3]);
+
+    return studentIdHeader && nameHeader && sectionHeader && departmentHeader;
   }
 
   private cellToString(value: unknown) {
@@ -148,12 +147,15 @@ export class StudentService {
       throw new ConflictException(ErrorMessageKey.STUDENT_NOT_FOUND);
     }
 
-    if (updateStudentDto.code && updateStudentDto.code !== student.code) {
-      const codeExists = await this.prisma.student.findUnique({
-        where: { code: updateStudentDto.code },
+    if (
+      updateStudentDto.studentId &&
+      updateStudentDto.studentId !== student.studentId
+    ) {
+      const studentIdExists = await this.prisma.student.findUnique({
+        where: { studentId: updateStudentDto.studentId },
       });
 
-      if (codeExists) {
+      if (studentIdExists) {
         throw new ConflictException(ErrorMessageKey.STUDENT_EXIST);
       }
     }

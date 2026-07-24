@@ -11,7 +11,8 @@ const QuestionTypeConfigSchema = z.object({
 
 const TopicGenerationSchema = z.object({
   topicId: z.number(),
-  cloIds: z.array(z.number()),
+  cloIds: z.array(z.number()).default([]),
+  cloCodes: z.array(z.string()).default([]),
   blooms: z.array(z.string()),
   questionTypes: z.array(QuestionTypeConfigSchema),
 });

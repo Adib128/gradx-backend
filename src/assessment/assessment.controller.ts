@@ -52,6 +52,11 @@ export class AssessmentController {
     );
   }
 
+  @Get('generation/:jobId/status')
+  getGenerateStatus(@Param('jobId') jobId: string) {
+    return this.assessmentService.getGenerateStatus(jobId);
+  }
+
   /** List all assessments for the current tenant (used by mobile app). */
   @Get()
   findByTenant(@GetUser('tenantId') tenantId: number) {
@@ -59,13 +64,19 @@ export class AssessmentController {
   }
 
   @Get(':courseId')
-  findAll(@Param('courseId', ParseIntPipe) courseId: number) {
-    return this.assessmentService.findAll(courseId);
+  findAll(
+    @GetUser('tenantId') tenantId: number,
+    @Param('courseId', ParseIntPipe) courseId: number,
+  ) {
+    return this.assessmentService.findAll(tenantId, courseId);
   }
 
   @Get(':assessmentId/show')
-  findOne(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessmentService.findOne(assessmentId);
+  findOne(
+    @GetUser('tenantId') tenantId: number,
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+  ) {
+    return this.assessmentService.findOne(tenantId, assessmentId);
   }
 
   @Get(':assessmentId/downloads')
@@ -204,7 +215,10 @@ export class AssessmentController {
   }
 
   @Delete(':assessmentId')
-  remove(@Param('assessmentId', ParseIntPipe) assessmentId: number) {
-    return this.assessmentService.remove(assessmentId);
+  remove(
+    @GetUser('tenantId') tenantId: number,
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+  ) {
+    return this.assessmentService.remove(tenantId, assessmentId);
   }
 }

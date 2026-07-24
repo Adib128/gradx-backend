@@ -2,7 +2,11 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { EXTRACT_COURSE_PROMPT } from './prompts/extract-course.prompt';
+import { CLO_ANALYSIS_PROMPT } from './prompts/clo-analysis.prompt';
+import { CLO_ANALYSIS_ALL_PROMPT } from './prompts/clo-analysis-all.prompt';
 import { inflateRawSync } from 'zlib';
+import { createHash } from 'crypto';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
 
 @Injectable()
 export class CourseAIService {
@@ -43,7 +47,7 @@ export class CourseAIService {
     }
 
     throw new BadRequestException(
-      'Unsupported file type. Please upload a PDF or DOCX file.',
+      ErrorMessageKey.COURSE_EXTRACT_UNSUPPORTED_FILE,
     );
   }
 
@@ -79,7 +83,7 @@ export class CourseAIService {
     const documentText = this.extractTextFromWordXml(documentXml);
 
     if (!documentText.trim()) {
-      throw new BadRequestException('DOCX file does not contain readable text.');
+      throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_EMPTY_DOCX);
     }
 
     const response = await this.client.chat.completions.create({
@@ -106,7 +110,7 @@ ${documentText}`,
     const endOfCentralDirectoryOffset = this.findEndOfCentralDirectory(buffer);
 
     if (endOfCentralDirectoryOffset < 0) {
-      throw new BadRequestException('Invalid DOCX file.');
+      throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_INVALID_DOCX);
     }
 
     const totalEntries = buffer.readUInt16LE(endOfCentralDirectoryOffset + 10);
@@ -143,7 +147,7 @@ ${documentText}`,
       cursor += 46 + fileNameLength + extraFieldLength + fileCommentLength;
     }
 
-    throw new BadRequestException('DOCX document body was not found.');
+    throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_INVALID_DOCX);
   }
 
   private findEndOfCentralDirectory(buffer: Buffer): number {
@@ -163,7 +167,7 @@ ${documentText}`,
     compressionMethod: number,
   ): Buffer {
     if (buffer.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
-      throw new BadRequestException('Invalid DOCX file entry.');
+      throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_INVALID_DOCX);
     }
 
     const fileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
@@ -182,7 +186,7 @@ ${documentText}`,
       return inflateRawSync(compressedData);
     }
 
-    throw new BadRequestException('Unsupported DOCX compression method.');
+    throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_INVALID_DOCX);
   }
 
   private extractTextFromWordXml(xml: string): string {
@@ -200,13 +204,288 @@ ${documentText}`,
       .trim();
   }
 
+  async analyzeCloAchievement(payload: {
+    code: string;
+    description: string;
+    achievementRate: number | null;
+    thresholdScore: number;
+    maxScore: number;
+    studentsMet: number;
+    totalStudents: number;
+    avgScore: number | null;
+    avgScoreLabel?: string;
+    achieved: boolean;
+    statusLabel: string;
+    passRatePercent: number;
+    hasGradingData: boolean;
+    assessmentSources: Array<{
+      title: string;
+      cloMarks: number;
+      questionNumbers: number[];
+    }>;
+    assessmentSourcesSummary: string;
+  }) {
+    const fallback = this.buildCloAnalysisFallback(payload);
+
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: `${CLO_ANALYSIS_PROMPT}
+
+CLO data:
+${JSON.stringify(payload, null, 2)}`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      const text = response.choices[0]?.message?.content ?? '';
+      const parsed = this.parseResponse(text) as {
+        title?: string;
+        paragraphs?: string[];
+        highlightPercent?: number;
+      };
+
+      const paragraphs = Array.isArray(parsed.paragraphs)
+        ? parsed.paragraphs.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+
+      if (!parsed.title || paragraphs.length === 0) {
+        return fallback;
+      }
+
+      return {
+        title: String(parsed.title),
+        paragraphs: paragraphs.slice(0, 3),
+        highlightPercent:
+          typeof parsed.highlightPercent === 'number'
+            ? parsed.highlightPercent
+            : fallback.highlightPercent,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  async analyzeAllCloAchievements(payload: {
+    passRatePercent: number;
+    clos: Array<{
+      cloId: number;
+      code: string;
+      description: string;
+      achievementRate: number | null;
+      thresholdScore: number;
+      maxScore: number;
+      studentsMet: number;
+      totalStudents: number;
+      avgScore: number | null;
+      avgScoreLabel: string;
+      avgPercent: number | null;
+      achieved: boolean;
+      statusLabel: string;
+      hasGradingData: boolean;
+      assessmentSourcesSummary: string;
+    }>;
+  }) {
+    const fallback = this.buildAllCloAnalysisFallback(payload);
+
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: `${CLO_ANALYSIS_ALL_PROMPT}
+
+Course CLO achievement data:
+${JSON.stringify(payload, null, 2)}`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      const text = response.choices[0]?.message?.content ?? '';
+      const parsed = this.parseResponse(text) as {
+        overview?: { title?: string; paragraphs?: string[] };
+        analyses?: Array<{
+          cloId?: number;
+          code?: string;
+          title?: string;
+          paragraphs?: string[];
+          highlightPercent?: number;
+        }>;
+      };
+
+      const overviewParagraphs = Array.isArray(parsed.overview?.paragraphs)
+        ? parsed.overview.paragraphs
+            .map((item) => String(item || '').trim())
+            .filter(Boolean)
+        : [];
+
+      const analyses = payload.clos.map((clo, index) => {
+        const match =
+          (parsed.analyses ?? []).find((item) => item.cloId === clo.cloId) ??
+          (parsed.analyses ?? [])[index];
+        const paragraphs = Array.isArray(match?.paragraphs)
+          ? match.paragraphs.map((item) => String(item || '').trim()).filter(Boolean)
+          : [];
+        if (!match?.title || paragraphs.length === 0) {
+          return fallback.analyses[index];
+        }
+        return {
+          cloId: clo.cloId,
+          code: clo.code,
+          title: String(match.title),
+          paragraphs: paragraphs.slice(0, 4),
+          highlightPercent:
+            typeof match.highlightPercent === 'number'
+              ? match.highlightPercent
+              : clo.achievementRate ?? 0,
+        };
+      });
+
+      return {
+        overview: {
+          title:
+            String(parsed.overview?.title || '').trim() ||
+            fallback.overview.title,
+          paragraphs:
+            overviewParagraphs.length > 0
+              ? overviewParagraphs.slice(0, 4)
+              : fallback.overview.paragraphs,
+        },
+        analyses,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  buildCloAnalysisFingerprint(
+    passRatePercent: number,
+    clos: Array<{
+      cloId: number;
+      achievementRate: number | null;
+      studentsMet: number;
+      totalStudents: number;
+      avgScore: number | null;
+      maxScore: number;
+      achieved: boolean;
+    }>,
+  ) {
+    const payload = {
+      passRatePercent,
+      clos: clos.map((clo) => ({
+        cloId: clo.cloId,
+        achievementRate: clo.achievementRate,
+        studentsMet: clo.studentsMet,
+        totalStudents: clo.totalStudents,
+        avgScore: clo.avgScore,
+        maxScore: clo.maxScore,
+        achieved: clo.achieved,
+      })),
+    };
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }
+
+  private buildAllCloAnalysisFallback(payload: {
+    passRatePercent: number;
+    clos: Array<{
+      cloId: number;
+      code: string;
+      description: string;
+      achievementRate: number | null;
+      studentsMet: number;
+      totalStudents: number;
+      avgScoreLabel: string;
+      achieved: boolean;
+      statusLabel: string;
+      hasGradingData: boolean;
+      assessmentSourcesSummary: string;
+    }>;
+  }) {
+    const achievedCount = payload.clos.filter((clo) => clo.achieved).length;
+    const weakest = [...payload.clos]
+      .filter((clo) => clo.achievementRate != null)
+      .sort((a, b) => (a.achievementRate ?? 0) - (b.achievementRate ?? 0))[0];
+
+    return {
+      overview: {
+        title: 'Course CLO achievement overview',
+        paragraphs: [
+          `Across ${payload.clos.length} CLOs, ${achievedCount} met the course pass-rate threshold of ${payload.passRatePercent}%, while ${payload.clos.length - achievedCount} remain below target.`,
+          weakest
+            ? `The lowest achievement rate is CLO ${weakest.code} at ${weakest.achievementRate}%. Prioritize instructional reinforcement for this outcome in the next teaching cycle.`
+            : 'Grading coverage is incomplete, so priority actions should start with confirming assessments and CLO mappings.',
+        ],
+      },
+      analyses: payload.clos.map((clo, index) => {
+        const analysis = this.buildCloAnalysisFallback({
+          code: clo.code,
+          description: clo.description,
+          achievementRate: clo.achievementRate,
+          studentsMet: clo.studentsMet,
+          totalStudents: clo.totalStudents,
+          achieved: clo.achieved,
+          statusLabel: clo.statusLabel,
+          hasGradingData: clo.hasGradingData,
+          assessmentSourcesSummary: clo.assessmentSourcesSummary,
+        });
+        return {
+          cloId: clo.cloId,
+          code: clo.code,
+          ...analysis,
+          paragraphs: [
+            ...analysis.paragraphs,
+            `Class average on this outcome is ${payload.clos[index].avgScoreLabel}. Use formative checks aligned to this CLO before the next weighted assessment.`,
+          ].slice(0, 3),
+        };
+      }),
+    };
+  }
+
+  private buildCloAnalysisFallback(payload: {
+    code: string;
+    description: string;
+    achievementRate: number | null;
+    studentsMet: number;
+    totalStudents: number;
+    achieved: boolean;
+    statusLabel: string;
+    hasGradingData: boolean;
+    assessmentSourcesSummary: string;
+  }) {
+    const status = payload.achieved ? 'achieved' : 'not achieved';
+    const rate =
+      payload.achievementRate != null ? String(payload.achievementRate) : '0';
+    const description =
+      String(payload.description || '').trim() || 'No description available';
+
+    const paragraph1 = payload.hasGradingData
+      ? `CLO ${payload.code}, "${description}", was achieved by ${rate}% of students, with ${payload.studentsMet} out of ${payload.totalStudents} students meeting the per-student threshold.`
+      : `CLO ${payload.code}, "${description}", does not have confirmed grading data yet, so an achievement rate cannot be computed.`;
+
+    const paragraph2 = payload.hasGradingData
+      ? `${payload.assessmentSourcesSummary} A recommended action for the next semester is to reinforce the skills behind this outcome with targeted practice and formative feedback before the next major assessment.`
+      : `Link assessment questions to this CLO and confirm grading scans so instructors can monitor achievement against the course pass-rate threshold.`;
+
+    return {
+      title: `CLO ${payload.code} analysis — ${status}`,
+      paragraphs: [paragraph1, paragraph2],
+      highlightPercent: payload.achievementRate ?? 0,
+    };
+  }
+
   private parseResponse(text: string): any {
     try {
       const clean = text.replace(/```json|```/g, '').trim();
       return JSON.parse(clean);
     } catch {
       throw new BadRequestException(
-        'AI returned an invalid response. Please try again.',
+        ErrorMessageKey.COURSE_EXTRACT_AI_INVALID_RESPONSE,
       );
     }
   }

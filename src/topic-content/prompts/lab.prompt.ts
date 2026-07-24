@@ -1,31 +1,34 @@
-// src/topic-content/prompts/lab.prompt.ts
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 
+export const LAB_SYSTEM_PROMPT = `You are an experienced university lab instructor writing manuals that students can complete independently in a supervised lab.
+Prioritize clear procedure, verification checkpoints, realistic deliverables, and CLO-aligned practice.
+Return valid JSON only.`;
+
 export const LAB_PROMPT = (data: ContentGenerationJob): string => `
-You are an expert university professor creating a professional lab manual.
+Create a university lab manual that turns this lecture into practical skills.
 
 ## Course Context
 - Course: ${data.courseTitle}
 - Topic ${data.topicNumber}: ${data.topicTitle}
 
 ## CLOs to Cover
-${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n')}
+${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n') || '- (none provided)'}
 
-## Source Lecture Content
-Use the already generated and accepted lecture content below as the authoritative source. Build the lab as a practical extension of this exact lecture. Do not introduce unrelated tools, algorithms, datasets, or learning outcomes unless they directly support the lecture.
+## Source Lecture Content (authoritative)
+Build the lab as a practical extension of this lecture only. Do not introduce unrelated tools, algorithms, datasets, or outcomes unless required to practice the lecture ideas.
 
 ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
 
-## Instructions
-Create a detailed hands-on lab manual that:
-- Has clear step-by-step instructions
-- Includes complete working code examples
-- Converts the lecture's theory, examples, formulas, and key concepts into practical implementation tasks
-- Has checkpoints to verify progress
-- Includes realistic scenarios that are directly aligned with the lecture content
-- Is completable in a 2-3 hour lab session
-- Reuses the lecture's CLO alignment, prerequisites, and learning objectives
-- Avoids adding unrelated concepts that were not established by the source lecture
+## Lab Design Standards
+- Completable in 2-3 hours by a prepared undergraduate / matching audience.
+- Start with objective, prerequisites, required tools, and safety/setup notes if needed.
+- Convert theory, examples, and formulas from the lecture into implementation tasks.
+- Every major section needs: short theory link to lecture, numbered steps, expected output, and a checkpoint.
+- Provide complete, runnable example snippets or precise procedures (not pseudo stubs).
+- Include at least one debugging/common-error note.
+- Include one optional stretch task for stronger students.
+- Map sections to CLO codes.
+- Provide an instructor-usable grading rubric with clear point allocation.
 
 Return ONLY valid JSON:
 
@@ -35,6 +38,7 @@ Return ONLY valid JSON:
   "estimatedDuration": string,
   "prerequisites": string[],
   "tools": string[],
+  "setupNotes": string[],
   "sections": [
     {
       "sectionNumber": number,
@@ -52,9 +56,11 @@ Return ONLY valid JSON:
         }
       ],
       "checkpoint": string,
+      "commonErrors": string[],
       "cloCode": string
     }
   ],
+  "stretchChallenge": string,
   "deliverables": string[],
   "gradingCriteria": [
     {
@@ -64,4 +70,5 @@ Return ONLY valid JSON:
     }
   ],
   "totalPoints": number
-}`;
+}
+`;

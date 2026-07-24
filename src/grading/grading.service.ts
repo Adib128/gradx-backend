@@ -159,10 +159,10 @@ export class GradingService {
     let matchedStudentCode: string | null = null;
     if (rawStudentId) {
       const student = await this.prisma.student.findUnique({
-        where: { code: rawStudentId },
-        select: { code: true },
+        where: { studentId: rawStudentId },
+        select: { studentId: true },
       });
-      matchedStudentCode = student?.code ?? null;
+      matchedStudentCode = student?.studentId ?? null;
     }
 
     return this.prisma.gradingScan.update({
@@ -212,7 +212,7 @@ export class GradingService {
         questionDetails: true,
         status: true,
         student: {
-          select: { id: true, name: true, code: true, class: true },
+          select: { id: true, name: true, studentId: true, section: true },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -231,7 +231,7 @@ export class GradingService {
     const code = scan.matchedStudentCode ?? scan.detectedStudentId;
     if (!studentId && code) {
       const student = await this.prisma.student.findUnique({
-        where: { code },
+        where: { studentId: code },
         select: { id: true },
       });
       studentId = student?.id ?? null;
@@ -248,7 +248,7 @@ export class GradingService {
       },
       include: {
         student: {
-          select: { id: true, name: true, code: true, class: true },
+          select: { id: true, name: true, studentId: true, section: true },
         },
         assessment: {
           select: { id: true, title: true, type: true },
@@ -287,7 +287,7 @@ export class GradingService {
         createdAt: true,
         questionDetails: true,
         student: {
-          select: { id: true, name: true, code: true, class: true },
+          select: { id: true, name: true, studentId: true, section: true },
         },
         assessment: {
           select: {

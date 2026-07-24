@@ -4,6 +4,7 @@ import { TopicContentService } from './topic-content.service';
 import { BullModule } from '@nestjs/bullmq';
 import { TopicContentAiService } from './topic-content-ai.service';
 import { ContentGeneratonProcessor } from './processors/content-generation.processor';
+import { SkyworkPptService } from './skywork-ppt.service';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { ContentGeneratonProcessor } from './processors/content-generation.proce
   providers: [
     TopicContentService,
     TopicContentAiService,
+    SkyworkPptService,
     ContentGeneratonProcessor,
   ],
 })

@@ -2,7 +2,8 @@ import z from 'zod';
 
 export const prismaEnumToZod = <T extends string>(
   prismaEnum: Record<string, T>,
+  message = 'INVALID_ENUM_VALUE',
 ) => {
   const values = Object.values(prismaEnum) as [T, ...T[]];
-  return z.enum(values);
+  return z.enum(values, { message });
 };

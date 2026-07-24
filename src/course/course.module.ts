@@ -5,6 +5,7 @@ import { CourseAIService } from './course-ai.service';
 import { BullModule } from '@nestjs/bullmq';
 import { CourseProcessors } from './processors/course-extraction.processors';
 import { TopicService } from './topic.service';
+import { CourseReportsService } from './course-reports.service';
 
 @Module({
   imports: [
@@ -13,6 +14,12 @@ import { TopicService } from './topic.service';
     }),
   ],
   controllers: [CourseController],
-  providers: [CourseService, CourseAIService, CourseProcessors, TopicService],
+  providers: [
+    CourseService,
+    CourseAIService,
+    CourseProcessors,
+    TopicService,
+    CourseReportsService,
+  ],
 })
 export class CourseModule {}
