@@ -20,6 +20,8 @@ const TopicGenerationSchema = z.object({
 export const GenerateAssessmentSchema = z.object({
   assessment: AssessmentSchema,
   topicGenerations: z.array(TopicGenerationSchema),
+  /** When true, keep existing questions and append newly generated ones. */
+  append: z.boolean().optional().default(false),
 });
 
 export class GenerateAssessmentDto extends createZodDto(

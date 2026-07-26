@@ -24,6 +24,39 @@ const includeFull = {
 export class CourseAnswerSheetService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findByTenant(tenantId: number) {
+    return this.prisma.courseAnswerSheet.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        assessmentType: true,
+        points: true,
+        numberOfQuestions: true,
+        numberOfKeyVersions: true,
+        pdfPath: true,
+        pdfSizeBytes: true,
+        createdAt: true,
+        updatedAt: true,
+        courseId: true,
+        course: {
+          select: {
+            id: true,
+            title: true,
+            code: true,
+          },
+        },
+        _count: {
+          select: {
+            questions: true,
+            versions: true,
+          },
+        },
+      },
+    });
+  }
+
   async findByCourse(courseId: number, tenantId: number) {
     return this.prisma.courseAnswerSheet.findMany({
       where: { courseId, tenantId },

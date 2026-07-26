@@ -241,39 +241,68 @@ export class CourseService {
     };
   }
 
-  async findOne(tenantId: number, id: number) {
+  async findOne(tenantId: number, id: number, includes?: string[]) {
     const tid = requireTenantId(tenantId);
-    const course = await this.prisma.course.findFirst({
-      where: { id, tenantId: tid },
-      include: {
-        clos: true,
-        assessments: {
-          where: { tenantId: tid },
-          orderBy: { createdAt: 'desc' },
+    const requested = new Set(
+      (includes && includes.length > 0 ? includes : ['topics']).map((value) =>
+        value.trim().toLowerCase(),
+      ),
+    );
+    const includeAll = requested.has('all');
+
+    const include: Prisma.CourseInclude = {
+      _count: {
+        select: {
+          students: true,
+          assessments: true,
+          topics: true,
+          clos: true,
         },
-        topics: {
-          include: {
-            topicContents: {
-              where: {
-                status: GenerationStatus.COMPLETED,
-              },
-              select: {
-                id: true,
-                type: true,
-                status: true,
-                content: true,
-                createdAt: true,
-              },
+      },
+    };
+
+    if (includeAll || requested.has('clos')) {
+      include.clos = true;
+    }
+
+    if (includeAll || requested.has('students')) {
+      include.students = true;
+    }
+
+    if (includeAll || requested.has('assessments')) {
+      include.assessments = {
+        where: { tenantId: tid },
+        orderBy: { createdAt: 'desc' },
+      };
+    }
+
+    if (includeAll || requested.has('topics')) {
+      include.topics = {
+        include: {
+          topicContents: {
+            where: {
+              status: GenerationStatus.COMPLETED,
             },
-            topicClos: {
-              include: {
-                clo: true,
-              },
+            select: {
+              id: true,
+              type: true,
+              status: true,
+              content: true,
+              createdAt: true,
+            },
+          },
+          topicClos: {
+            include: {
+              clo: true,
             },
           },
         },
-        students: true,
-      },
+      };
+    }
+
+    const course = await this.prisma.course.findFirst({
+      where: { id, tenantId: tid },
+      include,
     });
 
     if (!course) {

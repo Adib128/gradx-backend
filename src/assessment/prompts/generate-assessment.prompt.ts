@@ -5,8 +5,8 @@ const sharedRules = `
 OPERATIONAL CONSTRAINTS & FORMATTING RULES (CRITICAL)
 ========================================================================
 1. **JSON Integrity:** Return ONLY a raw, valid JSON object. Do NOT wrap the JSON inside markdown code blocks. No conversational preambles or postscripts.
-2. **Strict Character Escaping:** Escape all double quotes (\\") and literal newlines inside string attributes.
-3. **Flexible Math Formats:** Avoid raw LaTeX backslashes. Use descriptive text notations (e.g., "integral from a to b of f(x)dx").
+2. **Strict Character Escaping:** Escape all double quotes (\\") inside strings. Do not include unescaped newlines inside string values.
+3. **Safe Math Text:** Prefer plain text math (e.g. "f(x) = x^2", "integral of f(x) dx"). Avoid LaTeX backslashes that break JSON.
 4. **Single Master List:** Provide all questions in a single flat "questions" array.
 `.trim();
 

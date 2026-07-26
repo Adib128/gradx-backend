@@ -165,7 +165,11 @@ export class CourseReportsService {
     return result;
   }
 
-  async getCloAchievementReport(tenantId: number, courseId: number) {
+  async getCloAchievementReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
       include: {
@@ -190,7 +194,11 @@ export class CourseReportsService {
         : DEFAULT_PASS_RATE_PERCENT;
 
     const assessments = await this.prisma.assessment.findMany({
-      where: { courseId, tenantId },
+      where: {
+        courseId,
+        tenantId,
+        ...(assessmentId ? { id: assessmentId } : {}),
+      },
       include: {
         questions: {
           orderBy: { id: 'asc' },
@@ -224,7 +232,9 @@ export class CourseReportsService {
       ]),
     );
 
-    const assessmentWeights = this.resolveAssessmentWeights(assessments);
+    const assessmentWeights = assessmentId
+      ? new Map(assessments.map((assessment) => [assessment.id, 100]))
+      : this.resolveAssessmentWeights(assessments);
     const assessmentIds = assessments.map((assessment) => assessment.id);
     const scans =
       assessmentIds.length > 0
@@ -410,7 +420,8 @@ export class CourseReportsService {
         ? enrolledStudents.length
         : gradedStudentKeys.size;
 
-    const rows = course.clos.map((clo, index) => {
+    const rows = course.clos
+      .map((clo, index) => {
       const totalT = Math.round((cloTotalT.get(clo.id) ?? 0) * 100) / 100;
       const thresholdScore =
         Math.round(totalT * (passRatePercent / 100) * 100) / 100;
@@ -476,7 +487,8 @@ export class CourseReportsService {
         assessmentSources: cloAssessmentSources.get(clo.id) ?? [],
         hasGradingData,
       };
-    });
+    })
+      .filter((row) => !assessmentId || row.maxScore > 0);
 
     const focusCloId =
       rows
@@ -495,8 +507,16 @@ export class CourseReportsService {
     };
   }
 
-  async getPloAlignmentReport(tenantId: number, courseId: number) {
-    const cloReport = await this.getCloAchievementReport(tenantId, courseId);
+  async getPloAlignmentReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
+    const cloReport = await this.getCloAchievementReport(
+      tenantId,
+      courseId,
+      assessmentId,
+    );
     const passRatePercent = cloReport.thresholdPercent;
 
     type CloRow = (typeof cloReport.rows)[number] & {
@@ -728,12 +748,17 @@ export class CourseReportsService {
     return titleKeys.some((key) => methodKeys.includes(key));
   }
 
-  async getGradeDistributionReport(tenantId: number, courseId: number) {
+  async getGradeDistributionReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
       include: {
         students: { select: { id: true, studentId: true } },
         assessments: {
+          where: assessmentId ? { id: assessmentId } : undefined,
           select: {
             id: true,
             title: true,
@@ -754,7 +779,9 @@ export class CourseReportsService {
         ? course.passRate
         : DEFAULT_PASS_RATE_PERCENT;
 
-    const assessmentWeights = this.resolveAssessmentWeights(course.assessments);
+    const assessmentWeights = assessmentId
+      ? new Map(course.assessments.map((assessment) => [assessment.id, 100]))
+      : this.resolveAssessmentWeights(course.assessments);
     const assessmentIds = course.assessments.map((assessment) => assessment.id);
     const scans =
       assessmentIds.length > 0
@@ -911,12 +938,17 @@ export class CourseReportsService {
     };
   }
 
-  async getAssessmentsReport(tenantId: number, courseId: number) {
+  async getAssessmentsReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
       include: {
         students: { select: { id: true, studentId: true } },
         assessments: {
+          where: assessmentId ? { id: assessmentId } : undefined,
           select: {
             id: true,
             title: true,
@@ -1099,6 +1131,562 @@ export class CourseReportsService {
       distributions,
       components,
     };
+  }
+
+  async getStudentResultsReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId },
+      include: {
+        clos: { orderBy: { id: 'asc' } },
+        students: {
+          select: { id: true, studentId: true, name: true },
+          orderBy: { studentId: 'asc' },
+        },
+        topics: {
+          select: {
+            id: true,
+            topicClos: { select: { cloId: true } },
+          },
+        },
+      },
+    });
+
+    if (!course) {
+      throw new NotFoundException('Course not found.');
+    }
+
+    const passRatePercent =
+      Number.isFinite(course.passRate) && course.passRate >= 0
+        ? course.passRate
+        : DEFAULT_PASS_RATE_PERCENT;
+
+    const assessments = await this.prisma.assessment.findMany({
+      where: {
+        courseId,
+        tenantId,
+        ...(assessmentId ? { id: assessmentId } : {}),
+      },
+      include: {
+        questions: {
+          orderBy: { id: 'asc' },
+          include: {
+            questionClos: { select: { cloId: true } },
+          },
+        },
+        assessmentVersions: {
+          orderBy: { id: 'asc' },
+          take: 1,
+          include: {
+            versionQuestions: {
+              orderBy: { order: 'asc' },
+              include: {
+                question: {
+                  include: {
+                    questionClos: { select: { cloId: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const typeOrder: Record<string, number> = {
+      QUIZ: 0,
+      OTHER: 1,
+      MID_TERM_EXAM: 2,
+      LAB: 3,
+      FINAL_EXAM: 4,
+    };
+
+    const orderedAssessments = [...assessments].sort((a, b) => {
+      const typeDiff = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+      if (typeDiff !== 0) return typeDiff;
+      return (a.title || '').localeCompare(b.title || '');
+    });
+
+    const assessmentWeights = assessmentId
+      ? new Map(orderedAssessments.map((assessment) => [assessment.id, 100]))
+      : this.resolveAssessmentWeights(orderedAssessments);
+
+    const assessmentIds = orderedAssessments.map((assessment) => assessment.id);
+    const scans =
+      assessmentIds.length > 0
+        ? await this.prisma.gradingScan.findMany({
+            where: {
+              tenantId,
+              assessmentId: { in: assessmentIds },
+              status: 'COMPLETED',
+            },
+            select: {
+              id: true,
+              assessmentId: true,
+              score: true,
+              maxScore: true,
+              questionDetails: true,
+              matchedStudentCode: true,
+              detectedStudentId: true,
+              studentId: true,
+              confirmedAt: true,
+              createdAt: true,
+            },
+            orderBy: [{ confirmedAt: 'desc' }, { createdAt: 'desc' }],
+          })
+        : [];
+
+    const enrolledById = new Map(
+      course.students.map((student) => [
+        student.id,
+        student.studentId || `student-${student.id}`,
+      ]),
+    );
+
+    const studentMeta = new Map<
+      string,
+      { id: number | null; studentId: string; name: string | null }
+    >(
+      course.students.map((student) => [
+        student.studentId || `student-${student.id}`,
+        {
+          id: student.id,
+          studentId: student.studentId || `student-${student.id}`,
+          name: student.name || null,
+        },
+      ]),
+    );
+
+    // Per-student assessment scores (raw points)
+    const scoresByStudent = new Map<
+      string,
+      Map<number, { score: number; maxScore: number }>
+    >();
+
+    for (const scan of scans) {
+      const score = Number(scan.score);
+      const maxScore = Number(scan.maxScore);
+      if (!Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0) {
+        continue;
+      }
+
+      const studentKey =
+        (scan.studentId != null
+          ? enrolledById.get(scan.studentId) ?? `student-${scan.studentId}`
+          : null) ??
+        scan.matchedStudentCode ??
+        scan.detectedStudentId ??
+        `scan-${scan.id}`;
+
+      if (!studentMeta.has(studentKey)) {
+        studentMeta.set(studentKey, {
+          id: scan.studentId,
+          studentId: studentKey,
+          name: null,
+        });
+      }
+
+      const byAssessment = scoresByStudent.get(studentKey) ?? new Map();
+      if (!byAssessment.has(scan.assessmentId)) {
+        byAssessment.set(scan.assessmentId, { score, maxScore });
+      }
+      scoresByStudent.set(studentKey, byAssessment);
+    }
+
+    // Assessment column max marks
+    const components = orderedAssessments.map((assessment) => {
+      const maxFromScans = Array.from(scoresByStudent.values())
+        .map((map) => map.get(assessment.id)?.maxScore)
+        .filter((value): value is number => Number.isFinite(value as number));
+      const maxScore =
+        (Number.isFinite(assessment.totalMarks) &&
+        assessment.totalMarks &&
+        assessment.totalMarks > 0
+          ? assessment.totalMarks
+          : null) ??
+        (maxFromScans.length > 0 ? Math.max(...maxFromScans) : null) ??
+        0;
+
+      return {
+        assessmentId: assessment.id,
+        title: assessment.title || `Assessment ${assessment.id}`,
+        type: assessment.type,
+        label: this.formatAssessmentComponentLabel(
+          assessment.title,
+          assessment.type,
+          maxScore || 0,
+        ),
+        shortLabel: this.formatAssessmentShortLabel(assessment.title, assessment.type),
+        maxScore: maxScore || 0,
+        weight: assessmentWeights.get(assessment.id) ?? 0,
+        color: this.assessmentTypeColor(assessment.type),
+      };
+    });
+
+    // CLO achievement maps — same formula as getCloAchievementReport
+    const topicCloMap = new Map<number, number[]>(
+      course.topics.map((topic) => [
+        topic.id,
+        topic.topicClos.map((link) => link.cloId),
+      ]),
+    );
+
+    const questionMaps = new Map<number, QuestionMeta[]>();
+    const cloTotalT = new Map<number, number>();
+    for (const clo of course.clos) {
+      cloTotalT.set(clo.id, 0);
+    }
+
+    for (const assessment of orderedAssessments) {
+      const examWeight = assessmentWeights.get(assessment.id) ?? 0;
+      const orderedQuestions = this.getOrderedQuestions(assessment, topicCloMap);
+      const examTotal =
+        (Number.isFinite(assessment.totalMarks) &&
+        assessment.totalMarks &&
+        assessment.totalMarks > 0
+          ? assessment.totalMarks
+          : null) ??
+        orderedQuestions.reduce((sum, question) => sum + question.points, 0);
+
+      const enrichedQuestions: QuestionMeta[] = orderedQuestions.map((question) => {
+        const weightedPoints =
+          examTotal > 0 && examWeight > 0
+            ? (question.points / examTotal) * examWeight
+            : 0;
+        return { ...question, weightedPoints };
+      });
+      questionMaps.set(assessment.id, enrichedQuestions);
+
+      for (const question of enrichedQuestions) {
+        if (question.cloIds.length === 0 || question.weightedPoints <= 0) continue;
+        const share = question.weightedPoints / question.cloIds.length;
+        for (const cloId of question.cloIds) {
+          if (!cloTotalT.has(cloId)) continue;
+          cloTotalT.set(cloId, (cloTotalT.get(cloId) ?? 0) + share);
+        }
+      }
+    }
+
+    const hasQuestionLinkedMarks = Array.from(cloTotalT.values()).some(
+      (value) => value > 0,
+    );
+    if (!hasQuestionLinkedMarks) {
+      for (const assessment of orderedAssessments) {
+        const examWeight = assessmentWeights.get(assessment.id) ?? 0;
+        if (examWeight <= 0) continue;
+        const matchedClos = course.clos.filter((clo) =>
+          (clo.assessmentMethods || []).some((method) =>
+            this.assessmentMatchesMethod(assessment.title, method),
+          ),
+        );
+        if (matchedClos.length === 0) continue;
+        const share = examWeight / matchedClos.length;
+        for (const clo of matchedClos) {
+          cloTotalT.set(clo.id, (cloTotalT.get(clo.id) ?? 0) + share);
+        }
+      }
+    }
+
+    const studentCloScores = new Map<number, Map<string, number>>();
+    for (const clo of course.clos) {
+      studentCloScores.set(clo.id, new Map());
+      for (const key of studentMeta.keys()) {
+        studentCloScores.get(clo.id)!.set(key, 0);
+      }
+    }
+
+    for (const scan of scans) {
+      const studentKey =
+        (scan.studentId != null
+          ? enrolledById.get(scan.studentId) ?? `student-${scan.studentId}`
+          : null) ??
+        scan.matchedStudentCode ??
+        scan.detectedStudentId ??
+        `scan-${scan.id}`;
+
+      const questions = questionMaps.get(scan.assessmentId) ?? [];
+      const details = Array.isArray(scan.questionDetails)
+        ? (scan.questionDetails as Array<Record<string, unknown>>)
+        : [];
+
+      for (const detail of details) {
+        const questionNumber = Number(detail.question);
+        if (!Number.isFinite(questionNumber)) continue;
+        const meta = questions.find((item) => item.questionNumber === questionNumber);
+        if (!meta || meta.cloIds.length === 0 || meta.weightedPoints <= 0) continue;
+
+        const rawEarned = Number(
+          detail.score ?? detail.points ?? detail.marks ?? detail.earned,
+        );
+        const fraction =
+          Number.isFinite(rawEarned) && meta.points > 0
+            ? Math.min(1, Math.max(0, rawEarned / meta.points))
+            : detail.isCorrect === true
+              ? 1
+              : 0;
+        const earnedShare =
+          (meta.weightedPoints * fraction) / meta.cloIds.length;
+        if (earnedShare <= 0) continue;
+
+        for (const cloId of meta.cloIds) {
+          const scores = studentCloScores.get(cloId);
+          if (!scores) continue;
+          scores.set(studentKey, (scores.get(studentKey) ?? 0) + earnedShare);
+        }
+      }
+    }
+
+    const cloColumns = course.clos.map((clo, index) => {
+      const maxScore = Math.round((cloTotalT.get(clo.id) ?? 0) * 100) / 100;
+      const thresholdScore =
+        Math.round(maxScore * (passRatePercent / 100) * 100) / 100;
+      return {
+        id: clo.id,
+        code: clo.code || `CLO ${index + 1}`,
+        maxScore,
+        thresholdScore,
+        color: this.cloDotColor(index),
+      };
+    });
+
+    const studentKeys =
+      course.students.length > 0
+        ? course.students.map(
+            (student) => student.studentId || `student-${student.id}`,
+          )
+        : Array.from(scoresByStudent.keys()).sort();
+
+    const rows = studentKeys
+      .map((studentKey) => {
+        const meta = studentMeta.get(studentKey) ?? {
+          id: null,
+          studentId: studentKey,
+          name: null,
+        };
+        const assessmentScores = scoresByStudent.get(studentKey) ?? new Map();
+
+        const componentsScores = components.map((component) => {
+          const entry = assessmentScores.get(component.assessmentId);
+          return {
+            assessmentId: component.assessmentId,
+            score: entry?.score ?? null,
+            maxScore: component.maxScore || entry?.maxScore || 0,
+            percent:
+              entry && component.maxScore > 0
+                ? Math.round((entry.score / component.maxScore) * 1000) / 10
+                : entry && entry.maxScore > 0
+                  ? Math.round((entry.score / entry.maxScore) * 1000) / 10
+                  : null,
+          };
+        });
+
+        let total = 0;
+        let hasAnyScore = false;
+        for (const component of components) {
+          const entry = assessmentScores.get(component.assessmentId);
+          if (!entry || component.maxScore <= 0 || component.weight <= 0) continue;
+          hasAnyScore = true;
+          const normalized = (entry.score / (entry.maxScore || component.maxScore)) * 100;
+          total += normalized * (component.weight / 100);
+        }
+        total = Math.round(total * 10) / 10;
+
+        const gradeBand = hasAnyScore ? this.scoreToGradeBand(total) : null;
+
+        const cloAchievements = cloColumns.map((clo) => {
+          const earned = studentCloScores.get(clo.id)?.get(studentKey) ?? 0;
+          const achieved =
+            clo.maxScore > 0 && hasAnyScore
+              ? earned >= clo.thresholdScore
+              : false;
+          return {
+            cloId: clo.id,
+            code: clo.code,
+            earned: Math.round(earned * 100) / 100,
+            threshold: clo.thresholdScore,
+            achieved,
+            color: clo.color,
+          };
+        });
+
+        return {
+          key: studentKey,
+          studentDbId: meta.id,
+          studentId: meta.studentId,
+          name: meta.name,
+          components: componentsScores,
+          total: hasAnyScore ? total : null,
+          grade: gradeBand?.grade ?? null,
+          gradeColor: gradeBand ? this.gradeBadgeColor(gradeBand.grade) : null,
+          cloAchievements,
+          hasGradingData: hasAnyScore,
+        };
+      })
+      .filter((row) => row.hasGradingData)
+      .sort((a, b) => {
+        if (a.total == null && b.total == null) {
+          return String(a.studentId).localeCompare(String(b.studentId));
+        }
+        if (a.total == null) return 1;
+        if (b.total == null) return -1;
+        return b.total - a.total;
+      });
+
+    // Prefer graded students; fall back to enrolled roster when nothing graded yet
+    const displayRows =
+      rows.length > 0
+        ? rows
+        : course.students.map((student) => {
+            const studentKey = student.studentId || `student-${student.id}`;
+            return {
+              key: studentKey,
+              studentDbId: student.id,
+              studentId: student.studentId || studentKey,
+              name: student.name || null,
+              components: components.map((component) => ({
+                assessmentId: component.assessmentId,
+                score: null,
+                maxScore: component.maxScore,
+                percent: null,
+              })),
+              total: null,
+              grade: null,
+              gradeColor: null,
+              cloAchievements: cloColumns.map((clo) => ({
+                cloId: clo.id,
+                code: clo.code,
+                earned: 0,
+                threshold: clo.thresholdScore,
+                achieved: false,
+                color: clo.color,
+              })),
+              hasGradingData: false,
+            };
+          });
+
+    const gradedRows = displayRows.filter((row) => row.total != null);
+    const totals = gradedRows.map((row) => row.total as number);
+    const average =
+      totals.length > 0
+        ? Math.round(
+            (totals.reduce((sum, value) => sum + value, 0) / totals.length) * 10,
+          ) / 10
+        : null;
+    const highest = totals.length > 0 ? Math.max(...totals) : null;
+    const lowest = totals.length > 0 ? Math.min(...totals) : null;
+    const passingCount = totals.filter((value) => value >= passRatePercent).length;
+    const passing =
+      totals.length > 0
+        ? Math.round((passingCount / totals.length) * 1000) / 10
+        : null;
+
+    const distributionBands = [
+      { key: '0-49', label: '0-49', min: 0, max: 49 },
+      { key: '50-59', label: '50-59', min: 50, max: 59 },
+      { key: '60-69', label: '60-69', min: 60, max: 69 },
+      { key: '70-79', label: '70-79', min: 70, max: 79 },
+      { key: '80-89', label: '80-89', min: 80, max: 89 },
+      { key: '90-100', label: '90-100', min: 90, max: 100 },
+    ];
+
+    const distribution = distributionBands.map((band) => {
+      const count = totals.filter(
+        (value) => value >= band.min && value <= band.max,
+      ).length;
+      return {
+        ...band,
+        count,
+        percent:
+          totals.length > 0
+            ? Math.round((count / totals.length) * 1000) / 10
+            : 0,
+      };
+    });
+
+    const focusBandKey =
+      [...distribution].sort((a, b) => b.count - a.count)[0]?.key ??
+      distribution[distribution.length - 1]?.key ??
+      null;
+
+    return {
+      passRatePercent,
+      hasGradingData: gradedRows.length > 0,
+      enrolledCount: course.students.length,
+      components,
+      cloColumns,
+      kpis: {
+        showing: gradedRows.length || displayRows.length,
+        average,
+        highest,
+        lowest,
+        passing,
+      },
+      rows: displayRows,
+      distribution,
+      focusBandKey,
+    };
+  }
+
+  private formatAssessmentShortLabel(
+    title: string | null | undefined,
+    type: string,
+  ) {
+    const raw = String(title || '').trim();
+    const typeFallback: Record<string, string> = {
+      MID_TERM_EXAM: 'Midterm',
+      FINAL_EXAM: 'Final',
+      QUIZ: 'Quizzes',
+      LAB: 'Lab',
+      OTHER: 'Assign',
+    };
+    if (!raw) return typeFallback[type] ?? 'Assessment';
+    if (/quiz/i.test(raw)) return 'Quizzes';
+    if (/assign/i.test(raw)) return 'Assign';
+    if (/lab/i.test(raw)) return 'Lab';
+    if (/mid/i.test(raw)) return 'Midterm';
+    if (/final/i.test(raw)) return 'Final';
+    if (/project/i.test(raw)) return 'Project';
+    return raw.length > 12 ? `${raw.slice(0, 10).trim()}…` : raw;
+  }
+
+  private assessmentTypeColor(type: string) {
+    const colors: Record<string, string> = {
+      QUIZ: '#5B3A9E',
+      OTHER: '#E07A3A',
+      MID_TERM_EXAM: '#3B82F6',
+      LAB: '#22C55E',
+      FINAL_EXAM: '#A16207',
+    };
+    return colors[type] ?? '#5B3A9E';
+  }
+
+  private cloDotColor(index: number) {
+    const colors = [
+      '#1D4ED8',
+      '#0D9488',
+      '#16A34A',
+      '#EAB308',
+      '#EA580C',
+      '#DC2626',
+      '#5B3A9E',
+      '#0891B2',
+    ];
+    return colors[index % colors.length];
+  }
+
+  private gradeBadgeColor(grade: string) {
+    const colors: Record<string, { bg: string; text: string }> = {
+      'A+': { bg: '#CCFBF1', text: '#0F766E' },
+      A: { bg: '#CFFAFE', text: '#0E7490' },
+      'B+': { bg: '#DBEAFE', text: '#1D4ED8' },
+      B: { bg: '#E0E7FF', text: '#4338CA' },
+      'C+': { bg: '#FEF3C7', text: '#B45309' },
+      F: { bg: '#FEE2E2', text: '#B91C1C' },
+    };
+    return colors[grade] ?? { bg: '#F1F5F9', text: '#475569' };
   }
 
   private formatAssessmentComponentLabel(

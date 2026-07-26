@@ -49,40 +49,80 @@ export class CourseController {
   findOne(
     @GetUser('tenantId') tenantId: number,
     @Param('id') id: string,
+    @Query('include') include?: string,
   ) {
-    return this.courseService.findOne(tenantId, +id);
+    const includes = include
+      ? include
+          .split(',')
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean)
+      : undefined;
+    return this.courseService.findOne(tenantId, +id, includes);
   }
 
   @Get(':id/reports/clo-achievement')
   getCloAchievementReport(
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
   ) {
-    return this.courseReportsService.getCloAchievementReport(tenantId, id);
+    return this.courseReportsService.getCloAchievementReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
   }
 
   @Get(':id/reports/grade-distribution')
   getGradeDistributionReport(
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
   ) {
-    return this.courseReportsService.getGradeDistributionReport(tenantId, id);
+    return this.courseReportsService.getGradeDistributionReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
   }
 
   @Get(':id/reports/assessments')
   getAssessmentsReport(
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
   ) {
-    return this.courseReportsService.getAssessmentsReport(tenantId, id);
+    return this.courseReportsService.getAssessmentsReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
   }
 
   @Get(':id/reports/plo-alignment')
   getPloAlignmentReport(
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
   ) {
-    return this.courseReportsService.getPloAlignmentReport(tenantId, id);
+    return this.courseReportsService.getPloAlignmentReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
+  }
+
+  @Get(':id/reports/student-results')
+  getStudentResultsReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
+  ) {
+    return this.courseReportsService.getStudentResultsReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
   }
 
   @Post(':id/reports/clo-analysis')
@@ -140,6 +180,12 @@ export class CourseController {
     return this.courseReportsService.getOrGenerateAllCloAnalysis(tenantId, id, {
       force: force === '1' || force === 'true',
     });
+  }
+
+  private parseOptionalAssessmentId(value?: string) {
+    if (value == null || value === '') return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
   }
 
   private formatAssessmentSourcesSummary(

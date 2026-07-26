@@ -394,6 +394,7 @@ model Assessment {
   printCloCodeNextToEachQuestion          Boolean                   @default(false)
   printBloomLevelNextToEachQuestion       Boolean                   @default(false)
   printDifficultyLabelNextToEachQuestion  Boolean                   @default(false)
+  generationConfig                        Json?
 
   courseId Int
   course   Course @relation(fields: [courseId], references: [id])

@@ -154,6 +154,7 @@ export class AssessmentService {
     onProgress?: (progress: AssessmentGenerationProgress) => Promise<void> | void,
   ) {
     const expectedQuestionCount = this.countExpectedQuestions(data.dto);
+    const append = Boolean(data.dto.append);
 
     const report = async (progress: AssessmentGenerationProgress) => {
       if (onProgress) await onProgress(progress);
@@ -162,7 +163,9 @@ export class AssessmentService {
     await report({
       stage: 'preparing',
       percent: 5,
-      message: 'Preparing assessment context…',
+      message: append
+        ? 'Preparing to add questions to existing assessment…'
+        : 'Preparing assessment context…',
       expectedQuestionCount,
       savedQuestionCount: 0,
     });
@@ -173,12 +176,57 @@ export class AssessmentService {
       data.courseId,
       data.assessmentId,
       data.dto,
+      append,
     );
 
+    const existingQuestions = append
+      ? await this.prisma.question.findMany({
+          where: { assessmentId: data.assessmentId },
+          include: {
+            questionOptions: { orderBy: { order: 'asc' } },
+            questionClos: {
+              include: {
+                Clo: { select: { id: true, code: true } },
+              },
+            },
+          },
+          orderBy: { id: 'asc' },
+        })
+      : [];
+
     const units = this.buildGenerationUnits(promptPayload.topicGenerations);
-    const accumulatedQuestions: any[] = [];
-    const savedQuestionIds: { id: number }[] = [];
+    const accumulatedQuestions: any[] = existingQuestions.map((question) => {
+      const cloCodes = (question.questionClos || [])
+        .map((link) => String(link.Clo?.code || '').trim())
+        .filter(Boolean);
+      return {
+        id: question.id,
+        text: question.text,
+        type: question.type,
+        explanation: question.explanation,
+        points: question.points,
+        topicId: question.topicId,
+        cloCode: cloCodes[0] || null,
+        cloCodes,
+        clo: cloCodes[0] || null,
+        questionClos: question.questionClos,
+        questionOptions: question.questionOptions,
+        options:
+          question.questionOptions?.map((opt) => ({
+            text: opt.text,
+            isCorrect: opt.isCorrect,
+            order: opt.order,
+          })) ?? [],
+      };
+    });
+    const savedQuestionIds: { id: number }[] = existingQuestions.map((q) => ({
+      id: q.id,
+    }));
+    const existingQuestionTexts = accumulatedQuestions.map((q) =>
+      String(q?.text || ''),
+    );
     const totalUnits = units.length || expectedQuestionCount || 1;
+    const baselineCount = accumulatedQuestions.length;
 
     for (let index = 0; index < units.length; index++) {
       const unit = units[index];
@@ -191,29 +239,62 @@ export class AssessmentService {
       await report({
         stage: 'generating',
         percent,
-        message: `Generating question ${questionNumber} of ${totalUnits}…`,
-        expectedQuestionCount: totalUnits,
+        message: append
+          ? `Adding question ${questionNumber} of ${totalUnits}…`
+          : `Generating question ${questionNumber} of ${totalUnits}…`,
+        expectedQuestionCount: baselineCount + totalUnits,
         savedQuestionCount: accumulatedQuestions.length,
         partial: { questions: accumulatedQuestions },
       });
 
-      const aiRawResponse = await this.callAiModelForSingleQuestion({
-        assessment: promptPayload.assessment,
-        topicGeneration: unit.topicGeneration,
-        questionType: unit.questionType,
-        questionIndex: questionNumber,
-        totalQuestions: totalUnits,
-        existingQuestionTexts: accumulatedQuestions.map((q) =>
-          String(q?.text || ''),
-        ),
-      });
+      let nextQuestion: any = null;
+      let lastQuestionError: unknown = null;
 
-      const generatedData = this.parseAiResponse(aiRawResponse);
-      const nextQuestion = Array.isArray(generatedData?.questions)
-        ? generatedData.questions[0]
-        : null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const aiRawResponse = await this.callAiModelForSingleQuestion({
+            assessment: promptPayload.assessment,
+            topicGeneration: unit.topicGeneration,
+            questionType: unit.questionType,
+            questionIndex: questionNumber,
+            totalQuestions: totalUnits,
+            existingQuestionTexts: [
+              ...existingQuestionTexts,
+              ...accumulatedQuestions
+                .slice(baselineCount)
+                .map((q) => String(q?.text || '')),
+            ],
+          });
+
+          const generatedData = this.parseAiResponse(aiRawResponse);
+          nextQuestion = this.extractGeneratedQuestion(generatedData);
+
+          if (nextQuestion && typeof nextQuestion === 'object') {
+            break;
+          }
+
+          lastQuestionError = ErrorMessageKey.ASSESSMENT_AI_QUESTION_FAILED;
+        } catch (error) {
+          lastQuestionError = error;
+          nextQuestion = null;
+        }
+
+        if (attempt < 3) {
+          await report({
+            stage: 'generating',
+            percent,
+            message: `Retrying question ${questionNumber} (attempt ${attempt + 1}/3)…`,
+            expectedQuestionCount: baselineCount + totalUnits,
+            savedQuestionCount: accumulatedQuestions.length,
+            partial: { questions: accumulatedQuestions },
+          });
+        }
+      }
 
       if (!nextQuestion || typeof nextQuestion !== 'object') {
+        if (lastQuestionError instanceof InternalServerErrorException) {
+          throw lastQuestionError;
+        }
         throw new InternalServerErrorException(
           ErrorMessageKey.ASSESSMENT_AI_QUESTION_FAILED,
         );
@@ -294,7 +375,7 @@ export class AssessmentService {
         stage: 'saving',
         percent: Math.min(95, percent + 1),
         message: `Question ${questionNumber} of ${totalUnits} ready`,
-        expectedQuestionCount: totalUnits,
+        expectedQuestionCount: baselineCount + totalUnits,
         savedQuestionCount: accumulatedQuestions.length,
         partial: { questions: accumulatedQuestions },
       });
@@ -304,7 +385,7 @@ export class AssessmentService {
       stage: 'saving',
       percent: 96,
       message: 'Building assessment versions…',
-      expectedQuestionCount: totalUnits,
+      expectedQuestionCount: baselineCount + totalUnits,
       savedQuestionCount: accumulatedQuestions.length,
       partial: { questions: accumulatedQuestions },
     });
@@ -321,8 +402,10 @@ export class AssessmentService {
     await report({
       stage: 'complete',
       percent: 100,
-      message: 'Assessment generation complete',
-      expectedQuestionCount: totalUnits,
+      message: append
+        ? 'New questions added to assessment'
+        : 'Assessment generation complete',
+      expectedQuestionCount: baselineCount + totalUnits,
       savedQuestionCount: accumulatedQuestions.length,
       partial: { questions: accumulatedQuestions },
     });
@@ -364,17 +447,31 @@ export class AssessmentService {
     courseId: number,
     assessmentId: number,
     dto: GenerateAssessmentDto,
+    append = false,
   ) {
+    // Versions are always rebuilt after generation with the full question set.
     await this.prisma.assessmentVersion.deleteMany({ where: { assessmentId } });
-    await this.prisma.questionClo.deleteMany({
-      where: { question: { assessmentId } },
-    });
-    await this.prisma.assessmentTopic.deleteMany({ where: { assessmentId } });
-    await this.prisma.question.deleteMany({ where: { assessmentId } });
+
+    if (!append) {
+      await this.prisma.questionClo.deleteMany({
+        where: { question: { assessmentId } },
+      });
+      await this.prisma.assessmentTopic.deleteMany({ where: { assessmentId } });
+      await this.prisma.question.deleteMany({ where: { assessmentId } });
+    }
+
+    const generationConfig = {
+      topicGenerations: dto.topicGenerations,
+      append: Boolean(append),
+      updatedAt: new Date().toISOString(),
+    };
 
     const updatedAssessment = await this.prisma.assessment.update({
       where: { id: assessmentId },
-      data: dto.assessment,
+      data: {
+        ...dto.assessment,
+        generationConfig,
+      },
       select: { id: true, numberOfVersions: true },
     });
 
@@ -384,6 +481,7 @@ export class AssessmentService {
           assessmentId,
           topicId: tg.topicId,
         })),
+        skipDuplicates: true,
       });
     }
 
@@ -662,13 +760,74 @@ export class AssessmentService {
   }
 
   private parseAiResponse(rawContent: string): any {
-    try {
-      return JSON.parse(rawContent);
-    } catch {
+    const text = String(rawContent ?? '').trim();
+    if (!text) {
       throw new InternalServerErrorException(
         ErrorMessageKey.GENERATION_AI_INVALID_JSON,
       );
     }
+
+    const candidates = new Set<string>();
+    candidates.add(text);
+
+    const withoutFences = text
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    if (withoutFences) candidates.add(withoutFences);
+
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      candidates.add(text.slice(firstBrace, lastBrace + 1));
+    }
+
+    const firstFenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (firstFenceMatch?.[1]?.trim()) {
+      candidates.add(firstFenceMatch[1].trim());
+    }
+
+    for (const candidate of candidates) {
+      const normalized = candidate
+        .replace(/^\uFEFF/, '')
+        .replace(/,\s*([}\]])/g, '$1');
+
+      try {
+        return JSON.parse(normalized);
+      } catch {
+        // try next candidate
+      }
+    }
+
+    throw new InternalServerErrorException(
+      ErrorMessageKey.GENERATION_AI_INVALID_JSON,
+    );
+  }
+
+  /** Accept `{ questions: [...] }`, `{ question: {...} }`, or a bare question object. */
+  private extractGeneratedQuestion(parsed: any): any | null {
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+      const first = parsed.questions.find(
+        (item: unknown) => item && typeof item === 'object',
+      );
+      if (first) return first;
+    }
+
+    if (parsed.question && typeof parsed.question === 'object') {
+      return parsed.question;
+    }
+
+    if (
+      typeof parsed.text === 'string' &&
+      parsed.text.trim() &&
+      (parsed.type || Array.isArray(parsed.options))
+    ) {
+      return parsed;
+    }
+
+    return null;
   }
 
   /**
@@ -1059,6 +1218,12 @@ export class AssessmentService {
       courseId,
     );
 
+    if (!assessment.assessmentVersions.length) {
+      throw new NotFoundException(
+        'No assessment versions found to download. Generate questions first.',
+      );
+    }
+
     return this.createAssessmentArchiveDownload(assessment);
   }
 
@@ -1070,6 +1235,12 @@ export class AssessmentService {
       tenantId,
       assessmentId,
     );
+
+    if (!assessment.assessmentVersions.length) {
+      throw new NotFoundException(
+        'No assessment versions found to download. Generate questions first.',
+      );
+    }
 
     return this.createAssessmentArchiveDownload(assessment);
   }
@@ -1094,6 +1265,16 @@ export class AssessmentService {
       assessmentId,
     );
     const baseUrl = `/assessments/${assessmentId}/downloads`;
+
+    if (!assessment.assessmentVersions.length) {
+      return {
+        assessmentId: assessment.id,
+        archiveUrl: `${baseUrl}/archive`,
+        examFiles: [],
+        answerSheetFiles: [],
+        message: 'No assessment versions available yet. Generate questions first.',
+      };
+    }
 
     return this.buildVersionDownloadList(assessment, baseUrl);
   }
@@ -1449,6 +1630,7 @@ export class AssessmentService {
       orderBy: { updatedAt: 'desc' },
       include: {
         course: { select: { title: true } },
+        questions: { select: { id: true }, orderBy: { id: 'asc' } },
         assessmentVersions: {
           orderBy: { id: 'asc' },
           include: {
@@ -1471,11 +1653,7 @@ export class AssessmentService {
       throw new NotFoundException('Assessment not found for this course.');
     }
 
-    if (assessment.assessmentVersions.length === 0) {
-      throw new NotFoundException('No assessment versions found to download.');
-    }
-
-    return assessment;
+    return this.ensureAssessmentHasVersions(assessment);
   }
 
   private async getAssessmentWithVersionsById(
@@ -1486,6 +1664,7 @@ export class AssessmentService {
       where: { id: assessmentId, tenantId },
       include: {
         course: { select: { title: true } },
+        questions: { select: { id: true }, orderBy: { id: 'asc' } },
         assessmentVersions: {
           orderBy: { id: 'asc' },
           include: {
@@ -1508,11 +1687,63 @@ export class AssessmentService {
       throw new NotFoundException('Assessment not found.');
     }
 
-    if (assessment.assessmentVersions.length === 0) {
-      throw new NotFoundException('No assessment versions found to download.');
+    return this.ensureAssessmentHasVersions(assessment);
+  }
+
+  /**
+   * Rebuild shuffled paper versions when questions exist but versions are missing
+   * (common after interrupted generation or edit/append flows).
+   */
+  private async ensureAssessmentHasVersions<
+    T extends {
+      id: number;
+      numberOfVersions?: number | null;
+      questions?: { id: number }[];
+      assessmentVersions: unknown[];
+    },
+  >(assessment: T): Promise<T> {
+    if (assessment.assessmentVersions.length > 0) {
+      return assessment;
     }
 
-    return assessment;
+    const questionIds =
+      assessment.questions?.map((question) => ({ id: question.id })) ?? [];
+
+    if (questionIds.length === 0) {
+      return assessment;
+    }
+
+    await this.createAssessmentVersionsWithShuffle(
+      this.prisma,
+      assessment.id,
+      questionIds,
+      assessment.numberOfVersions ?? 2,
+    );
+
+    const refreshed = await this.prisma.assessment.findFirst({
+      where: { id: assessment.id },
+      include: {
+        course: { select: { title: true } },
+        questions: { select: { id: true }, orderBy: { id: 'asc' } },
+        assessmentVersions: {
+          orderBy: { id: 'asc' },
+          include: {
+            versionQuestions: {
+              orderBy: { order: 'asc' },
+              include: {
+                question: {
+                  include: {
+                    questionOptions: { orderBy: { order: 'asc' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return ((refreshed as unknown) as T) || assessment;
   }
 
   private buildDownloadFileEntries(
@@ -1828,6 +2059,11 @@ export class AssessmentService {
         totalMarks: true,
         duration: true,
         tenantId: true,
+        isPublished: true,
+        createdAt: true,
+        updatedAt: true,
+        generationConfig: true,
+        _count: { select: { questions: true } },
         course: { select: { id: true, title: true, code: true, tenantId: true } },
       },
       orderBy: { createdAt: 'desc' },
