@@ -1,4 +1,5 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
+import { contentLanguageGuidance } from '../utils/content-language.util';
 
 const formatReferenceCitation = (reference: unknown): string => {
   if (!reference) return '';
@@ -56,6 +57,8 @@ ${
 4. Visual styles: ${data.visuals.join(', ') || 'Concept Diagrams, Process Flow'}
 5. Assessment formats to include: ${data.assessmentIntegrations.join(', ') || 'Short Answers, Exam Questions'}
 6. Quality checks: ${data.humanReviewChecks.join(', ') || 'Fact Checking, CLO Alignment Check, Validate Definitions'}
+
+${contentLanguageGuidance(data.contentLanguage)}
 
 ## Writing Standards for University Teaching
 - Open with why the topic matters in the curriculum, then precise definitions, then intuition, then formalism, then practice.
@@ -129,8 +132,8 @@ ${
           "realWorldProblemContext": "Brief authentic scenario.",
           "concreteProblemStatement": "Complete problem with numbers/parameters.",
           "stepByStepSolution": "Full solution path with intermediate results.",
-          "executableArtifactSnippet": "Code, pseudocode, or structured procedure when relevant.",
-          "artifactTypeOrLanguage": "python | pseudocode | procedure | none"
+          "executableArtifactSnippet": "ONLY when real code/pseudocode/procedure is pedagogically useful; otherwise omit this field entirely.",
+          "artifactTypeOrLanguage": "python | pseudocode | procedure — omit when no snippet"
         }
       ],
       "professorSpeakingNotes": [
@@ -157,12 +160,11 @@ ${
       "exhaustiveAnswerKey": "Full marking solution with rubric-worthy steps."
     }
   ],
-  "providedReferences": ${JSON.stringify(formatReferences(data.references))},
-  "academicReviewVerification": {
-    "checksPassed": ${JSON.stringify(data.humanReviewChecks)},
-    "status": "VERIFIED_COMPLIANT"
-  }
+  "providedReferences": ${JSON.stringify(formatReferences(data.references))}
 }
 
-Generate at least 3 substantial modules unless the topic is extremely narrow. Every module must contain real teaching content, not stubs.
+Rules:
+- Generate at least 3 substantial modules unless the topic is extremely narrow. Every module must contain real teaching content, not stubs.
+- Do NOT include an academicReviewVerification object.
+- For appliedDemonstrations.executableArtifactSnippet: only include real code, pseudocode, or a structured procedure when it genuinely helps teaching. For non-technical subjects (e.g. marketing, business, humanities), OMIT executableArtifactSnippet and artifactTypeOrLanguage entirely. Never invent TypeScript/Python stubs or write "N/A".
 `;

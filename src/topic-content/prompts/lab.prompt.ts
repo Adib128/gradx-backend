@@ -1,7 +1,15 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
+import {
+  SAUDI_UNIVERSITY_PEDAGOGY,
+  formatClosForPrompt,
+  localContextGuidance,
+  languageBlock,
+  qualityModeGuidance,
+} from './pedagogy.shared';
 
-export const LAB_SYSTEM_PROMPT = `You are an experienced university lab instructor writing manuals that students can complete independently in a supervised lab.
+export const LAB_SYSTEM_PROMPT = `You are an experienced university lab instructor in Saudi / Gulf higher education writing manuals students can complete in a supervised lab.
 Prioritize clear procedure, verification checkpoints, realistic deliverables, and CLO-aligned practice.
+${SAUDI_UNIVERSITY_PEDAGOGY}
 Return valid JSON only.`;
 
 export const LAB_PROMPT = (data: ContentGenerationJob): string => `
@@ -10,9 +18,16 @@ Create a university lab manual that turns this lecture into practical skills.
 ## Course Context
 - Course: ${data.courseTitle}
 - Topic ${data.topicNumber}: ${data.topicTitle}
+- Audience: ${data.audience}
+- Difficulty: ${data.difficulty}
+- ${qualityModeGuidance(data.aiQualityMode)}
 
-## CLOs to Cover
-${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n') || '- (none provided)'}
+## CLOs to Cover (constructive alignment)
+${formatClosForPrompt(data.clos, data.targetedCloIds)}
+
+${localContextGuidance(data.exampleLevels)}
+
+${languageBlock(data)}
 
 ## Source Lecture Content (authoritative)
 Build the lab as a practical extension of this lecture only. Do not introduce unrelated tools, algorithms, datasets, or outcomes unless required to practice the lecture ideas.
@@ -27,7 +42,7 @@ ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
 - Provide complete, runnable example snippets or precise procedures (not pseudo stubs).
 - Include at least one debugging/common-error note.
 - Include one optional stretch task for stronger students.
-- Map sections to CLO codes.
+- Map sections to CLO codes; prefer Skills-domain CLOs for hands-on work when available.
 - Provide an instructor-usable grading rubric with clear point allocation.
 
 Return ONLY valid JSON:

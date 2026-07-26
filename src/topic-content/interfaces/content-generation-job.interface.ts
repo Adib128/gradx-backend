@@ -32,7 +32,8 @@ export type BloomTaxonomyLevel =
   | '2 Understand'
   | '3 Apply'
   | '4 Analyze'
-  | '5 Create';
+  | '5 Evaluate'
+  | '6 Create';
 
 export type LearningComponent =
   | 'Learning Objectives'
@@ -114,4 +115,6 @@ export interface ContentGenerationJob {
   difficulty: DifficultyLevel;
   aiQualityMode: AIQualityMode;
   humanReviewChecks: HumanReviewCheck[];
+  /** Detected from course/topic text; drives generation language. */
+  contentLanguage?: 'ar' | 'en';
 }

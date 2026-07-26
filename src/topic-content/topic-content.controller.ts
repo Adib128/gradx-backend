@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   StreamableFile,
   UploadedFile,
@@ -49,6 +50,20 @@ export class TopicContentController {
   @Get('generate/:jobId/status')
   getGenerateStatus(@Param('jobId') jobId: string) {
     return this.topicContentService.getGenerateStatus(jobId);
+  }
+
+  @Post('generate/:jobId/cancel')
+  cancelGenerate(@Param('jobId') jobId: string) {
+    return this.topicContentService.cancelGenerate(jobId);
+  }
+
+  @Patch(':topicId/slides')
+  updateSlides(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: { content?: Record<string, unknown>; slides?: unknown[] },
+  ) {
+    return this.topicContentService.updateSlidesDeck(tenantId, topicId, body);
   }
 
   @Post(':topicId/upload-lecture')

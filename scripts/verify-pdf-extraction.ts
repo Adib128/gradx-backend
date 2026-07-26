@@ -22,9 +22,7 @@ async function verifyPdf(path: string) {
   });
 
   const moduleChars = lecture.modules.reduce(
-    (total, module) =>
-      total +
-      String(module.theoreticalFoundations?.formalDefinition ?? '').length,
+    (total, module) => total + String(module.content ?? '').length,
     0,
   );
 

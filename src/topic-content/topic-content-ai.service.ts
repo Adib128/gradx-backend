@@ -6,12 +6,17 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import {
   LECTURE_PROMPT,
-  SLIDES_PROMPT,
   QUIZ_PROMPT,
   LAB_PROMPT,
 } from './prompts';
 import { LECTURE_SYSTEM_PROMPT } from './prompts/lecture.prompt';
-import { SLIDES_SYSTEM_PROMPT } from './prompts/slides.prompt';
+import {
+  SLIDES_SYSTEM_PROMPT,
+  SLIDES_PROMPT,
+  SLIDES_CLOSING_PROMPT,
+  SLIDES_MODULE_PROMPT,
+  SLIDES_OPENING_PROMPT,
+} from './prompts/slides.prompt';
 import { LAB_SYSTEM_PROMPT } from './prompts/lab.prompt';
 import { QUIZ_SYSTEM_PROMPT } from './prompts/quiz.prompt';
 import {
@@ -21,12 +26,24 @@ import {
   LECTURE_PLAN_PROMPT,
   LECTURE_STREAM_SYSTEM,
 } from './prompts/lecture-stream.prompt';
+import {
+  compactLectureForSlides,
+  normalizeAndPaginateSlideDeck,
+  type SlideDeckSlide,
+} from './utils/slide-deck.util';
 
 export type LectureStreamProgress = {
   stage: 'plan' | 'overview' | 'module' | 'assessment' | 'done';
   percent: number;
   moduleIndex?: number;
   moduleCount?: number;
+  message: string;
+  partial: Record<string, unknown>;
+};
+
+export type SlidesStreamProgress = {
+  stage: 'prepare' | 'generate' | 'paginate' | 'done';
+  percent: number;
   message: string;
   partial: Record<string, unknown>;
 };
@@ -49,8 +66,11 @@ export class TopicContentAiService {
       return this.generateLectureStreaming(data);
     }
 
+    if (type === 'SLIDES') {
+      return this.generateSlides(data);
+    }
+
     const promptMap: Partial<Record<ContentType, string>> = {
-      SLIDES: SLIDES_PROMPT(data),
       QUIZ: QUIZ_PROMPT(data),
       LAB: LAB_PROMPT(data),
       LECTURE: LECTURE_PROMPT(data),
@@ -58,7 +78,6 @@ export class TopicContentAiService {
 
     const systemMap: Partial<Record<ContentType, string>> = {
       LECTURE: LECTURE_SYSTEM_PROMPT,
-      SLIDES: SLIDES_SYSTEM_PROMPT,
       QUIZ: QUIZ_SYSTEM_PROMPT,
       LAB: LAB_SYSTEM_PROMPT,
     };
@@ -72,6 +91,174 @@ export class TopicContentAiService {
         'You are an experienced university lecturer. Return valid JSON only.',
       prompt,
     );
+  }
+
+  async generateSlides(
+    data: ContentGenerationJob,
+    onProgress?: (progress: SlidesStreamProgress) => Promise<void> | void,
+  ): Promise<Record<string, unknown>> {
+    const emit = async (progress: SlidesStreamProgress) => {
+      if (onProgress) await onProgress(progress);
+    };
+
+    const deckMeta = {
+      courseTitle: data.courseTitle,
+      topicTitle: data.topicTitle,
+      topicNumber: data.topicNumber,
+      designTheme: 'UNIVERSITY_ACADEMIC',
+      audience: data.audience,
+      difficulty: data.difficulty,
+    };
+
+    const buildPartial = (
+      slides: SlideDeckSlide[],
+      streamStatus: string,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      source: 'gradx',
+      provider: 'openrouter',
+      streamStatus,
+      deckMeta,
+      totalSlides: slides.length,
+      slides: slides.map((slide, index) => ({
+        ...slide,
+        slideNumber: index + 1,
+      })),
+      ...extra,
+    });
+
+    await emit({
+      stage: 'prepare',
+      percent: 5,
+      message: 'Preparing lecture content for slide design…',
+      partial: buildPartial([], 'prepare'),
+    });
+
+    const compactLecture = compactLectureForSlides(data.sourceLectureContent);
+    const slidesJob: ContentGenerationJob = {
+      ...data,
+      sourceLectureContent: compactLecture,
+    };
+    const modules = Array.isArray((compactLecture as any)?.modules)
+      ? ((compactLecture as any).modules as Record<string, unknown>[])
+      : [];
+    const moduleCount = Math.max(1, modules.length);
+
+    const accumulated: SlideDeckSlide[] = [];
+    const appendSlides = (raw: unknown) => {
+      const list = Array.isArray((raw as any)?.slides)
+        ? ((raw as any).slides as SlideDeckSlide[])
+        : Array.isArray(raw)
+          ? (raw as SlideDeckSlide[])
+          : [];
+      for (const slide of list) {
+        if (slide && typeof slide === 'object' && String(slide.title || '').trim()) {
+          accumulated.push(slide);
+        }
+      }
+    };
+
+    await emit({
+      stage: 'generate',
+      percent: 12,
+      message: 'Designing title, outcomes, and agenda…',
+      partial: buildPartial(accumulated, 'generate-opening'),
+    });
+
+    const openingRaw = await this.chatJson(
+      SLIDES_SYSTEM_PROMPT,
+      SLIDES_OPENING_PROMPT(slidesJob),
+    );
+    appendSlides(openingRaw);
+    await emit({
+      stage: 'generate',
+      percent: 22,
+      message: `Opening ready · ${accumulated.length} slides`,
+      partial: buildPartial(accumulated, 'opening-done'),
+    });
+
+    if (modules.length === 0) {
+      // Fallback: one-shot full deck when lecture has no modules
+      await emit({
+        stage: 'generate',
+        percent: 40,
+        message: 'Generating full teaching deck…',
+        partial: buildPartial(accumulated, 'generate-full'),
+      });
+      const rawDeck = await this.chatJson(
+        SLIDES_SYSTEM_PROMPT,
+        SLIDES_PROMPT(slidesJob),
+      );
+      accumulated.length = 0;
+      appendSlides(rawDeck);
+    } else {
+      for (let i = 0; i < modules.length; i++) {
+        const module = modules[i];
+        const moduleIndex = i + 1;
+        const basePercent = 22 + Math.round((i / moduleCount) * 55);
+        await emit({
+          stage: 'generate',
+          percent: Math.min(basePercent, 78),
+          message: `Designing slides for module ${moduleIndex}/${moduleCount}…`,
+          partial: buildPartial(accumulated, `module-${moduleIndex}`),
+        });
+
+        const moduleRaw = await this.chatJson(
+          SLIDES_SYSTEM_PROMPT,
+          SLIDES_MODULE_PROMPT(slidesJob, module, moduleIndex, moduleCount),
+        );
+        appendSlides(moduleRaw);
+        await emit({
+          stage: 'generate',
+          percent: Math.min(basePercent + Math.round(55 / moduleCount), 82),
+          message: `Module ${moduleIndex} ready · ${accumulated.length} slides`,
+          partial: buildPartial(accumulated, `module-${moduleIndex}-done`),
+        });
+      }
+
+      await emit({
+        stage: 'generate',
+        percent: 86,
+        message: 'Writing summary and next steps…',
+        partial: buildPartial(accumulated, 'generate-closing'),
+      });
+      const closingRaw = await this.chatJson(
+        SLIDES_SYSTEM_PROMPT,
+        SLIDES_CLOSING_PROMPT(slidesJob),
+      );
+      appendSlides(closingRaw);
+      await emit({
+        stage: 'generate',
+        percent: 90,
+        message: `Closing ready · ${accumulated.length} slides`,
+        partial: buildPartial(accumulated, 'closing-done'),
+      });
+    }
+
+    await emit({
+      stage: 'paginate',
+      percent: 94,
+      message: 'Applying professional slide pagination…',
+      partial: buildPartial(accumulated, 'paginate'),
+    });
+
+    const deck = normalizeAndPaginateSlideDeck(
+      { deckMeta, slides: accumulated },
+      {
+        courseTitle: data.courseTitle,
+        topicTitle: data.topicTitle,
+        topicNumber: data.topicNumber,
+      },
+    );
+
+    await emit({
+      stage: 'done',
+      percent: 100,
+      message: `Slide deck ready (${deck.totalSlides} slides)`,
+      partial: deck,
+    });
+
+    return deck;
   }
 
   async generateLectureStreaming(
@@ -99,7 +286,6 @@ export class TopicContentAiService {
         modules: [],
         comprehensiveAssessment: [],
         providedReferences: [],
-        academicReviewVerification: null,
         streamStatus: 'planning',
       },
     });
@@ -124,7 +310,6 @@ export class TopicContentAiService {
       modules: [],
       comprehensiveAssessment: [],
       providedReferences: [],
-      academicReviewVerification: null,
       streamStatus: 'overview',
       plannedModules: planModules,
     };
@@ -230,14 +415,10 @@ export class TopicContentAiService {
       ...partial,
       comprehensiveAssessment: closingRaw?.comprehensiveAssessment ?? [],
       providedReferences: closingRaw?.providedReferences ?? [],
-      academicReviewVerification:
-        closingRaw?.academicReviewVerification ?? {
-          checksPassed: data.humanReviewChecks,
-          status: 'VERIFIED_COMPLIANT',
-        },
       streamStatus: 'done',
     };
     delete finalContent.plannedModules;
+    delete finalContent.academicReviewVerification;
 
     await emit({
       stage: 'done',

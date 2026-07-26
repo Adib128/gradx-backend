@@ -62,6 +62,9 @@ const GenerateContentFields: ZodFieldsFromInterface<ContentGenerationJob> = {
   visuals: z.array(z.any()),
   assessmentIntegrations: z.array(z.any()),
   humanReviewChecks: z.array(z.any()),
+  contentLanguage: z.enum(['ar', 'en']).optional() as unknown as z.ZodType<
+    ContentGenerationJob['contentLanguage']
+  >,
 };
 
 export const GenerateContentSchema = z.object(GenerateContentFields);

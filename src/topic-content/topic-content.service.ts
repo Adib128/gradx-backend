@@ -20,6 +20,7 @@ import { extractPdfDocument } from './utils/extract-pdf-text.util';
 import { buildLectureContentFromPdfExtraction } from './utils/pdf-lecture-content.util';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
+import { detectContentLanguage } from './utils/content-language.util';
 
 type UploadedFileMeta = {
   source: 'upload';
@@ -75,6 +76,7 @@ function folderForType(type: UploadMaterialType) {
 @Injectable()
 export class TopicContentService {
   private readonly logger = new Logger(TopicContentService.name);
+  private readonly cancelledGenerationJobs = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -121,6 +123,18 @@ export class TopicContentService {
       throw new NotFoundException(ErrorMessageKey.TOPIC_CONTENT_LECTURE_REQUIRED);
     }
 
+    const cloDescriptions = topic.course.clos.map((clo) => clo.description);
+    const requestedLanguage = generationContentDto.contentLanguage;
+    const detectedLanguage: 'ar' | 'en' =
+      requestedLanguage === 'ar' || requestedLanguage === 'en'
+        ? requestedLanguage
+        : detectContentLanguage(
+            topic.title,
+            topic.course.title,
+            topic.course.description,
+            ...cloDescriptions,
+          );
+
     const contentGeneration: ContentGenerationJob = {
       ...generationContentDto,
       tenantId,
@@ -131,6 +145,7 @@ export class TopicContentService {
       courseId: topic.course.id,
       courseTitle: topic.course.title ?? '',
       courseDescription: topic.course.description ?? '',
+      contentLanguage: detectedLanguage,
       clos: topic.course.clos.map((clo) => ({
         code: clo.code,
         category: clo.category,
@@ -164,18 +179,99 @@ export class TopicContentService {
     if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
 
     const state = await job.getState();
+    const cancelled =
+      this.isGenerationCancelled(jobId) ||
+      (state === 'failed' &&
+        String(job.failedReason || '')
+          .toUpperCase()
+          .includes('CANCELLED'));
+
     const failure = generationErrorPayload(
       state === 'failed' ? job.failedReason : null,
-      ErrorMessageKey.TOPIC_CONTENT_GENERATE_FAILED,
+      cancelled
+        ? ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED
+        : ErrorMessageKey.TOPIC_CONTENT_GENERATE_FAILED,
     );
 
     return {
       jobId,
-      status: state,
+      status: cancelled && state === 'failed' ? 'cancelled' : state,
       progress: job.progress,
       result: state === 'completed' ? job.returnvalue : null,
       error: failure.error,
       errorKey: failure.errorKey,
+      cancelled,
+    };
+  }
+
+  isGenerationCancelled(jobId: string | number | undefined | null): boolean {
+    if (jobId == null) return false;
+    return this.cancelledGenerationJobs.has(String(jobId));
+  }
+
+  assertGenerationNotCancelled(jobId: string | number | undefined | null) {
+    if (this.isGenerationCancelled(jobId)) {
+      throw new BadRequestException(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED);
+    }
+  }
+
+  async cancelGenerate(jobId: string) {
+    const job = await this.contentQueue.getJob(jobId);
+    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
+
+    const state = await job.getState();
+    if (state === 'completed') {
+      return {
+        jobId,
+        status: state,
+        cancelled: false,
+        message: 'Generation already completed',
+      };
+    }
+
+    this.cancelledGenerationJobs.add(String(jobId));
+
+    try {
+      const previous =
+        job.progress && typeof job.progress === 'object'
+          ? (job.progress as Record<string, unknown>)
+          : {};
+      await job.updateProgress({
+        ...previous,
+        cancelled: true,
+        message: 'Cancelled by user',
+      });
+    } catch {
+      /* progress update is best-effort while cancelling */
+    }
+
+    if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+      try {
+        await job.remove();
+      } catch {
+        /* ignore */
+      }
+    } else if (state === 'active') {
+      try {
+        await job.moveToFailed(
+          new Error(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED),
+          '0',
+          true,
+        );
+      } catch {
+        /* worker will stop at next cancellation check */
+      }
+    } else if (state === 'failed') {
+      /* already failed — treat as cancelled if we marked the set */
+    }
+
+    // Drop the cancel flag later so memory does not grow forever
+    setTimeout(() => this.cancelledGenerationJobs.delete(String(jobId)), 30 * 60 * 1000);
+
+    return {
+      jobId,
+      status: 'cancelled',
+      cancelled: true,
     };
   }
 
@@ -519,5 +615,71 @@ export class TopicContentService {
         content,
       },
     });
+  }
+
+  async updateSlidesDeck(
+    tenantId: number,
+    topicId: number,
+    body: { content?: Record<string, unknown>; slides?: unknown[] },
+  ) {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type: 'SLIDES' },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!topic) {
+      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+    }
+
+    const existing = topic.topicContents[0]?.content;
+    const existingObj =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? (existing as Record<string, unknown>)
+        : {};
+
+    const incomingSlides = Array.isArray(body?.slides)
+      ? body.slides
+      : Array.isArray(body?.content?.slides)
+        ? (body.content.slides as unknown[])
+        : null;
+
+    if (!incomingSlides) {
+      throw new BadRequestException('slides array is required');
+    }
+
+    const normalizedSlides = incomingSlides.map((slide, index) => {
+      const item =
+        slide && typeof slide === 'object'
+          ? (slide as Record<string, unknown>)
+          : {};
+      return {
+        ...item,
+        slideNumber: index + 1,
+      };
+    });
+
+    const contentPayload = {
+      ...existingObj,
+      ...(body.content && typeof body.content === 'object' ? body.content : {}),
+      source: existingObj.source || 'gradx',
+      provider: existingObj.provider || 'openrouter',
+      slides: normalizedSlides,
+      totalSlides: normalizedSlides.length,
+      editedAt: new Date().toISOString(),
+    };
+
+    return this.saveContent(
+      topicId,
+      topic.courseId,
+      tenantId,
+      'SLIDES',
+      contentPayload,
+    );
   }
 }

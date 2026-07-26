@@ -16,14 +16,19 @@ function titleFromPageText(pageNumber: number, text: string): string {
     .find((line) => line.length >= 8 && line.length <= 120);
 
   if (!firstMeaningfulLine) {
-    return `Page ${pageNumber}`;
+    return `Section ${pageNumber}`;
   }
 
-  if (SECTION_HEADER_PATTERN.test(firstMeaningfulLine)) {
-    return firstMeaningfulLine;
+  const cleaned = firstMeaningfulLine
+    .replace(/^Page\s+\d+\s*:\s*/i, '')
+    .replace(/^---\s*Page\s+\d+\s*---\s*/i, '')
+    .trim();
+
+  if (SECTION_HEADER_PATTERN.test(cleaned)) {
+    return cleaned;
   }
 
-  return `Page ${pageNumber}: ${firstMeaningfulLine.slice(0, 80)}`;
+  return cleaned.slice(0, 80) || `Section ${pageNumber}`;
 }
 
 function splitIntoSections(text: string): LectureSection[] {
@@ -162,16 +167,10 @@ export function buildLectureContentFromPdfExtraction(params: {
     modules: sections.map((section, index) => ({
       moduleIndex: index + 1,
       title: section.title,
-      theoreticalFoundations: {
-        formalDefinition: section.body,
-      },
+      content: section.body,
     })),
     comprehensiveAssessment: [],
     providedReferences: [],
-    academicReviewVerification: {
-      checksPassed: [],
-      status: 'UPLOADED_PDF',
-    },
   };
 }
 

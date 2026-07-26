@@ -3,7 +3,7 @@ import { TopicContentAiService } from '../topic-content-ai.service';
 import { Job } from 'bullmq';
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 import { TopicContentService } from '../topic-content.service';
-import { SkyworkPptService } from '../skywork-ppt.service';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
 
 @Processor('topic-content-generation', {
   lockDuration: 15 * 60 * 1000,
@@ -14,17 +14,23 @@ export class ContentGeneratonProcessor extends WorkerHost {
   constructor(
     private readonly topicContentAiService: TopicContentAiService,
     private readonly topicContentService: TopicContentService,
-    private readonly skyworkPptService: SkyworkPptService,
   ) {
     super();
   }
 
+  private assertNotCancelled(job: Job<ContentGenerationJob>) {
+    this.topicContentService.assertGenerationNotCancelled(job.id);
+  }
+
   async process(job: Job<ContentGenerationJob>) {
     try {
+      this.assertNotCancelled(job);
+
       if (job.data.type === 'LECTURE') {
         const result = await this.topicContentAiService.generateLectureStreaming(
           job.data,
           async (progress) => {
+            this.assertNotCancelled(job);
             await job.updateProgress(progress);
             await this.topicContentService.savePartialContent(
               job.data.topicId,
@@ -36,6 +42,7 @@ export class ContentGeneratonProcessor extends WorkerHost {
           },
         );
 
+        this.assertNotCancelled(job);
         await this.topicContentService.saveContent(
           job.data.topicId,
           job.data.courseId,
@@ -47,45 +54,28 @@ export class ContentGeneratonProcessor extends WorkerHost {
       }
 
       if (job.data.type === 'SLIDES') {
-        const existing = await this.topicContentService.getSlidesMeta(
-          job.data.tenantId,
-          job.data.topicId,
-        );
-        if (existing?.filePath) {
-          await this.skyworkPptService.deleteStoredFile(existing.filePath);
-        }
-
-        const result = await this.skyworkPptService.generateSlides(
+        // In-system AI slides (lecture → deck JSON → pagination). No external PPT API.
+        const result = await this.topicContentAiService.generateSlides(
           job.data,
           async (progress) => {
+            this.assertNotCancelled(job);
             await job.updateProgress({
               stage: progress.stage,
               percent: progress.percent,
               message: progress.message,
-              partial: {
-                source: 'skywork',
-                streamStatus: progress.stage,
-                progressMessage: progress.message,
-                outline: progress.outline,
-              },
+              partial: progress.partial,
             });
             await this.topicContentService.savePartialContent(
               job.data.topicId,
               job.data.courseId,
               job.data.tenantId,
               'SLIDES',
-              {
-                source: 'skywork',
-                provider: 'skywork',
-                streamStatus: progress.stage,
-                progressMessage: progress.message,
-                percent: progress.percent,
-                outline: progress.outline,
-              },
+              progress.partial,
             );
           },
         );
 
+        this.assertNotCancelled(job);
         await this.topicContentService.saveContent(
           job.data.topicId,
           job.data.courseId,
@@ -96,10 +86,12 @@ export class ContentGeneratonProcessor extends WorkerHost {
         return result;
       }
 
+      this.assertNotCancelled(job);
       const result = await this.topicContentAiService.generate(
         job.data.type,
         job.data,
       );
+      this.assertNotCancelled(job);
       await this.topicContentService.saveContent(
         job.data.topicId,
         job.data.courseId,
@@ -109,6 +101,14 @@ export class ContentGeneratonProcessor extends WorkerHost {
       );
       return result;
     } catch (error) {
+      if (
+        this.topicContentService.isGenerationCancelled(job.id) ||
+        String((error as Error)?.message || '')
+          .toUpperCase()
+          .includes('CANCELLED')
+      ) {
+        throw new Error(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED);
+      }
       throw error;
     }
   }

@@ -1,4 +1,11 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
+import {
+  SAUDI_UNIVERSITY_PEDAGOGY,
+  formatClosForPrompt,
+  localContextGuidance,
+  languageBlock,
+  qualityModeGuidance,
+} from './pedagogy.shared';
 
 const contextBlock = (data: ContentGenerationJob) => `
 ## Course & Topic
@@ -12,9 +19,10 @@ const contextBlock = (data: ContentGenerationJob) => `
 - Difficulty: ${data.difficulty}
 - Note type: ${data.courseNoteType}
 - Length: ${data.length}
+- ${qualityModeGuidance(data.aiQualityMode)}
 
-## CLOs
-${data.clos.map((c) => `- [${c.code}] ${c.description}`).join('\n') || '- (none provided)'}
+## CLOs (constructive alignment)
+${formatClosForPrompt(data.clos, data.targetedCloIds)}
 
 ### Priority CLO focus
 ${
@@ -22,10 +30,16 @@ ${
     ? data.targetedCloIds.map((id) => `- ${id}`).join('\n')
     : '- Emphasize CLOs most relevant to this topic'
 }
+
+${localContextGuidance(data.exampleLevels)}
+
+${languageBlock(data)}
 `;
 
-export const LECTURE_STREAM_SYSTEM = `You are an experienced university lecturer.
-Write clear academic teaching content. Return valid JSON only — no markdown fences.`;
+export const LECTURE_STREAM_SYSTEM = `You are an experienced university lecturer who designs NCAAA-aligned course topics for Saudi and Gulf higher education.
+Write clear academic teaching content a professor can deliver in class.
+${SAUDI_UNIVERSITY_PEDAGOGY}
+Return valid JSON only — no markdown fences.`;
 
 export const LECTURE_PLAN_PROMPT = (data: ContentGenerationJob) => `
 Plan a university lecture outline for this topic.
@@ -42,6 +56,8 @@ Return ONLY JSON:
 Rules:
 - moduleCount between 3 and 5 unless the topic is extremely narrow (then 2).
 - Titles must be teachable classroom sections, not marketing slogans.
+- Sequence for constructive alignment: motivation/why → core concepts → methods/formalism → application → synthesis.
+- Each module title should make the CLO focus obvious to a faculty reviewer.
 `;
 
 export const LECTURE_OVERVIEW_PROMPT = (
@@ -66,11 +82,15 @@ Return ONLY JSON:
   },
   "lectureOverview": {
     "abstract": "2-4 sentences: what students will master and why it matters in this course.",
-    "learningObjectives": ["Measurable objective with Bloom verb"],
+    "learningObjectives": ["Measurable objective with Bloom verb, ideally tagged to a CLO code"],
     "prerequisiteKnowledgeCheck": ["Concrete prerequisite"],
-    "suggestedClassFlow": ["Timed teaching segment"]
+    "suggestedClassFlow": ["Timed teaching segment that a Saudi university instructor can follow"]
   }
 }
+
+Rules:
+- Learning objectives must be measurable and use Bloom verbs matching: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze, Evaluate'}.
+- suggestedClassFlow should total a realistic single session or two-session plan with minutes.
 `;
 
 export const LECTURE_MODULE_PROMPT = (
@@ -89,13 +109,15 @@ ${contextBlock(data)}
 ${priorModuleTitles.length ? priorModuleTitles.map((t, i) => `${i + 1}. ${t}`).join('\n') : '- (this is the first module)'}
 
 ## Pedagogical requirements
-- Bloom levels: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze'}
+- Bloom levels: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze, Evaluate'}
 - Example contexts: ${data.exampleLevels.join(', ') || 'Academic, Industry'}
 - Visuals: ${data.visuals.join(', ') || 'Concept Diagrams'}
+- Faculty review intent (design toward these checks; do not claim automated verification): ${(data.humanReviewChecks || []).join(', ') || 'CLO Alignment Check, Validate Definitions'}
 
 Rules:
 - Full teaching substance: definition → intuition → formalism/process → worked example → misconception → formative check.
 - Include at least one fully worked example with concrete values.
+- Map this module explicitly to the most relevant priority CLO(s); respect teachingStrategies/assessmentMethods when provided.
 - Escape strings for valid JSON. No markdown fences.
 - Associated CLO ids: ${JSON.stringify(data.targetedCloIds)}
 
@@ -129,16 +151,20 @@ Return ONLY JSON for this single module object:
       "realWorldProblemContext": string,
       "concreteProblemStatement": string,
       "stepByStepSolution": string,
-      "executableArtifactSnippet": string,
-      "artifactTypeOrLanguage": string
+      "executableArtifactSnippet": "optional — real code/pseudocode/procedure only; omit for non-technical subjects",
+      "artifactTypeOrLanguage": "optional — omit when no snippet"
     }
   ],
   "professorSpeakingNotes": [string],
   "formativeChecks": [
-    { "prompt": string, "modelAnswer": string }
+    { "prompt": string, "modelAnswer": string, "alignedCloCode": string }
   ],
   "moduleKeyTakeaways": [string]
 }
+
+Rules for this module:
+- Never invent TypeScript/Python/code stubs or write "N/A" in executableArtifactSnippet.
+- For marketing, business, humanities, and other non-coding topics, omit executableArtifactSnippet and artifactTypeOrLanguage entirely.
 `;
 
 export const LECTURE_CLOSING_PROMPT = (
@@ -162,15 +188,17 @@ Return ONLY JSON:
       "questionType": string,
       "questionStatement": string,
       "solvingHint": string,
-      "exhaustiveAnswerKey": string
+      "exhaustiveAnswerKey": string,
+      "alignedCloCode": string,
+      "bloomsLevel": string
     }
   ],
-  "providedReferences": [string],
-  "academicReviewVerification": {
-    "checksPassed": ${JSON.stringify(data.humanReviewChecks)},
-    "status": "VERIFIED_COMPLIANT"
-  }
+  "providedReferences": [string]
 }
 
-Include at least 2 exam-quality assessment items matching difficulty ${data.difficulty}.
+Rules:
+- Include at least 2 exam-quality assessment items matching difficulty ${data.difficulty}.
+- Each item must align to a listed CLO code and an appropriate Bloom level.
+- Do NOT invent references; only list references that were provided or are standard textbooks clearly implied by the course.
+- Do NOT include an academicReviewVerification object.
 `;
