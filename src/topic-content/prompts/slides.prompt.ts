@@ -6,14 +6,53 @@ import {
   languageBlock,
   qualityModeGuidance,
 } from './pedagogy.shared';
+import { parseSlidesLength } from '../utils/slide-deck.util';
 
-export const SLIDES_SYSTEM_PROMPT = `You are a senior university instructional designer and an experienced professor teaching in Saudi / Gulf higher education.
-You produce presentation decks that faculty can teach from immediately: clear structure, classroom pacing, rigorous content, and strong speaker notes.
+export const SLIDES_SYSTEM_PROMPT = `You are a senior university presentation designer and an experienced lecture professor in Saudi / Gulf higher education.
+You write SLIDE DECKS for live classroom projection — informational lecture slides, not spoken scripts and not essay paragraphs.
 ${SAUDI_UNIVERSITY_PEDAGOGY}
+Audience sees the slide; professor speaks from speakerNotes.
+CRITICAL: Never emit a teaching slide with an empty body. Every non-TITLE / non-SECTION slide MUST include real content in bullets, callout, formula, example, or two-column fields.
 Return valid JSON only — no markdown fences.`;
 
-export const SLIDES_PROMPT = (data: ContentGenerationJob): string => `
-Build a professional university lecture slide deck for live classroom teaching.
+const PRESENTATION_STYLE = `
+## Lecture-oriented informational style (mandatory)
+- Slide face = teachable facts students can copy. Speaker notes = what the professor says aloud.
+- NEVER put greetings, icebreakers, or spoken transitions on the slide:
+  Forbidden on bullets/titles: "Good morning", "Hello everyone", "Today we…", "Let's dive in",
+  "We will discuss", "This is where the rubber meets the road", motivational fluff.
+- Each CONTENT slide should teach one idea using an informational pattern, e.g.:
+  - Definition → Why it matters → Key property → Common pitfall
+  - Problem → Method → Update rule / formula → When it fails
+  - Compare A vs B in TWO_COLUMN when useful
+- Bullets are dense lecture cues (≤14 words). Prefer nouns/verbs of the discipline, numbers, and symbols.
+- Wrap the 1–3 most important terms in each bullet with **double asterisks** for emphasis, e.g.
+  "**SGD** uses noisy **unbiased** gradient estimates."
+- Titles are instructional claims students can remember (e.g. "**SGD** trades exact gradients for speed"), not marketing.
+- LEARNING_OUTCOMES: measurable verbs + concept (no greetings).
+- AGENDA: short segment labels with pacing hints if useful ("SGD update · 12 min").
+- Examples: board-ready problem → numbered steps → result (not storytelling).
+- Checkpoints: ask-aloud technical question in callout.text; answer only in speakerNotes.
+`;
+
+const BODY_RULES = `
+## Non-negotiable body rules
+- TITLE and SECTION slides may have title/subtitle only (no greeting body).
+- Every other slide MUST have a non-empty body:
+  - CONTENT / AGENDA / LEARNING_OUTCOMES / SUMMARY / NEXT_STEPS → bullets[] with 3–5 informational items
+  - DEFINITION → callout { label, text } with a crisp definition (and optional short bullets)
+  - FORMULA → formula { latex, explanation }
+  - EXAMPLE → example { problem, steps[], solution }
+  - CHECKPOINT / ACTIVITY → callout { label, text }
+  - COMPARISON → leftColumn + rightColumn with bullets
+- Empty bullets: [] with null callout/example/formula is INVALID.
+- Do NOT paste lecture prose paragraphs onto the slide face.
+`;
+
+export const SLIDES_PROMPT = (data: ContentGenerationJob): string => {
+  const targetSlides = parseSlidesLength(data.slidesLength, 16);
+  return `
+Build a professional university lecture PRESENTATION (slide deck) for live classroom teaching.
 
 ## Course Context
 - Course: ${data.courseTitle}
@@ -22,6 +61,7 @@ Build a professional university lecture slide deck for live classroom teaching.
 - Audience: ${data.audience}
 - Depth: ${data.contentDepth}
 - Difficulty: ${data.difficulty}
+- REQUIRED slide count: exactly ${targetSlides} slides (hard constraint)
 - Bloom levels: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze, Evaluate'}
 - Visual preference: ${data.visuals.join(', ') || 'Concept Diagrams, Process Flow'}
 - Assessment styles to seed: ${data.assessmentIntegrations.join(', ') || 'Short Answers, Discussion Questions'}
@@ -44,49 +84,30 @@ ${languageBlock(data)}
 
 ## Source Lecture Content (authoritative)
 Use this lecture as the single source of truth.
-Do NOT invent a different syllabus, sequence, terminology, examples, objectives, or assessment focus.
-Convert dense notes into teachable slides a professor can present.
+Convert dense notes into PRESENTATION slides a professor can project and speak to.
+Do NOT copy lecture paragraphs onto slides.
 
 ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
 
 ## Pedagogical Deck Architecture (required order)
-1. TITLE — course, topic, instructor-facing session identity
-2. LEARNING_OUTCOMES — measurable outcomes aligned to CLOs/Bloom (show CLO codes)
-3. AGENDA — 4–7 session segments with intended pacing
-4. SECTION dividers before each major module/theme from the lecture
-5. Teaching body for each module using a mini-arc:
-   - DEFINITION / CONTENT (concept)
-   - FORMULA or DIAGRAM when the lecture has formalism or structure
-   - EXAMPLE with complete worked steps
-   - CHECKPOINT or ACTIVITY (1 formative check mapped to a CLO)
-6. SUMMARY — synthesis of key takeaways + CLO coverage reminder
-7. NEXT_STEPS / take-home questions (exam-quality)
-8. REFERENCES — only if the lecture provides references (otherwise omit)
+1. TITLE
+2. LEARNING_OUTCOMES (3–5 short measurable bullets)
+3. AGENDA (short segment labels, not paragraphs)
+4. SECTION dividers + teaching slides per module
+5. SUMMARY
+6. NEXT_STEPS
+7. REFERENCES only if lecture provides them
 
 ## University Slide Design Standards
-- Target ~18–28 slides for a substantial university topic (adjust up/down only if lecture is very short/long).
-- One teaching idea per slide. Never dump a whole module onto one slide.
-- Max 5 bullets per slide; each bullet ≤ 14 words; telegraphic academic phrasing.
-- If an example needs more than 4 steps, emit consecutive EXAMPLE slides (Part 1/2, Part 2/2) instead of one overloaded slide.
-- Titles are instructional, not marketing (e.g. "Deriving the Update Rule", not "Let's Dive In").
-- Prefer action verbs tied to Bloom: Define, Distinguish, Derive, Compare, Apply, Evaluate, Critique.
-- Include numerical worked examples whenever the lecture contains them; keep values exact.
-- Formulas as readable plain text (no LaTeX backslash storms that break JSON). Prefer Unicode/math prose.
-- Mermaid diagrams only when they clarify structure already present in the lecture; keep them short.
-- Speaker notes are for the instructor: what to say, what to ask, what to write on the board, common misconception to preempt. 2–5 sentences.
-- Put cloCode on concept/example/checkpoint slides when a CLO clearly maps.
-- Set teachingBeat and timingMinutes so faculty can pace the session.
-- Prefer layout hints that match content:
-  - TITLE_CENTER for title
-  - SECTION_DIVIDER for section breaks
-  - BULLETS for standard exposition
-  - TWO_COLUMN for comparisons/taxonomy splits
-  - DEFINITION for key term slides
-  - FORMULA_FOCUS for equations
-  - EXAMPLE_STEPS for worked examples
-  - QUOTE_CALLOUT for misconceptions / key warnings
-- Avoid fluff: no motivational hype, no "overview of overview", no filler transition slides, no generic AI tips.
-- Output is consumed by GradX's university PPTX template engine (navy/teal academic theme, footer with course + slide numbers).
+- Emit exactly ${targetSlides} slides in totalSlides and slides[].length.
+- Max 5 bullets/slide; ≤14 words each; informational lecture phrasing (not a speaking script).
+- Mark key terms with **bold** markdown inside bullet strings.
+- If an example needs more than 4 steps, split into consecutive EXAMPLE slides.
+- Titles are instructional claims (e.g. "Mini-batch size controls gradient variance"), not marketing.
+- Formulas as readable plain text / Unicode (avoid LaTeX backslash storms).
+- Speaker notes: 2–5 spoken sentences for the instructor (greetings/transitions belong HERE only).
+${PRESENTATION_STYLE}
+${BODY_RULES}
 
 ## JSON Schema (return ONLY valid JSON)
 {
@@ -100,60 +121,41 @@ ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
     "learningOutcomes": [string],
     "designTheme": "UNIVERSITY_ACADEMIC"
   },
-  "totalSlides": number,
-  "slides": [
-    {
-      "slideNumber": number,
-      "type": "TITLE" | "AGENDA" | "LEARNING_OUTCOMES" | "SECTION" | "CONTENT" | "DEFINITION" | "FORMULA" | "DIAGRAM" | "EXAMPLE" | "COMPARISON" | "ACTIVITY" | "CHECKPOINT" | "SUMMARY" | "NEXT_STEPS" | "REFERENCES",
-      "layout": "TITLE_CENTER" | "BULLETS" | "TWO_COLUMN" | "DEFINITION" | "FORMULA_FOCUS" | "EXAMPLE_STEPS" | "QUOTE_CALLOUT" | "SECTION_DIVIDER",
-      "title": string,
-      "subtitle": string | null,
-      "sectionLabel": string | null,
-      "bullets": string[],
-      "leftColumn": { "heading": string, "bullets": string[] } | null,
-      "rightColumn": { "heading": string, "bullets": string[] } | null,
-      "callout": { "label": string, "text": string } | null,
-      "formula": { "latex": string, "explanation": string } | null,
-      "diagram": { "title": string, "mermaid": string } | null,
-      "example": {
-        "problem": string,
-        "steps": string[],
-        "solution": string
-      } | null,
-      "table": {
-        "headers": string[],
-        "rows": string[][]
-      } | null,
-      "cloCode": string | null,
-      "bloomLevel": string | null,
-      "teachingBeat": "INTRODUCE" | "EXPLAIN" | "DEMONSTRATE" | "CHECK" | "SYNTHESIZE" | null,
-      "timingMinutes": number | null,
-      "speakerNotes": string
-    }
-  ]
+  "totalSlides": ${targetSlides},
+  "slides": [ /* exactly ${targetSlides} slide objects */ ]
 }
 
-## Quality Bar
-Every CONTENT/DEFINITION slide must advance understanding.
-Every EXAMPLE must be complete enough to teach from without opening the lecture notes.
-Every CHECKPOINT/ACTIVITY must include a clear prompt the instructor can ask aloud; put the model answer in speakerNotes.
+Each slide object fields:
+slideNumber, type, layout, title, subtitle, sectionLabel, bullets, leftColumn, rightColumn,
+callout, formula, diagram, example, table, cloCode, bloomLevel, teachingBeat, timingMinutes, speakerNotes
+
+Layouts: TITLE_CENTER | BULLETS | TWO_COLUMN | DEFINITION | FORMULA_FOCUS | EXAMPLE_STEPS | QUOTE_CALLOUT | SECTION_DIVIDER
+Types: TITLE | AGENDA | LEARNING_OUTCOMES | SECTION | CONTENT | DEFINITION | FORMULA | DIAGRAM | EXAMPLE | COMPARISON | ACTIVITY | CHECKPOINT | SUMMARY | NEXT_STEPS | REFERENCES
+
 Escape all strings for valid JSON.
 `;
+};
 
 const slideSchemaHint = `
 Return ONLY JSON:
 {
   "slides": [ { same slide object fields as the full deck schema } ]
 }
-Max 5 bullets/slide, ≤14 words each. One idea per slide. Include speakerNotes.
+Informational lecture bullets: ≤14 words, max 5 bullets, mark key terms with **bold**.
+NO greetings or spoken transitions on the slide face (those go in speakerNotes only).
+Every non-TITLE/non-SECTION slide MUST have non-empty bullets OR callout OR formula OR example.
 `;
 
-export const SLIDES_OPENING_PROMPT = (data: ContentGenerationJob): string => `
-Create ONLY the opening slides for a university lecture deck.
+export const SLIDES_OPENING_PROMPT = (
+  data: ContentGenerationJob,
+  openingCount = 3,
+): string => `
+Create ONLY the opening PRESENTATION slides for a university lecture deck.
 
 Course: ${data.courseTitle}
 Topic ${data.topicNumber}: ${data.topicTitle}
 Audience: ${data.audience}
+Emit exactly ${openingCount} slides.
 
 Lecture overview (source of truth):
 ${JSON.stringify((data.sourceLectureContent as any)?.lectureOverview ?? {}, null, 2)}
@@ -164,12 +166,14 @@ ${formatClosForPrompt(data.clos, data.targetedCloIds)}
 ${languageBlock(data)}
 
 Required slides (in order):
-1. TITLE
-2. LEARNING_OUTCOMES (from lecture learningObjectives / CLOs)
-3. AGENDA (4–7 segments from lecture modules / suggestedClassFlow)
+1. TITLE (layout TITLE_CENTER)
+2. LEARNING_OUTCOMES (layout BULLETS) — short measurable outcomes
+3. AGENDA (layout BULLETS) — short segment labels only
 
+${PRESENTATION_STYLE}
+${BODY_RULES}
 ${slideSchemaHint}
-Emit 3–5 slides total for this opening block.
+slides[].length must equal ${openingCount}.
 `;
 
 export const SLIDES_MODULE_PROMPT = (
@@ -177,35 +181,45 @@ export const SLIDES_MODULE_PROMPT = (
   module: Record<string, unknown>,
   moduleIndex: number,
   moduleCount: number,
+  perModule = 5,
 ): string => `
-Create teaching slides for ONE lecture module only (module ${moduleIndex} of ${moduleCount}).
+Create PRESENTATION slides for ONE lecture module only (module ${moduleIndex} of ${moduleCount}).
 
 Course: ${data.courseTitle}
 Topic: ${data.topicTitle}
 Bloom levels: ${data.bloomsTaxonomyLevels.join(', ') || 'Understand, Apply, Analyze, Evaluate'}
+Emit exactly ${perModule} slides for this module.
 ${localContextGuidance(data.exampleLevels)}
 ${languageBlock(data)}
 
-Module JSON (authoritative):
+Module JSON (authoritative — distill into projected cues, not paragraphs):
 ${JSON.stringify(module, null, 2)}
 
-Required mini-arc for this module:
-1. SECTION divider (module title)
-2. DEFINITION or CONTENT (core concept)
-3. FORMULA or DIAGRAM if present in the module; otherwise CONTENT
-4. EXAMPLE with worked steps if appliedDemonstrations exist
-5. CHECKPOINT or ACTIVITY from formativeChecks (model answer in speakerNotes)
+Required mini-arc:
+1. SECTION (layout SECTION_DIVIDER)
+2. DEFINITION or CONTENT — short informational bullets / callout (NO greetings)
+3. FORMULA or CONTENT — board-ready facts
+4. EXAMPLE if demos exist — problem + steps + solution
+5. CHECKPOINT — ask-aloud technical callout
 
 Do NOT repeat title/agenda/summary slides.
+Do NOT paste lecture paragraphs or spoken scripts onto bullets.
+Mark key terms with **bold**.
+${PRESENTATION_STYLE}
+${BODY_RULES}
 ${slideSchemaHint}
-Emit 4–7 slides for this module.
+slides[].length must equal ${perModule}.
 `;
 
-export const SLIDES_CLOSING_PROMPT = (data: ContentGenerationJob): string => `
-Create ONLY the closing slides for a university lecture deck.
+export const SLIDES_CLOSING_PROMPT = (
+  data: ContentGenerationJob,
+  closingCount = 3,
+): string => `
+Create ONLY the closing PRESENTATION slides.
 
 Course: ${data.courseTitle}
 Topic: ${data.topicTitle}
+Emit exactly ${closingCount} slides (omit REFERENCES and emit ${Math.max(1, closingCount - 1)} if no references).
 
 Lecture closing context:
 ${JSON.stringify(
@@ -226,11 +240,12 @@ ${JSON.stringify(
 
 ${languageBlock(data)}
 
-Required slides (in order):
-1. SUMMARY — key takeaways across modules
-2. NEXT_STEPS — exam-quality take-home prompts
-3. REFERENCES — only if references exist; otherwise omit
+Required:
+1. SUMMARY — 3–5 short takeaway bullets
+2. NEXT_STEPS — short exam-style prompts as bullets
+3. REFERENCES — only if present
 
+${PRESENTATION_STYLE}
+${BODY_RULES}
 ${slideSchemaHint}
-Emit 2–4 slides.
 `;

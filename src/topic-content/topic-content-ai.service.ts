@@ -29,6 +29,8 @@ import {
 import {
   compactLectureForSlides,
   normalizeAndPaginateSlideDeck,
+  fitSlideDeckToTarget,
+  resolveSlideBudget,
   type SlideDeckSlide,
 } from './utils/slide-deck.util';
 
@@ -143,6 +145,7 @@ export class TopicContentAiService {
       ? ((compactLecture as any).modules as Record<string, unknown>[])
       : [];
     const moduleCount = Math.max(1, modules.length);
+    const budget = resolveSlideBudget(data.slidesLength, modules.length);
 
     const accumulated: SlideDeckSlide[] = [];
     const appendSlides = (raw: unknown) => {
@@ -161,13 +164,13 @@ export class TopicContentAiService {
     await emit({
       stage: 'generate',
       percent: 12,
-      message: 'Designing title, outcomes, and agenda…',
+      message: `Designing title, outcomes, and agenda (target ${budget.target} slides)…`,
       partial: buildPartial(accumulated, 'generate-opening'),
     });
 
     const openingRaw = await this.chatJson(
       SLIDES_SYSTEM_PROMPT,
-      SLIDES_OPENING_PROMPT(slidesJob),
+      SLIDES_OPENING_PROMPT(slidesJob, budget.opening),
     );
     appendSlides(openingRaw);
     await emit({
@@ -205,7 +208,13 @@ export class TopicContentAiService {
 
         const moduleRaw = await this.chatJson(
           SLIDES_SYSTEM_PROMPT,
-          SLIDES_MODULE_PROMPT(slidesJob, module, moduleIndex, moduleCount),
+          SLIDES_MODULE_PROMPT(
+            slidesJob,
+            module,
+            moduleIndex,
+            moduleCount,
+            budget.perModule + (i < budget.remainder ? 1 : 0),
+          ),
         );
         appendSlides(moduleRaw);
         await emit({
@@ -224,7 +233,7 @@ export class TopicContentAiService {
       });
       const closingRaw = await this.chatJson(
         SLIDES_SYSTEM_PROMPT,
-        SLIDES_CLOSING_PROMPT(slidesJob),
+        SLIDES_CLOSING_PROMPT(slidesJob, budget.closing),
       );
       appendSlides(closingRaw);
       await emit({
@@ -242,13 +251,16 @@ export class TopicContentAiService {
       partial: buildPartial(accumulated, 'paginate'),
     });
 
-    const deck = normalizeAndPaginateSlideDeck(
-      { deckMeta, slides: accumulated },
-      {
-        courseTitle: data.courseTitle,
-        topicTitle: data.topicTitle,
-        topicNumber: data.topicNumber,
-      },
+    const deck = fitSlideDeckToTarget(
+      normalizeAndPaginateSlideDeck(
+        { deckMeta, slides: accumulated },
+        {
+          courseTitle: data.courseTitle,
+          topicTitle: data.topicTitle,
+          topicNumber: data.topicNumber,
+        },
+      ),
+      data.slidesLength ?? budget.target,
     );
 
     await emit({

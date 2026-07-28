@@ -136,7 +136,7 @@ export class TopicContentService {
           );
 
     const contentGeneration: ContentGenerationJob = {
-      ...generationContentDto,
+      ...(generationContentDto as unknown as ContentGenerationJob),
       tenantId,
       topicId: topic.id,
       topicNumber: topic.topicNumber,
@@ -146,6 +146,10 @@ export class TopicContentService {
       courseTitle: topic.course.title ?? '',
       courseDescription: topic.course.description ?? '',
       contentLanguage: detectedLanguage,
+      slidesLength:
+        typeof generationContentDto.slidesLength === 'string'
+          ? generationContentDto.slidesLength
+          : undefined,
       clos: topic.course.clos.map((clo) => ({
         code: clo.code,
         category: clo.category,
@@ -679,6 +683,56 @@ export class TopicContentService {
       topic.courseId,
       tenantId,
       'SLIDES',
+      contentPayload,
+    );
+  }
+
+  async updateLabManual(
+    tenantId: number,
+    topicId: number,
+    body: { content?: Record<string, unknown> },
+  ) {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type: 'LAB' },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!topic) {
+      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+    }
+
+    const existing = topic.topicContents[0]?.content;
+    const existingObj =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? (existing as Record<string, unknown>)
+        : {};
+
+    const incoming =
+      body?.content && typeof body.content === 'object' ? body.content : body;
+
+    if (!incoming || typeof incoming !== 'object') {
+      throw new BadRequestException('lab content is required');
+    }
+
+    const contentPayload = {
+      ...existingObj,
+      ...incoming,
+      source: existingObj.source || 'gradx',
+      provider: existingObj.provider || 'openrouter',
+      editedAt: new Date().toISOString(),
+    };
+
+    return this.saveContent(
+      topicId,
+      topic.courseId,
+      tenantId,
+      'LAB',
       contentPayload,
     );
   }

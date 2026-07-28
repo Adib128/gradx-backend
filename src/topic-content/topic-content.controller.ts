@@ -66,6 +66,15 @@ export class TopicContentController {
     return this.topicContentService.updateSlidesDeck(tenantId, topicId, body);
   }
 
+  @Patch(':topicId/lab')
+  updateLab(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: { content?: Record<string, unknown> },
+  ) {
+    return this.topicContentService.updateLabManual(tenantId, topicId, body);
+  }
+
   @Post(':topicId/upload-lecture')
   @UseInterceptors(FileInterceptor('file'))
   uploadLecture(

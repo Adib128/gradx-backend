@@ -71,6 +71,12 @@ export type AssessmentIntegration =
   | 'Exam Questions';
 
 export type ContentLength = '2 pages' | '5 pages' | '10 pages' | '20 pages';
+export type SlidesLength =
+  | '8 slides'
+  | '12 slides'
+  | '16 slides'
+  | '20 slides'
+  | '24 slides';
 export type DifficultyLevel = 'Easy' | 'Medium' | 'Hard';
 export type AIQualityMode =
   | 'Academic Quality'
@@ -112,6 +118,8 @@ export interface ContentGenerationJob {
   visuals: VisualType[];
   assessmentIntegrations: AssessmentIntegration[];
   length: ContentLength;
+  /** Target number of slides for SLIDES generation (e.g. "16 slides"). */
+  slidesLength?: SlidesLength | string;
   difficulty: DifficultyLevel;
   aiQualityMode: AIQualityMode;
   humanReviewChecks: HumanReviewCheck[];

@@ -47,6 +47,9 @@ const GenerateContentFields: ZodFieldsFromInterface<ContentGenerationJob> = {
     ContentGenerationJob['audience']
   >,
   length: z.string() as unknown as z.ZodType<ContentGenerationJob['length']>,
+  slidesLength: z.string().optional() as unknown as z.ZodType<
+    ContentGenerationJob['slidesLength']
+  >,
   difficulty: z.string() as unknown as z.ZodType<
     ContentGenerationJob['difficulty']
   >,
