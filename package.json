@@ -18,7 +18,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "verify:pdf-extraction": "ts-node -r tsconfig-paths/register scripts/verify-pdf-extraction.ts"
+    "verify:pdf-extraction": "ts-node -r tsconfig-paths/register scripts/verify-pdf-extraction.ts",
+    "seed:universities": "node scripts/seed-universities.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",

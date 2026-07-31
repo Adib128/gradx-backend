@@ -7,6 +7,8 @@ import { CLO_ANALYSIS_ALL_PROMPT } from './prompts/clo-analysis-all.prompt';
 import { inflateRawSync } from 'zlib';
 import { createHash } from 'crypto';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
+import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
 
 @Injectable()
 export class CourseAIService {
@@ -52,8 +54,9 @@ export class CourseAIService {
   }
 
   private async extractFromPdfBase64(base64: string): Promise<any> {
-    const response = await this.client.chat.completions.create({
+    const response = await createChatCompletion(this.client, {
       model: this.model,
+      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
       messages: [
         {
           role: 'user',
@@ -86,8 +89,9 @@ export class CourseAIService {
       throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_EMPTY_DOCX);
     }
 
-    const response = await this.client.chat.completions.create({
+    const response = await createChatCompletion(this.client, {
       model: this.model,
+      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
       messages: [
         {
           role: 'user',
@@ -228,8 +232,9 @@ ${documentText}`,
     const fallback = this.buildCloAnalysisFallback(payload);
 
     try {
-      const response = await this.client.chat.completions.create({
+      const response = await createChatCompletion(this.client, {
         model: this.model,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
           {
             role: 'user',
@@ -293,8 +298,9 @@ ${JSON.stringify(payload, null, 2)}`,
     const fallback = this.buildAllCloAnalysisFallback(payload);
 
     try {
-      const response = await this.client.chat.completions.create({
+      const response = await createChatCompletion(this.client, {
         model: this.model,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
           {
             role: 'user',

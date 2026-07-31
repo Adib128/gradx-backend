@@ -14,6 +14,7 @@ import { AssessmentModule } from './assessment/assessment.module';
 import { CloModule } from './clo/clo.module';
 import { GradingModule } from './grading/grading.module';
 import { CourseAnswerSheetModule } from './course-answer-sheet/course-answer-sheet.module';
+import { UniversityModule } from './university/university.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { CourseAnswerSheetModule } from './course-answer-sheet/course-answer-she
     CloModule,
     GradingModule,
     CourseAnswerSheetModule,
+    UniversityModule,
   ],
   providers: [
     {

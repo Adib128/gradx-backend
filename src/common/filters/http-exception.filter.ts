@@ -12,7 +12,8 @@ import {
   FormattedValidationError,
 } from '../helpers/format-zod-errors.helper';
 import { Request, Response } from 'express';
-import { ZodIssue } from 'zod';
+import { ZodError, ZodIssue } from 'zod';
+import { Prisma } from 'generated/prisma/client';
 
 @Global()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -21,7 +22,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const statusCode =
+    let statusCode =
       exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
@@ -31,7 +32,21 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       ErrorMessageKey.INTERNAL_SERVER_ERROR;
     let errors: FormattedValidationError[] | undefined;
 
-    if (exception instanceof HttpException) {
+    if (exception instanceof ZodError) {
+      statusCode = HttpStatus.BAD_REQUEST;
+      message = 'Validation failed';
+      messageKey = ErrorMessageKey.VALIDATION_FAILED;
+      errors = formatZodIssues(exception.issues);
+    } else if (exception instanceof Prisma.PrismaClientValidationError) {
+      statusCode = HttpStatus.BAD_REQUEST;
+      message = ErrorMessageKey.VALIDATION_FAILED;
+      messageKey = ErrorMessageKey.VALIDATION_FAILED;
+    } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+      const mapped = mapPrismaKnownError(exception);
+      statusCode = mapped.statusCode;
+      message = mapped.message;
+      messageKey = mapped.messageKey;
+    } else if (exception instanceof HttpException) {
       const exceptionResponse = exception.getResponse();
 
       if (typeof exceptionResponse === 'string') {
@@ -83,5 +98,38 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     };
 
     response.status(statusCode).json(errorBody);
+  }
+}
+
+function mapPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): {
+  statusCode: number;
+  message: string;
+  messageKey: string;
+} {
+  switch (error.code) {
+    case 'P2002':
+      return {
+        statusCode: HttpStatus.CONFLICT,
+        message: ErrorMessageKey.TOPIC_EXIST,
+        messageKey: ErrorMessageKey.TOPIC_EXIST,
+      };
+    case 'P2003':
+      return {
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: ErrorMessageKey.VALIDATION_FAILED,
+        messageKey: ErrorMessageKey.VALIDATION_FAILED,
+      };
+    case 'P2025':
+      return {
+        statusCode: HttpStatus.NOT_FOUND,
+        message: ErrorMessageKey.COURSE_NOT_FOUND,
+        messageKey: ErrorMessageKey.COURSE_NOT_FOUND,
+      };
+    default:
+      return {
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: ErrorMessageKey.INTERNAL_SERVER_ERROR,
+        messageKey: ErrorMessageKey.INTERNAL_SERVER_ERROR,
+      };
   }
 }

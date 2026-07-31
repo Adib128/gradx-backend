@@ -14,14 +14,39 @@ import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
-import { AssessmentType, Bloom } from 'generated/prisma/enums';
+import { AssessmentType, Bloom, Prisma } from 'generated/prisma/client';
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
+import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
 import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
 import {
   AssessmentGenerationJob,
   AssessmentGenerationProgress,
 } from './interfaces/assessment-generation-job.interface';
+
+const toPrismaJson = (
+  value: unknown,
+): Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined => {
+  if (value === undefined) return undefined;
+  if (value === null) return Prisma.JsonNull;
+  return value as Prisma.InputJsonValue;
+};
+
+const withPrismaJsonFields = <T extends Record<string, unknown>>(data: T) => {
+  if (!('headerConfig' in data) && !('generationConfig' in data)) {
+    return data;
+  }
+
+  const next: Record<string, unknown> = { ...data };
+  if ('headerConfig' in next) {
+    next.headerConfig = toPrismaJson(next.headerConfig);
+  }
+  if ('generationConfig' in next) {
+    next.generationConfig = toPrismaJson(next.generationConfig);
+  }
+  return next as T;
+};
 
 @Injectable()
 export class AssessmentService {
@@ -78,6 +103,7 @@ export class AssessmentService {
           dto.printBloomLevelNextToEachQuestion,
         printDifficultyLabelNextToEachQuestion:
           dto.printDifficultyLabelNextToEachQuestion,
+        headerConfig: toPrismaJson(dto.headerConfig),
         language: dto.language,
         difficulty: dto.difficulty,
         tenantId: tid,
@@ -468,10 +494,10 @@ export class AssessmentService {
 
     const updatedAssessment = await this.prisma.assessment.update({
       where: { id: assessmentId },
-      data: {
+      data: withPrismaJsonFields({
         ...dto.assessment,
         generationConfig,
-      },
+      }) as Prisma.AssessmentUpdateInput,
       select: { id: true, numberOfVersions: true },
     });
 
@@ -712,8 +738,9 @@ export class AssessmentService {
    */
   private async callAiModel(promptPayload: any): Promise<string> {
     try {
-      const response = await this.client.chat.completions.create({
+      const response = await createChatCompletion(this.client, {
         model: this.model,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
           {
             role: 'user',
@@ -725,6 +752,12 @@ export class AssessmentService {
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/402|credits|can only afford|max_tokens/i.test(message)) {
+        throw new InternalServerErrorException(
+          ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
+        );
+      }
       throw new InternalServerErrorException(
         ErrorMessageKey.GENERATION_AI_API_FAILED,
       );
@@ -740,8 +773,9 @@ export class AssessmentService {
     existingQuestionTexts: string[];
   }): Promise<string> {
     try {
-      const response = await this.client.chat.completions.create({
+      const response = await createChatCompletion(this.client, {
         model: this.model,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
           {
             role: 'user',
@@ -753,6 +787,12 @@ export class AssessmentService {
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/402|credits|can only afford|max_tokens/i.test(message)) {
+        throw new InternalServerErrorException(
+          ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
+        );
+      }
       throw new InternalServerErrorException(
         ErrorMessageKey.GENERATION_AI_API_FAILED,
       );
@@ -862,7 +902,9 @@ export class AssessmentService {
 
         const updatedAssessment = await tx.assessment.update({
           where: { id: assessmentId },
-          data: dto.assessment,
+          data: withPrismaJsonFields({
+            ...(dto.assessment as Record<string, unknown>),
+          }) as Prisma.AssessmentUpdateInput,
           select: { id: true, numberOfVersions: true },
         });
 
@@ -966,6 +1008,7 @@ export class AssessmentService {
       cloIds,
       questions,
       numberOfVersions,
+      headerConfig,
       ...assessmentFields
     } = dto;
 
@@ -977,6 +1020,9 @@ export class AssessmentService {
         data: {
           ...assessmentFields,
           numberOfVersions,
+          ...(headerConfig !== undefined
+            ? { headerConfig: toPrismaJson(headerConfig) }
+            : {}),
         },
       });
 
@@ -1349,7 +1395,9 @@ export class AssessmentService {
       buffer:
         format === 'pdf'
           ? this.createPdfBuffer(lines)
-          : this.createDocBuffer(lines),
+          : kind === 'exam'
+            ? this.createExamDocBuffer(assessment, version)
+            : this.createDocBuffer(lines),
     };
   }
 
@@ -1502,14 +1550,24 @@ export class AssessmentService {
   }
 
   private buildVersionDocumentLines(assessment: any, version: any): string[] {
+    const headerLines = this.buildAssessmentHeaderLines(assessment.headerConfig);
+    const fallbackMeta = headerLines.length
+      ? []
+      : [
+          assessment.title,
+          `Course: ${assessment.course?.title ?? 'N/A'}`,
+          assessment.duration ? `Duration: ${assessment.duration} minutes` : '',
+          assessment.totalMarks ? `Total Marks: ${assessment.totalMarks}` : '',
+          '',
+        ];
+
     const lines = [
-      assessment.title,
-      `${version.versionName}`,
-      `Course: ${assessment.course?.title ?? 'N/A'}`,
-      assessment.duration ? `Duration: ${assessment.duration} minutes` : '',
-      assessment.totalMarks ? `Total Marks: ${assessment.totalMarks}` : '',
-      '',
-    ].filter(Boolean);
+      ...headerLines,
+      ...(headerLines.length ? [] : fallbackMeta),
+    ].filter((line, index, all) => {
+      if (line !== '') return true;
+      return index === 0 || all[index - 1] !== '';
+    });
 
     version.versionQuestions.forEach((versionQuestion: any, index: number) => {
       const question = versionQuestion.question;
@@ -1525,6 +1583,226 @@ export class AssessmentService {
     });
 
     return lines;
+  }
+
+  private pickHeaderText(value: unknown, fallback = '') {
+    const next = String(value ?? '').trim();
+    return next || fallback;
+  }
+
+  private formatExaminationDate(value: unknown) {
+    const raw = this.pickHeaderText(value);
+    if (!raw) return '';
+    const date = new Date(`${raw}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return raw;
+    const formatted = date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const weekday = date.toLocaleDateString('en-US', { weekday: 'long' });
+    return `${formatted} (${weekday}).`;
+  }
+
+  private semesterLabel(value: unknown) {
+    const raw = this.pickHeaderText(value).toUpperCase();
+    if (raw === 'FIRST') return 'First Semester';
+    if (raw === 'SECOND') return 'Second Semester';
+    if (raw === 'THIRD') return 'Third Semester';
+    return this.pickHeaderText(value);
+  }
+
+  private hasAssessmentHeader(headerConfig: unknown) {
+    if (!headerConfig || typeof headerConfig !== 'object') return false;
+    const header = headerConfig as Record<string, unknown>;
+    return Boolean(
+      this.pickHeaderText(header.universityEn) ||
+        this.pickHeaderText(header.universityAr) ||
+        this.pickHeaderText(header.examName) ||
+        this.pickHeaderText(header.courseName) ||
+        this.pickHeaderText(header.facultyEn),
+    );
+  }
+
+  private buildAssessmentHeaderLines(headerConfig: unknown): string[] {
+    if (!this.hasAssessmentHeader(headerConfig)) return [];
+    const header = headerConfig as Record<string, unknown>;
+
+    const enLines = [
+      header.countryEn,
+      header.ministryEn,
+      header.universityEn,
+      header.facultyEn,
+      header.sectionEn,
+    ]
+      .map((line) => this.pickHeaderText(line))
+      .filter(Boolean);
+
+    const arLines = [
+      header.countryAr,
+      header.ministryAr,
+      header.universityAr,
+      header.facultyAr,
+      header.sectionAr,
+    ]
+      .map((line) => this.pickHeaderText(line))
+      .filter(Boolean);
+
+    const duration = this.pickHeaderText(header.durationMinutes)
+      ? `${this.pickHeaderText(header.durationMinutes)} Minutes`
+      : '';
+
+    return [
+      '================================================================================',
+      ...enLines,
+      ...arLines,
+      '--------------------------------------------------------------------------------',
+      this.pickHeaderText(header.academicYear)
+        ? `Academic Year ${this.pickHeaderText(header.academicYear)}`
+        : '',
+      this.semesterLabel(header.semester),
+      this.pickHeaderText(header.examName),
+      this.pickHeaderText(header.courseName)
+        ? `Course Name: ${this.pickHeaderText(header.courseName)}`
+        : '',
+      this.pickHeaderText(header.courseCode)
+        ? `Course Code: ${this.pickHeaderText(header.courseCode)}`
+        : '',
+      '',
+      `Date of Examination: ${this.formatExaminationDate(header.dateOfExamination)}`,
+      `Duration: ${duration}`,
+      `Time of Examination: ${this.pickHeaderText(header.timeOfExamination)}`,
+      `Total Marks: ${this.pickHeaderText(header.totalMarks)}`,
+      '',
+      "Student's Name: ______________________________",
+      'Academic ID: _____________',
+      '================================================================================',
+      '',
+    ].filter((line, index, all) => {
+      if (line !== '') return true;
+      return index === 0 || all[index - 1] !== '';
+    });
+  }
+
+  private buildAssessmentHeaderHtml(headerConfig: unknown): string {
+    if (!this.hasAssessmentHeader(headerConfig)) return '';
+    const header = headerConfig as Record<string, unknown>;
+    const escape = (value: unknown) => this.escapeHtml(this.pickHeaderText(value));
+
+    const enLines = [
+      header.countryEn,
+      header.ministryEn,
+      header.universityEn,
+      header.facultyEn,
+      header.sectionEn,
+    ]
+      .map((line) => this.pickHeaderText(line))
+      .filter(Boolean);
+
+    const arLines = [
+      header.countryAr,
+      header.ministryAr,
+      header.universityAr,
+      header.facultyAr,
+      header.sectionAr,
+    ]
+      .map((line) => this.pickHeaderText(line))
+      .filter(Boolean);
+
+    const duration = this.pickHeaderText(header.durationMinutes)
+      ? `${this.pickHeaderText(header.durationMinutes)} Minutes`
+      : '';
+
+    return `
+<div style="font-family:'Times New Roman',Times,serif;color:#000;margin-bottom:18px;">
+  <div style="border-top:5px double #000;border-bottom:5px double #000;padding:10px 0;">
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="width:40%;text-align:center;font-weight:700;font-size:14px;line-height:1.3;">
+          ${enLines.map((line) => `<div>${escape(line)}</div>`).join('')}
+        </td>
+        <td style="width:20%;text-align:center;font-weight:700;font-size:18px;">
+          ${escape(
+            this.pickHeaderText(header.universityEn)
+              .split(/\s+/)
+              .slice(0, 2)
+              .map((part) => part[0] || '')
+              .join('')
+              .toUpperCase() || 'U',
+          )}
+        </td>
+        <td style="width:40%;text-align:center;font-weight:700;font-size:14px;line-height:1.3;direction:rtl;">
+          ${arLines.map((line) => `<div>${escape(line)}</div>`).join('')}
+        </td>
+      </tr>
+    </table>
+  </div>
+  <div style="text-align:center;padding-top:12px;font-size:16px;line-height:1.35;">
+    ${this.pickHeaderText(header.academicYear) ? `<div style="font-weight:700;">Academic Year ${escape(header.academicYear)}</div>` : ''}
+    ${this.semesterLabel(header.semester) ? `<div>${escape(this.semesterLabel(header.semester))}</div>` : ''}
+    ${this.pickHeaderText(header.examName) ? `<div>${escape(header.examName)}</div>` : ''}
+    ${this.pickHeaderText(header.courseName) ? `<div><strong>Course Name:</strong> ${escape(header.courseName)}</div>` : ''}
+    ${this.pickHeaderText(header.courseCode) ? `<div><strong>Course Code:</strong> ${escape(header.courseCode)}</div>` : ''}
+  </div>
+  <table style="width:100%;margin-top:12px;font-size:14px;border-collapse:collapse;">
+    <tr>
+      <td style="width:58%;padding:3px 6px;"><strong>Date of Examination:</strong> ${escape(this.formatExaminationDate(header.dateOfExamination))}</td>
+      <td style="width:42%;padding:3px 6px;"><strong>Duration:</strong> ${escape(duration)}</td>
+    </tr>
+    <tr>
+      <td style="padding:3px 6px;"><strong>Time of Examination:</strong> ${escape(header.timeOfExamination)}</td>
+      <td style="padding:3px 6px;"><strong>Total Marks:</strong> ${escape(header.totalMarks)}</td>
+    </tr>
+    <tr>
+      <td style="padding:10px 6px 3px;"><strong>Student's Name:</strong> ______________________________</td>
+      <td style="padding:10px 6px 3px;"><strong>Academic ID:</strong> _____________</td>
+    </tr>
+  </table>
+  <div style="margin-top:14px;border-bottom:5px double #1f3b73;"></div>
+</div>`;
+  }
+
+  private createExamDocBuffer(assessment: any, version: any): Buffer {
+    const headerHtml = this.buildAssessmentHeaderHtml(assessment.headerConfig);
+    const questionLines: string[] = [];
+
+    if (headerHtml) {
+      questionLines.push('');
+    } else {
+      questionLines.push(assessment.title || '');
+      questionLines.push(`Course: ${assessment.course?.title ?? 'N/A'}`);
+      if (assessment.duration) {
+        questionLines.push(`Duration: ${assessment.duration} minutes`);
+      }
+      if (assessment.totalMarks) {
+        questionLines.push(`Total Marks: ${assessment.totalMarks}`);
+      }
+      questionLines.push('');
+    }
+
+    version.versionQuestions.forEach((versionQuestion: any, index: number) => {
+      const question = versionQuestion.question;
+      questionLines.push(
+        `${index + 1}. [${question.points ?? 1} pts] ${question.text}`,
+      );
+      question.questionOptions?.forEach((option: any) => {
+        questionLines.push(`   ${option.order}. ${option.text}`);
+      });
+      questionLines.push('');
+    });
+
+    const body = questionLines
+      .map((line) =>
+        line
+          ? `<p>${this.escapeHtml(line)}</p>`
+          : '<p style="mso-line-height-alt:1pt">&nbsp;</p>',
+      )
+      .join('');
+
+    return Buffer.from(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Assessment Version</title></head><body>${headerHtml}${body}</body></html>`,
+      'utf8',
+    );
   }
 
   private buildAnswerSheetDocumentLines(assessment: any, version: any): string[] {
@@ -1576,7 +1854,7 @@ export class AssessmentService {
         },
         {
           filename: `exams/${baseName}.doc`,
-          buffer: this.createDocBuffer(lines),
+          buffer: this.createExamDocBuffer(assessment, version),
         },
         {
           filename: `answer-sheets/${baseName}-answers.pdf`,
@@ -1776,9 +2054,9 @@ export class AssessmentService {
 
     objects.push('<< /Type /Catalog /Pages 2 0 R >>');
     objects.push(
-      `<< /Type /Pages /Kids ${pages
+      `<< /Type /Pages /Kids [${pages
         .map((_, index) => `${3 + index * 2} 0 R`)
-        .join(' ')} /Count ${pages.length} >>`,
+        .join(' ')}] /Count ${pages.length} >>`,
     );
 
     pages.forEach((pageLines, index) => {

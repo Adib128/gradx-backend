@@ -38,110 +38,173 @@ export class CourseService {
       coRequisites,
       teachingModes,
       requiredFacilitiesAndEquipment,
-      ...courseData
+      title,
+      code,
+      program,
+      description,
+      creditHours,
+      level,
+      passRate,
+      teachingMode,
+      totalContactHours,
+      lectureHours,
+      labHours,
+      mainObjective,
     } = createCourseDto;
 
     const { clos, codeRemap } = normalizeClosForStorage(rawClos ?? []);
-    const topics = (rawTopics ?? []).map((topic) => ({
-      ...topic,
+    const topics = (rawTopics ?? []).map((topic, index) => ({
+      topicNumber:
+        Number(topic.topicNumber) > 0 ? Number(topic.topicNumber) : index + 1,
+      title: String(topic.title ?? '').trim() || `Topic ${index + 1}`,
+      contactHours:
+        Number(topic.contactHours) > 0 ? Math.round(Number(topic.contactHours)) : 3,
       mappedClos: remapMappedClos(topic.mappedClos, codeRemap),
     }));
 
-    return await this.prisma.$transaction(async (tx) => {
-      const assessmentPlan = (assessments ?? [])
-        .map((assessment) => ({
-          title: String(assessment.title ?? '').trim() || null,
-          type: assessment.type,
-          timing: assessment.timing ?? null,
-          percentage:
-            assessment.percentage != null &&
-            Number.isFinite(Number(assessment.percentage))
-              ? Math.round(Number(assessment.percentage))
-              : null,
-        }))
-        .filter((item) => Boolean(item.type));
+    // Ensure unique topic numbers within the course payload.
+    const seenTopicNumbers = new Set<number>();
+    for (const topic of topics) {
+      let nextNumber = topic.topicNumber;
+      while (seenTopicNumbers.has(nextNumber)) {
+        nextNumber += 1;
+      }
+      topic.topicNumber = nextNumber;
+      seenTopicNumbers.add(nextNumber);
+    }
 
-      const courseCreateData: Prisma.CourseUncheckedCreateInput = {
-        ...(courseData as Prisma.CourseUncheckedCreateInput),
-        tenantId,
-        prerequisites,
-        coRequisites,
-        teachingModes: (teachingModes ?? []) as Prisma.InputJsonValue,
-        requiredFacilitiesAndEquipment:
-          (requiredFacilitiesAndEquipment ?? []) as Prisma.InputJsonValue,
-        references: (references ?? []) as Prisma.InputJsonValue,
-        assessmentPlan: assessmentPlan as Prisma.InputJsonValue,
-      };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const assessmentPlan = (assessments ?? [])
+          .map((assessment) => ({
+            title: String(assessment.title ?? '').trim() || null,
+            type: assessment.type,
+            timing: assessment.timing ?? null,
+            percentage:
+              assessment.percentage != null &&
+              Number.isFinite(Number(assessment.percentage))
+                ? Math.round(Number(assessment.percentage))
+                : null,
+          }))
+          .filter((item) => Boolean(item.type));
 
-      const course = await tx.course.create({
-        data: courseCreateData,
-      });
+        const courseCreateData: Prisma.CourseUncheckedCreateInput = {
+          title,
+          code: code ?? null,
+          program: program ?? null,
+          description: description ?? null,
+          creditHours: creditHours ?? null,
+          level: level ?? null,
+          passRate:
+            passRate != null && Number.isFinite(Number(passRate))
+              ? Math.min(100, Math.max(0, Math.round(Number(passRate))))
+              : 70,
+          teachingMode: teachingMode ?? null,
+          totalContactHours: totalContactHours ?? null,
+          lectureHours: lectureHours ?? null,
+          labHours: labHours ?? null,
+          mainObjective: mainObjective ?? null,
+          tenantId,
+          prerequisites: prerequisites ?? [],
+          coRequisites: coRequisites ?? [],
+          teachingModes: (teachingModes ?? []) as Prisma.InputJsonValue,
+          requiredFacilitiesAndEquipment:
+            (requiredFacilitiesAndEquipment ?? []) as Prisma.InputJsonValue,
+          references: (references ?? []) as Prisma.InputJsonValue,
+          assessmentPlan: assessmentPlan as Prisma.InputJsonValue,
+        };
 
-      const createdClos = await Promise.all(
-        clos.map((clo) =>
-          tx.clo.create({
-            data: {
-              code: clo.code,
-              category: clo.category,
-              programCLOCode: clo.programCLOCode,
-              description: clo.description,
-              teachingStrategies: clo.teachingStrategies,
-              assessmentMethods: clo.assessmentMethods,
-              courseId: course.id,
-            },
-          }),
-        ),
-      );
+        const course = await tx.course.create({
+          data: courseCreateData,
+        });
 
-      const cloCodeToId = new Map<string, number>(
-        createdClos
-          .filter((clo) => typeof clo.code === 'string' && clo.code.trim())
-          .map((clo) => [clo.code, clo.id]),
-      );
+        const createdClos = await Promise.all(
+          clos.map((clo) =>
+            tx.clo.create({
+              data: {
+                code: clo.code,
+                category: clo.category || '',
+                programCLOCode: clo.programCLOCode ?? null,
+                description: clo.description,
+                teachingStrategies: clo.teachingStrategies ?? [],
+                assessmentMethods: clo.assessmentMethods ?? [],
+                courseId: course.id,
+              },
+            }),
+          ),
+        );
 
-      const createdTopics = await Promise.all(
-        topics.map(async (topic) => {
-          const { mappedClos = [], ...topicData } = topic;
+        const cloCodeToId = new Map<string, number>(
+          createdClos
+            .filter((clo) => typeof clo.code === 'string' && clo.code.trim())
+            .map((clo) => [clo.code, clo.id]),
+        );
 
-          const createdTopic = await tx.topic.create({
-            data: {
-              ...topicData,
-              courseId: course.id,
-            },
-          });
+        const createdTopics = await Promise.all(
+          topics.map(async (topic) => {
+            const { mappedClos = [], ...topicData } = topic;
 
-          const mappedClosCodes = Array.isArray(mappedClos) ? mappedClos : [];
-          if (mappedClosCodes.length > 0) {
-            const topicCloRows: Array<{ topicId: number; cloId: number }> =
-              mappedClosCodes
-              .filter((code): code is string => typeof code === 'string')
-              .map((code) => ({
-                topicId: createdTopic.id,
-                cloId: cloCodeToId.get(code),
-              }))
-              .filter((row): row is { topicId: number; cloId: number } =>
-                typeof row.cloId === 'number',
-              );
+            const createdTopic = await tx.topic.create({
+              data: {
+                ...topicData,
+                courseId: course.id,
+              },
+            });
 
-            if (topicCloRows.length > 0) {
-              await tx.topicClo.createMany({ data: topicCloRows });
+            const mappedClosCodes = Array.isArray(mappedClos) ? mappedClos : [];
+            if (mappedClosCodes.length > 0) {
+              const topicCloRows: Array<{ topicId: number; cloId: number }> =
+                mappedClosCodes
+                  .filter((code): code is string => typeof code === 'string')
+                  .map((mappedCode) => ({
+                    topicId: createdTopic.id,
+                    cloId: cloCodeToId.get(mappedCode),
+                  }))
+                  .filter((row): row is { topicId: number; cloId: number } =>
+                    typeof row.cloId === 'number',
+                  );
+
+              if (topicCloRows.length > 0) {
+                await tx.topicClo.createMany({ data: topicCloRows });
+              }
             }
-          }
 
-          return createdTopic;
-        }),
-      );
+            return createdTopic;
+          }),
+        );
 
-      // Syllabus only stores assessment type plan metadata on the course.
-      // Real Assessment records are created later by the user.
+        // Syllabus only stores assessment type plan metadata on the course.
+        // Real Assessment records are created later by the user.
 
-      return {
-        ...course,
-        topics: createdTopics,
-        assessments: [],
-        assessmentPlan,
-      };
-    });
+        return {
+          ...course,
+          topics: createdTopics,
+          assessments: [],
+          assessmentPlan,
+        };
+      });
+    } catch (error) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ConflictException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2002') {
+          throw new ConflictException(ErrorMessageKey.TOPIC_EXIST);
+        }
+        throw new BadRequestException(ErrorMessageKey.VALIDATION_FAILED);
+      }
+
+      if (error instanceof Prisma.PrismaClientValidationError) {
+        throw new BadRequestException(ErrorMessageKey.VALIDATION_FAILED);
+      }
+
+      throw error;
+    }
   }
 
   async findAll(tenantId: number, courseQueryDto: CourseQueryDto) {
@@ -317,7 +380,7 @@ export class CourseService {
     const {
       title, code, program, description, creditHours, level, passRate,
       teachingMode, teachingModes, totalContactHours, lectureHours, labHours,
-      prerequisites, coRequisites, requiredFacilitiesAndEquipment, references,
+      prerequisites, coRequisites, mainObjective, requiredFacilitiesAndEquipment, references,
     } = updateCourseDto;
 
     return this.prisma.course.update({
@@ -341,6 +404,7 @@ export class CourseService {
         ...(labHours !== undefined && { labHours }),
         ...(prerequisites !== undefined && { prerequisites }),
         ...(coRequisites !== undefined && { coRequisites }),
+        ...(mainObjective !== undefined && { mainObjective }),
         ...(requiredFacilitiesAndEquipment !== undefined && {
           requiredFacilitiesAndEquipment: requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
         }),
@@ -366,6 +430,7 @@ export class CourseService {
       labHours?: number | null;
       prerequisites?: string[];
       coRequisites?: string[];
+      mainObjective?: string | null;
       teachingModes?: Array<{ modeOfInstruction: string; contactHours?: number | null; percentage?: number | null }>;
       requiredFacilitiesAndEquipment?: Array<{ item: string; resources?: string | null }>;
     },
@@ -391,6 +456,12 @@ export class CourseService {
         ...(body.labHours !== undefined && { labHours: body.labHours }),
         ...(body.prerequisites !== undefined && { prerequisites: body.prerequisites }),
         ...(body.coRequisites !== undefined && { coRequisites: body.coRequisites }),
+        ...(body.mainObjective !== undefined && {
+          mainObjective:
+            body.mainObjective === null || String(body.mainObjective).trim() === ''
+              ? null
+              : String(body.mainObjective).trim(),
+        }),
         ...(body.teachingModes !== undefined && {
           teachingModes: body.teachingModes as unknown as Prisma.InputJsonValue,
         }),

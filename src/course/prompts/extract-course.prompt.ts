@@ -56,6 +56,11 @@ Rules for assessment timing and percentage:
 - Prefer explicit Assessment / Evaluation / Activities tables when present. Also scan narrative course-description text for activity weights and timings.
 - Keep "duration" as exam length in minutes when stated; keep "totalMarks" as point total when stated. These are separate from "percentage".
 
+Rules for mainObjective:
+- Extract the course main purpose / main objective / course objectives section (often labeled "Main Objective", "Course Objectives", "What is the main purpose for this course?", or Arabic equivalents).
+- Return a single free-text string (preserve paragraphs). Use null only if the document has no such section.
+- Do NOT copy the full course description into mainObjective when a distinct objectives section exists.
+
 The JSON must follow this exact structure:
 {
   "title": string,
@@ -76,6 +81,7 @@ The JSON must follow this exact structure:
   "labHours": number,
   "prerequisites": string[],
   "coRequisites": string[],
+  "mainObjective": string | null,
   "requiredFacilitiesAndEquipment": [
     {
       "item": string,
@@ -111,7 +117,7 @@ The JSON must follow this exact structure:
   "assessments": [
     {
       "title": string,
-      "type": "QUIZ" | "FINAL_EXAM" | "MID_TERM_EXAM" | "LAB" | "OTHER",
+      "type": "QUIZ" | "FINAL_EXAM" | "MID_TERM_EXAM" | "LAB" | "ASSIGNMENT" | "OTHER",
       "timing": string | null,
       "percentage": number | null,
       "duration": number | null,

@@ -75,6 +75,51 @@ export class TopicContentController {
     return this.topicContentService.updateLabManual(tenantId, topicId, body);
   }
 
+  @Post(':topicId/accept')
+  acceptContent(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: { type?: string; content?: unknown },
+  ) {
+    const type = String(body?.type || 'LECTURE').toUpperCase();
+    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ'].includes(type)) {
+      throw new BadRequestException('type must be LECTURE, SLIDES, LAB, or QUIZ');
+    }
+    return this.topicContentService.acceptContent(
+      tenantId,
+      topicId,
+      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ',
+      body?.content,
+    );
+  }
+
+  @Post(':topicId/mark-draft')
+  markDraft(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: { type?: string },
+  ) {
+    const type = String(body?.type || 'LECTURE').toUpperCase();
+    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ'].includes(type)) {
+      throw new BadRequestException('type must be LECTURE, SLIDES, LAB, or QUIZ');
+    }
+    return this.topicContentService.markContentDraft(
+      tenantId,
+      topicId,
+      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ',
+    );
+  }
+
+  @Post(':topicId/slide-image')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadSlideImage(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.topicContentService.uploadSlideImage(tenantId, topicId, file);
+  }
+
   @Post(':topicId/upload-lecture')
   @UseInterceptors(FileInterceptor('file'))
   uploadLecture(

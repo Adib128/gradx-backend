@@ -325,6 +325,57 @@ export class TopicContentService {
     return this.uploadTopicMaterial(tenantId, topicId, 'LECTURE', file);
   }
 
+  async uploadSlideImage(
+    tenantId: number,
+    topicId: number,
+    file: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Image file is required.');
+    if (!file.mimetype?.toLowerCase().startsWith('image/')) {
+      throw new BadRequestException('File must be an image.');
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      throw new BadRequestException('Image must be smaller than 3 MB.');
+    }
+
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      select: { id: true },
+    });
+    if (!topic) throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+
+    const extensionByMime: Record<string, string> = {
+      'image/png': 'png',
+      'image/jpeg': 'jpg',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/svg+xml': 'svg',
+    };
+    const extension = extensionByMime[file.mimetype.toLowerCase()];
+    if (!extension) {
+      throw new BadRequestException(
+        'Image must be PNG, JPEG, WebP, GIF, or SVG.',
+      );
+    }
+
+    const relativeDir = join(
+      'slide-images',
+      String(tenantId),
+      String(topicId),
+    );
+    const uploadDir = join(process.cwd(), 'public', relativeDir);
+    await mkdir(uploadDir, { recursive: true });
+    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
+    await writeFile(join(uploadDir, fileName), file.buffer);
+
+    return {
+      url: `/${relativeDir.replaceAll('\\', '/')}/${fileName}`,
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+    };
+  }
+
   async uploadTopicMaterial(
     tenantId: number,
     topicId: number,
@@ -588,10 +639,12 @@ export class TopicContentService {
         tenantId,
         type,
         status: 'PROCESSING',
+        reviewStatus: 'DRAFT',
         content,
       },
       update: {
         status: 'PROCESSING',
+        reviewStatus: 'DRAFT',
         content,
       },
     });
@@ -603,6 +656,7 @@ export class TopicContentService {
     tenantId: number,
     type: ContentType,
     content: any,
+    reviewStatus: 'DRAFT' | 'ACCEPTED' = 'DRAFT',
   ) {
     return await this.prisma.topicContent.upsert({
       where: { topicId_type: { topicId, type } },
@@ -612,12 +666,81 @@ export class TopicContentService {
         tenantId,
         type,
         status: 'COMPLETED',
+        reviewStatus,
         content,
       },
       update: {
         status: 'COMPLETED',
+        reviewStatus,
         content,
       },
+    });
+  }
+
+  async acceptContent(
+    tenantId: number,
+    topicId: number,
+    type: ContentType,
+    content?: unknown,
+  ) {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type },
+          take: 1,
+        },
+      },
+    });
+
+    if (!topic) {
+      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+    }
+
+    const existing = topic.topicContents[0];
+    if (!existing && content == null) {
+      throw new BadRequestException('No content to accept');
+    }
+
+    const nextContent = content != null ? content : existing?.content;
+
+    return this.saveContent(
+      topicId,
+      topic.courseId,
+      tenantId,
+      type,
+      nextContent,
+      'ACCEPTED',
+    );
+  }
+
+  async markContentDraft(
+    tenantId: number,
+    topicId: number,
+    type: ContentType,
+  ) {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type },
+          take: 1,
+        },
+      },
+    });
+
+    if (!topic) {
+      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+    }
+
+    const existing = topic.topicContents[0];
+    if (!existing) {
+      throw new NotFoundException('Topic content not found');
+    }
+
+    return this.prisma.topicContent.update({
+      where: { id: existing.id },
+      data: { reviewStatus: 'DRAFT' },
     });
   }
 
@@ -641,7 +764,8 @@ export class TopicContentService {
       throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
     }
 
-    const existing = topic.topicContents[0]?.content;
+    const existingRow = topic.topicContents[0];
+    const existing = existingRow?.content;
     const existingObj =
       existing && typeof existing === 'object' && !Array.isArray(existing)
         ? (existing as Record<string, unknown>)
@@ -684,6 +808,7 @@ export class TopicContentService {
       tenantId,
       'SLIDES',
       contentPayload,
+      'ACCEPTED',
     );
   }
 
@@ -707,7 +832,8 @@ export class TopicContentService {
       throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
     }
 
-    const existing = topic.topicContents[0]?.content;
+    const existingRow = topic.topicContents[0];
+    const existing = existingRow?.content;
     const existingObj =
       existing && typeof existing === 'object' && !Array.isArray(existing)
         ? (existing as Record<string, unknown>)
@@ -734,6 +860,7 @@ export class TopicContentService {
       tenantId,
       'LAB',
       contentPayload,
+      'ACCEPTED',
     );
   }
 }

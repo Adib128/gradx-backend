@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import { ContentGenerationJob } from './interfaces/content-generation-job.interface';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
+import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
 import {
   LECTURE_PROMPT,
   QUIZ_PROMPT,
@@ -42,6 +44,128 @@ export type LectureStreamProgress = {
   message: string;
   partial: Record<string, unknown>;
 };
+
+type LectureDiagram = {
+  title: string;
+  mermaid: string;
+  explanation: string;
+};
+
+/**
+ * Keep the diagrams authored during lecture generation as the source of truth
+ * for slides. The recursive fallback also supports older lecture payloads
+ * whose visual blocks were nested under a slightly different key.
+ */
+function extractLectureDiagrams(source: unknown): LectureDiagram[] {
+  const diagrams: LectureDiagram[] = [];
+  const seen = new Set<string>();
+
+  const visit = (value: unknown, depth = 0) => {
+    if (!value || depth > 12) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (typeof value !== 'object') return;
+
+    const record = value as Record<string, unknown>;
+    const code =
+      record.mermaidDiagramCode ??
+      record.mermaid ??
+      record.diagramCode ??
+      (typeof record.diagram === 'string' ? record.diagram : null);
+    if (typeof code === 'string' && code.trim()) {
+      const mermaid = code.trim();
+      const signature = mermaid.replace(/\s+/g, ' ');
+      if (!seen.has(signature)) {
+        seen.add(signature);
+        diagrams.push({
+          title: String(
+            record.diagramTitle ??
+              record.title ??
+              record.name ??
+              `Lecture diagram ${diagrams.length + 1}`,
+          ).trim(),
+          mermaid,
+          explanation: String(
+            record.diagramPedagogicalExplanation ??
+              record.explanation ??
+              '',
+          ).trim(),
+        });
+      }
+    }
+
+    Object.values(record).forEach((item) => {
+      if (item && typeof item === 'object') visit(item, depth + 1);
+    });
+  };
+
+  visit(source);
+  return diagrams;
+}
+
+function addLectureDiagramsToDeck(
+  slides: SlideDeckSlide[],
+  sourceLecture: unknown,
+  targetSlides: number,
+): void {
+  const available = extractLectureDiagrams(sourceLecture);
+  if (!available.length || !slides.length) return;
+
+  // A 16-slide lecture normally benefits from two diagrams; longer decks can
+  // use three. Do not turn a short deck into a gallery.
+  const desired = Math.min(
+    available.length,
+    Math.max(1, Math.min(3, Math.ceil(targetSlides / 8))),
+  );
+  const chosen = Array.from({ length: desired }, (_, index) => {
+    const sourceIndex =
+      desired === 1
+        ? 0
+        : Math.round((index * (available.length - 1)) / (desired - 1));
+    return available[sourceIndex];
+  });
+
+  const eligible = slides
+    .map((slide, index) => ({ slide, index }))
+    .filter(({ slide }) => {
+      const type = String(slide.type || '').toUpperCase();
+      return ![
+        'TITLE',
+        'SECTION',
+        'SECTION_DIVIDER',
+        'AGENDA',
+        'LEARNING_OUTCOMES',
+        'REFERENCES',
+      ].includes(type);
+    });
+  if (!eligible.length) return;
+
+  chosen.forEach((diagram, index) => {
+    const position =
+      chosen.length === 1
+        ? Math.floor(eligible.length / 2)
+        : Math.round((index * (eligible.length - 1)) / (chosen.length - 1));
+    const target = eligible[position]?.slide;
+    if (!target) return;
+
+    target.type = 'DIAGRAM';
+    target.layout = 'BULLETS';
+    target.diagram = {
+      title: diagram.title || `Lecture diagram ${index + 1}`,
+      mermaid: diagram.mermaid,
+    };
+    if (diagram.explanation) {
+      target.speakerNotes = [
+        String(target.speakerNotes || '').trim(),
+        diagram.explanation,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+    }
+  });
+}
 
 export type SlidesStreamProgress = {
   stage: 'prepare' | 'generate' | 'paginate' | 'done';
@@ -263,6 +387,60 @@ export class TopicContentAiService {
       data.slidesLength ?? budget.target,
     );
 
+    // Guarantee at least one usable instructional diagram even when the model
+    // ignores the visual requirement. Keep the syntax deliberately simple so
+    // Mermaid can render it consistently in browser, PDF and PowerPoint.
+    const deckSlides = Array.isArray(deck.slides) ? deck.slides : [];
+    addLectureDiagramsToDeck(
+      deckSlides,
+      data.sourceLectureContent,
+      budget.target,
+    );
+    const hasDiagram = deckSlides.some(
+      (slide) => String(slide?.diagram?.mermaid || '').trim().length > 0,
+    );
+    if (!hasDiagram) {
+      const diagramTarget =
+        deckSlides.find(
+          (slide) =>
+            String(slide.type || '').toUpperCase() === 'CONTENT' &&
+            String(slide.layout || '').toUpperCase() !== 'SECTION_DIVIDER',
+        ) ||
+        deckSlides.find(
+          (slide) =>
+            !['TITLE', 'SECTION', 'SECTION_DIVIDER'].includes(
+              String(slide.type || '').toUpperCase(),
+            ),
+        );
+
+      if (diagramTarget) {
+        const labels = (
+          modules.length
+            ? modules
+                .map((module) => String(module?.title || '').trim())
+                .filter(Boolean)
+                .slice(0, 5)
+            : ['Foundation', 'Method', 'Application']
+        ).map((label) =>
+          label
+            .replace(/["[\]{}<>]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 42),
+        );
+        const nodes = labels.map(
+          (label, index) => `N${index + 1}["${label || `Step ${index + 1}`}"]`,
+        );
+        const edges = labels
+          .slice(0, -1)
+          .map((_, index) => `N${index + 1} --> N${index + 2}`);
+        diagramTarget.diagram = {
+          title: 'Concept progression',
+          mermaid: ['flowchart LR', ...nodes, ...edges].join('\n'),
+        };
+      }
+    }
+
     await emit({
       stage: 'done',
       percent: 100,
@@ -474,9 +652,10 @@ export class TopicContentAiService {
   }
 
   private async chatJson(system: string, prompt: string): Promise<any> {
-    const response = await this.client.chat.completions.create({
+    const response = await createChatCompletion(this.client, {
       model: this.model,
       temperature: 0.35,
+      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: prompt },
@@ -487,14 +666,26 @@ export class TopicContentAiService {
     return this.parseResponse(text);
   }
 
-  private parseResponse(text: string): any {
-    let clean = text
-      .replace(/```json\n?/g, '')
-      .replace(/```\n?/g, '')
-      .trim();
+  /**
+   * Models write LaTeX inside JSON strings with single backslashes, and
+   * `\frac`, `\theta`, `\beta` happen to be the valid JSON escapes `\f`, `\t`
+   * and `\b`. Parsing those as-is silently replaces the macro with a control
+   * character, so only escapes we actually expect from a model (`\" \\ \/ \n
+   * \r \uXXXX`) are preserved and every other backslash is doubled.
+   */
+  private repairJsonEscapes(input: string): string {
+    return input.replace(/\\(u[0-9a-fA-F]{4}|[\s\S]|$)/g, (match, seq: string) =>
+      /^(?:["\\/nr]|u[0-9a-fA-F]{4})$/.test(seq) ? match : `\\\\${seq}`,
+    );
+  }
 
-    clean = clean.replace(/\\{2,}/g, '\\');
-    clean = clean.replace(/\\([^"\\/bfnrtu\n\r])/g, (_, char) => `\\\\${char}`);
+  private parseResponse(text: string): any {
+    const clean = this.repairJsonEscapes(
+      text
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim(),
+    );
 
     try {
       return JSON.parse(clean);

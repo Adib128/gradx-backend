@@ -45,8 +45,13 @@ const BODY_RULES = `
   - EXAMPLE → example { problem, steps[], solution }
   - CHECKPOINT / ACTIVITY → callout { label, text }
   - COMPARISON → leftColumn + rightColumn with bullets
+  - DIAGRAM → diagram { title, mermaid } plus 1–3 explanatory bullets
 - Empty bullets: [] with null callout/example/formula is INVALID.
 - Do NOT paste lecture prose paragraphs onto the slide face.
+- Include at least one DIAGRAM slide in the deck.
+- Mermaid must be valid, compact, and readable at 16:9 projection size:
+  use flowchart TD/LR, 3–8 nodes, short quoted labels, and no custom HTML.
+- Example: {"title":"Process","mermaid":"flowchart LR\\nA[\\"Input\\"] --> B[\\"Method\\"] --> C[\\"Result\\"]"}
 `;
 
 export const SLIDES_PROMPT = (data: ContentGenerationJob): string => {
@@ -93,7 +98,7 @@ ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
 1. TITLE
 2. LEARNING_OUTCOMES (3–5 short measurable bullets)
 3. AGENDA (short segment labels, not paragraphs)
-4. SECTION dividers + teaching slides per module
+4. SECTION dividers + teaching slides per module, including Mermaid diagrams
 5. SUMMARY
 6. NEXT_STEPS
 7. REFERENCES only if lecture provides them
@@ -129,6 +134,8 @@ Each slide object fields:
 slideNumber, type, layout, title, subtitle, sectionLabel, bullets, leftColumn, rightColumn,
 callout, formula, diagram, example, table, cloCode, bloomLevel, teachingBeat, timingMinutes, speakerNotes
 
+diagram shape: { "title": string, "mermaid": string }.
+
 Layouts: TITLE_CENTER | BULLETS | TWO_COLUMN | DEFINITION | FORMULA_FOCUS | EXAMPLE_STEPS | QUOTE_CALLOUT | SECTION_DIVIDER
 Types: TITLE | AGENDA | LEARNING_OUTCOMES | SECTION | CONTENT | DEFINITION | FORMULA | DIAGRAM | EXAMPLE | COMPARISON | ACTIVITY | CHECKPOINT | SUMMARY | NEXT_STEPS | REFERENCES
 
@@ -143,7 +150,9 @@ Return ONLY JSON:
 }
 Informational lecture bullets: ≤14 words, max 5 bullets, mark key terms with **bold**.
 NO greetings or spoken transitions on the slide face (those go in speakerNotes only).
-Every non-TITLE/non-SECTION slide MUST have non-empty bullets OR callout OR formula OR example.
+Every non-TITLE/non-SECTION slide MUST have non-empty bullets OR callout OR formula OR example OR diagram.
+For DIAGRAM slides use diagram: {"title": string, "mermaid": "flowchart TD\\n..."}.
+Mermaid must have 3–8 visible nodes with short quoted labels and valid arrows.
 `;
 
 export const SLIDES_OPENING_PROMPT = (
@@ -198,7 +207,7 @@ ${JSON.stringify(module, null, 2)}
 Required mini-arc:
 1. SECTION (layout SECTION_DIVIDER)
 2. DEFINITION or CONTENT — short informational bullets / callout (NO greetings)
-3. FORMULA or CONTENT — board-ready facts
+3. FORMULA, DIAGRAM, or CONTENT — board-ready facts; prefer a DIAGRAM when the module has a process, hierarchy, or relationship
 4. EXAMPLE if demos exist — problem + steps + solution
 5. CHECKPOINT — ask-aloud technical callout
 

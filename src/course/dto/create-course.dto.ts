@@ -21,6 +21,10 @@ const normalizeCourseAssessment = (value: unknown) => {
     assessment.type = 'MID_TERM_EXAM';
   } else if (rawType === 'FINAL') {
     assessment.type = 'FINAL_EXAM';
+  } else if (rawType === 'ASSIGN' || rawType === 'ASSIGNMENTS') {
+    assessment.type = 'ASSIGNMENT';
+  } else if (!rawType && title.includes('assign')) {
+    assessment.type = 'ASSIGNMENT';
   }
 
   if (!assessment.difficulty || String(assessment.difficulty).trim() === '') {
@@ -153,6 +157,14 @@ export const CreateCourseSchema = z.object({
 
   prerequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
   coRequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
+  mainObjective: z.preprocess(
+    (value) => {
+      if (value === null || value === undefined) return null;
+      const text = String(value).trim();
+      return text || null;
+    },
+    z.string().nullable().optional(),
+  ),
   requiredFacilitiesAndEquipment: z
     .preprocess(
       (value) => (Array.isArray(value) ? value : []),

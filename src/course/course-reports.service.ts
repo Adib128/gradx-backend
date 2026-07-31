@@ -1005,7 +1005,8 @@ export class CourseReportsService {
       FINAL_EXAM: 1,
       QUIZ: 2,
       LAB: 3,
-      OTHER: 4,
+      ASSIGNMENT: 4,
+      OTHER: 5,
     };
 
     const orderedAssessments = [...course.assessments].sort((a, b) => {
@@ -1198,10 +1199,11 @@ export class CourseReportsService {
 
     const typeOrder: Record<string, number> = {
       QUIZ: 0,
-      OTHER: 1,
-      MID_TERM_EXAM: 2,
-      LAB: 3,
-      FINAL_EXAM: 4,
+      ASSIGNMENT: 1,
+      OTHER: 2,
+      MID_TERM_EXAM: 3,
+      LAB: 4,
+      FINAL_EXAM: 5,
     };
 
     const orderedAssessments = [...assessments].sort((a, b) => {
@@ -1640,7 +1642,8 @@ export class CourseReportsService {
       FINAL_EXAM: 'Final',
       QUIZ: 'Quizzes',
       LAB: 'Lab',
-      OTHER: 'Assign',
+      ASSIGNMENT: 'Assign',
+      OTHER: 'Other',
     };
     if (!raw) return typeFallback[type] ?? 'Assessment';
     if (/quiz/i.test(raw)) return 'Quizzes';
@@ -1655,7 +1658,8 @@ export class CourseReportsService {
   private assessmentTypeColor(type: string) {
     const colors: Record<string, string> = {
       QUIZ: '#5B3A9E',
-      OTHER: '#E07A3A',
+      ASSIGNMENT: '#E07A3A',
+      OTHER: '#64748B',
       MID_TERM_EXAM: '#3B82F6',
       LAB: '#22C55E',
       FINAL_EXAM: '#A16207',
@@ -1700,6 +1704,7 @@ export class CourseReportsService {
       FINAL_EXAM: 'Final',
       QUIZ: 'Quizzes',
       LAB: 'Lab',
+      ASSIGNMENT: 'Assign',
       OTHER: 'Other',
     };
 
@@ -1708,6 +1713,7 @@ export class CourseReportsService {
       short = typeFallback[type] ?? 'Assessment';
     } else if (short.length > 22) {
       if (/quiz/i.test(short)) short = 'Quizzes';
+      else if (/assign/i.test(short)) short = 'Assign';
       else if (/lab/i.test(short)) short = 'Lab';
       else if (/project/i.test(short)) short = 'Project';
       else if (/mid/i.test(short)) short = 'Midterm';

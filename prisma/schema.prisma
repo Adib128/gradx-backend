@@ -22,6 +22,11 @@ enum GenerationStatus {
   FAILED
 }
 
+enum ContentReviewStatus {
+  DRAFT
+  ACCEPTED
+}
+
 enum QuestionType {
   MCQ
   TRUE_FALSE
@@ -41,6 +46,7 @@ enum AssessmentType {
   FINAL_EXAM
   MID_TERM_EXAM
   LAB
+  ASSIGNMENT
   OTHER
 }
 
@@ -220,6 +226,8 @@ model Course {
   labHours          Int?
   prerequisites     String[]
   coRequisites      String[] @default([])
+  /// Main purpose / objectives of the course (NCAAA-style free text)
+  mainObjective     String?
   requiredFacilitiesAndEquipment Json?
   references        Json?
   /// Cached AI CLO achievement analyses keyed by report fingerprint
@@ -284,10 +292,11 @@ model Clo {
 }
 
 model TopicContent {
-  id      Int              @id @default(autoincrement())
-  type    ContentType
-  status  GenerationStatus @default(PENDING)
-  content Json?
+  id           Int                 @id @default(autoincrement())
+  type         ContentType
+  status       GenerationStatus    @default(PENDING)
+  reviewStatus ContentReviewStatus @default(DRAFT)
+  content      Json?
 
   topicId Int
   topic   Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
@@ -394,6 +403,8 @@ model Assessment {
   printCloCodeNextToEachQuestion          Boolean                   @default(false)
   printBloomLevelNextToEachQuestion       Boolean                   @default(false)
   printDifficultyLabelNextToEachQuestion  Boolean                   @default(false)
+  /// Institutional exam header (country, ministry, university, faculty, academic year, etc.)
+  headerConfig                            Json?
   generationConfig                        Json?
 
   courseId Int
@@ -594,4 +605,23 @@ model CourseAnswerSheetVersionAnswer {
 
   @@index([versionId])
   @@map("course_answer_sheet_version_answers")
+}
+
+/// KSA universities used by assessment header config (names + logo path).
+model University {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  nameEn    String
+  nameAr    String
+  website   String?
+  /// Public path to logo asset, e.g. /universities/ksu.svg
+  logoUrl   String?
+  /// [{ id, en, ar }, ...]
+  faculties Json     @default("[]")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sortOrder])
+  @@map("universities")
 }

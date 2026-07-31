@@ -75,6 +75,7 @@ export const UpdateAssessmentSchema = z.object({
   printCloCodeNextToEachQuestion: z.boolean().optional(),
   printBloomLevelNextToEachQuestion: z.boolean().optional(),
   printDifficultyLabelNextToEachQuestion: z.boolean().optional(),
+  headerConfig: z.unknown().nullable().optional(),
   language: prismaEnumToZod(Language, V.ASSESSMENT_LANGUAGE_INVALID)
     .nullable()
     .optional(),
