@@ -14,6 +14,7 @@ import {
 import { Request, Response } from 'express';
 import { ZodError, ZodIssue } from 'zod';
 import { Prisma } from 'generated/prisma/client';
+import { isRetryableDbError } from '../helpers/db-retry.helper';
 
 @Global()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -46,6 +47,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode = mapped.statusCode;
       message = mapped.message;
       messageKey = mapped.messageKey;
+    } else if (isRetryableDbError(exception)) {
+      statusCode = HttpStatus.SERVICE_UNAVAILABLE;
+      message = ErrorMessageKey.DATABASE_UNAVAILABLE;
+      messageKey = ErrorMessageKey.DATABASE_UNAVAILABLE;
     } else if (exception instanceof HttpException) {
       const exceptionResponse = exception.getResponse();
 
@@ -106,6 +111,14 @@ function mapPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): {
   message: string;
   messageKey: string;
 } {
+  if (isRetryableDbError(error)) {
+    return {
+      statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+      message: ErrorMessageKey.DATABASE_UNAVAILABLE,
+      messageKey: ErrorMessageKey.DATABASE_UNAVAILABLE,
+    };
+  }
+
   switch (error.code) {
     case 'P2002':
       return {

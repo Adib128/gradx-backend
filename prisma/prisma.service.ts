@@ -81,7 +81,20 @@ export class PrismaService
   });
 
   constructor() {
-    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: Number(process.env.DATABASE_POOL_MAX) || 10,
+      // Neon's pooler closes idle connections; recycle ours first so queries
+      // are never issued on a socket the server already dropped.
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+    });
+    // An idle client error is emitted on the pool, and would be an unhandled
+    // rejection that takes the process down.
+    pool.on('error', (error) => {
+      console.error('Postgres pool error:', error.message);
+    });
     const adapter = new PrismaPg(pool);
     super({ adapter });
   }

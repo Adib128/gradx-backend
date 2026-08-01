@@ -6,11 +6,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
 import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
-import {
-  LECTURE_PROMPT,
-  QUIZ_PROMPT,
-  LAB_PROMPT,
-} from './prompts';
+import { LECTURE_PROMPT, QUIZ_PROMPT, LAB_PROMPT } from './prompts';
 import { LECTURE_SYSTEM_PROMPT } from './prompts/lecture.prompt';
 import {
   SLIDES_SYSTEM_PROMPT,
@@ -19,7 +15,13 @@ import {
   SLIDES_MODULE_PROMPT,
   SLIDES_OPENING_PROMPT,
 } from './prompts/slides.prompt';
-import { LAB_SYSTEM_PROMPT } from './prompts/lab.prompt';
+import {
+  LAB_CLOSING_PROMPT,
+  LAB_OVERVIEW_PROMPT,
+  LAB_PLAN_PROMPT,
+  LAB_SECTION_PROMPT,
+  LAB_SYSTEM_PROMPT,
+} from './prompts/lab.prompt';
 import { QUIZ_SYSTEM_PROMPT } from './prompts/quiz.prompt';
 import {
   LECTURE_CLOSING_PROMPT,
@@ -88,9 +90,7 @@ function extractLectureDiagrams(source: unknown): LectureDiagram[] {
           ).trim(),
           mermaid,
           explanation: String(
-            record.diagramPedagogicalExplanation ??
-              record.explanation ??
-              '',
+            record.diagramPedagogicalExplanation ?? record.explanation ?? '',
           ).trim(),
         });
       }
@@ -174,6 +174,15 @@ export type SlidesStreamProgress = {
   partial: Record<string, unknown>;
 };
 
+export type LabStreamProgress = {
+  stage: 'plan' | 'overview' | 'section' | 'closing' | 'done';
+  percent: number;
+  sectionIndex?: number;
+  sectionCount?: number;
+  message: string;
+  partial: Record<string, unknown>;
+};
+
 @Injectable()
 export class TopicContentAiService {
   private readonly client: OpenAI;
@@ -194,6 +203,10 @@ export class TopicContentAiService {
 
     if (type === 'SLIDES') {
       return this.generateSlides(data);
+    }
+
+    if (type === 'LAB') {
+      return this.generateLabStreaming(data);
     }
 
     const promptMap: Partial<Record<ContentType, string>> = {
@@ -279,7 +292,11 @@ export class TopicContentAiService {
           ? (raw as SlideDeckSlide[])
           : [];
       for (const slide of list) {
-        if (slide && typeof slide === 'object' && String(slide.title || '').trim()) {
+        if (
+          slide &&
+          typeof slide === 'object' &&
+          String(slide.title || '').trim()
+        ) {
           accumulated.push(slide);
         }
       }
@@ -621,6 +638,163 @@ export class TopicContentAiService {
     return finalContent;
   }
 
+  async generateLabStreaming(
+    data: ContentGenerationJob,
+    onProgress?: (progress: LabStreamProgress) => Promise<void> | void,
+  ): Promise<Record<string, unknown>> {
+    const emit = async (progress: LabStreamProgress) => {
+      if (onProgress) await onProgress(progress);
+    };
+    const base = {
+      source: 'gradx',
+      provider: 'openrouter',
+      title: `Lab Manual: ${data.topicTitle}`,
+      objective: '',
+      estimatedDuration: '',
+      prerequisites: [],
+      tools: [],
+      setupNotes: [],
+      sections: [],
+      stretchChallenge: '',
+      deliverables: [],
+      gradingCriteria: [],
+      totalPoints: 100,
+    };
+
+    await emit({
+      stage: 'plan',
+      percent: 5,
+      message: 'Planning lab activities…',
+      partial: { ...base, streamStatus: 'planning' },
+    });
+
+    const planRaw = await this.chatJson(
+      LAB_SYSTEM_PROMPT,
+      LAB_PLAN_PROMPT(data),
+    );
+    const rawSections = Array.isArray(planRaw?.sections)
+      ? planRaw.sections
+      : [];
+    const plannedSections = rawSections
+      .slice(0, 5)
+      .map((section: any, index: number) => ({
+        sectionNumber: index + 1,
+        title: String(section?.title || `Lab activity ${index + 1}`).trim(),
+        cloCode: String(section?.cloCode || '').trim(),
+      }))
+      .filter((section: { title: string }) => Boolean(section.title));
+    if (!plannedSections.length) {
+      plannedSections.push(
+        { sectionNumber: 1, title: 'Guided implementation', cloCode: '' },
+        { sectionNumber: 2, title: 'Verification and analysis', cloCode: '' },
+        { sectionNumber: 3, title: 'Applied challenge', cloCode: '' },
+      );
+    }
+
+    let partial: Record<string, unknown> = {
+      ...base,
+      title: String(planRaw?.title || base.title),
+      streamStatus: 'overview',
+    };
+    await emit({
+      stage: 'overview',
+      percent: 15,
+      sectionCount: plannedSections.length,
+      message: 'Writing objectives and setup…',
+      partial,
+    });
+
+    const overview = await this.chatJson(
+      LAB_SYSTEM_PROMPT,
+      LAB_OVERVIEW_PROMPT(data, {
+        title: partial.title,
+        sections: plannedSections,
+      }),
+    );
+    partial = {
+      ...partial,
+      ...overview,
+      sections: [],
+      streamStatus: 'sections',
+    };
+    await emit({
+      stage: 'overview',
+      percent: 25,
+      sectionCount: plannedSections.length,
+      message: 'Setup ready. Building lab activities…',
+      partial,
+    });
+
+    const sections: Record<string, unknown>[] = [];
+    for (let index = 0; index < plannedSections.length; index += 1) {
+      const plan = plannedSections[index];
+      const startPercent =
+        25 + Math.round((index / plannedSections.length) * 60);
+      await emit({
+        stage: 'section',
+        percent: startPercent,
+        sectionIndex: index + 1,
+        sectionCount: plannedSections.length,
+        message: `Generating activity ${index + 1} of ${plannedSections.length}: ${plan.title}`,
+        partial: {
+          ...partial,
+          sections: [...sections],
+          streamStatus: `section_${index + 1}`,
+        },
+      });
+
+      const generated = await this.chatJson(
+        LAB_SYSTEM_PROMPT,
+        LAB_SECTION_PROMPT(data, plan),
+      );
+      sections.push({
+        ...generated,
+        sectionNumber: index + 1,
+        title: generated?.title || plan.title,
+        cloCode: generated?.cloCode || plan.cloCode,
+      });
+      partial = {
+        ...partial,
+        sections: [...sections],
+        streamStatus: `section_${index + 1}_done`,
+      };
+      await emit({
+        stage: 'section',
+        percent: 25 + Math.round(((index + 1) / plannedSections.length) * 60),
+        sectionIndex: index + 1,
+        sectionCount: plannedSections.length,
+        message: `Activity ${index + 1} of ${plannedSections.length} ready`,
+        partial,
+      });
+    }
+
+    await emit({
+      stage: 'closing',
+      percent: 90,
+      sectionCount: plannedSections.length,
+      message: 'Creating deliverables and grading rubric…',
+      partial: { ...partial, streamStatus: 'closing' },
+    });
+    const closing = await this.chatJson(
+      LAB_SYSTEM_PROMPT,
+      LAB_CLOSING_PROMPT(data, plannedSections),
+    );
+    const finalContent = {
+      ...partial,
+      ...closing,
+      sections,
+      streamStatus: 'done',
+    };
+    await emit({
+      stage: 'done',
+      percent: 100,
+      sectionCount: plannedSections.length,
+      message: 'Lab manual generation complete',
+      partial: finalContent,
+    });
+    return finalContent;
+  }
+
   private normalizePlanModules(planRaw: any): Array<{
     moduleIndex: number;
     title: string;
@@ -674,8 +848,10 @@ export class TopicContentAiService {
    * \r \uXXXX`) are preserved and every other backslash is doubled.
    */
   private repairJsonEscapes(input: string): string {
-    return input.replace(/\\(u[0-9a-fA-F]{4}|[\s\S]|$)/g, (match, seq: string) =>
-      /^(?:["\\/nr]|u[0-9a-fA-F]{4})$/.test(seq) ? match : `\\\\${seq}`,
+    return input.replace(
+      /\\(u[0-9a-fA-F]{4}|[\s\S]|$)/g,
+      (match, seq: string) =>
+        /^(?:["\\/nr]|u[0-9a-fA-F]{4})$/.test(seq) ? match : `\\\\${seq}`,
     );
   }
 

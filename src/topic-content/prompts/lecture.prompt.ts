@@ -68,6 +68,12 @@ ${contentLanguageGuidance(data.contentLanguage)}
 - Include formative check questions with brief model answers suitable for in-class discussion.
 - If formulas appear, write them as plain escaped text (no markdown fences), and explain each symbol.
 - If diagrams help, provide valid Mermaid code that teaches structure, not decoration.
+  Mermaid rules (a broken diagram is dropped from the lecture):
+  * Start with "graph TD" or "graph LR"; every node label must be quoted: A["Label"], B{"Question?"}.
+  * Node ids are single words with no spaces; give subgraphs an id too: subgraph S1["Forward Pass"].
+  * Every arrow needs a target on the same line; write edge labels as A -->|"label"| B.
+  * No LaTeX or backslashes inside labels (write "gradient of f" or "∇f", never "\\nabla"); no linkStyle, no note.
+  * Only style ids you declared, never a multi-word title: style S1 fill:#eef.
 - Map each module to CLO codes from the list above.
 - Keep density high: no vague summaries, no placeholder text, no "as mentioned earlier" without content.
 - Cite only from provided references when possible: ${JSON.stringify(formatReferences(data.references))}
@@ -121,7 +127,7 @@ ${contentLanguageGuidance(data.contentLanguage)}
         {
           "visualProfileType": "${data.visuals[0] || 'Concept Diagrams'}",
           "diagramTitle": "Instructional diagram title",
-          "mermaidDiagramCode": "graph TD; A[Idea] --> B[Consequence];",
+          "mermaidDiagramCode": "graph TD\\nA[\\"Idea\\"] -->|\\"leads to\\"| B[\\"Consequence\\"]",
           "diagramPedagogicalExplanation": "What students should notice in the diagram."
         }
       ],

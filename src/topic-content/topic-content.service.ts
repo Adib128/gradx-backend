@@ -21,6 +21,21 @@ import { buildLectureContentFromPdfExtraction } from './utils/pdf-lecture-conten
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
 import { detectContentLanguage } from './utils/content-language.util';
+import { withDbRetry } from 'src/common/helpers/db-retry.helper';
+
+/** Slide decks and lab manuals skip the draft/accept review cycle entirely. */
+const ALWAYS_ACCEPTED_TYPES = new Set<ContentType>(['SLIDES', 'LAB']);
+
+function isAlwaysAccepted(type: ContentType) {
+  return ALWAYS_ACCEPTED_TYPES.has(type);
+}
+
+function resolveReviewStatus(
+  type: ContentType,
+  requested: 'DRAFT' | 'ACCEPTED',
+): 'DRAFT' | 'ACCEPTED' {
+  return isAlwaysAccepted(type) ? 'ACCEPTED' : requested;
+}
 
 type UploadedFileMeta = {
   source: 'upload';
@@ -56,14 +71,15 @@ function isDocumentFile(mimeType: string, originalName: string) {
 function isSlideFile(mimeType: string, originalName: string) {
   const name = originalName.toLowerCase();
   return (
-    SLIDE_MIME.has(mimeType) ||
-    name.endsWith('.ppt') ||
-    name.endsWith('.pptx')
+    SLIDE_MIME.has(mimeType) || name.endsWith('.ppt') || name.endsWith('.pptx')
   );
 }
 
 function isPdfFile(mimeType: string, originalName: string) {
-  return mimeType === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf');
+  return (
+    mimeType === 'application/pdf' ||
+    originalName.toLowerCase().endsWith('.pdf')
+  );
 }
 
 function folderForType(type: UploadMaterialType) {
@@ -71,7 +87,6 @@ function folderForType(type: UploadMaterialType) {
   if (type === 'LAB') return 'lab-uploads';
   return 'lecture-uploads';
 }
-
 
 @Injectable()
 export class TopicContentService {
@@ -120,7 +135,9 @@ export class TopicContentService {
         generationContentDto.type === 'LAB') &&
       !lectureContent?.content
     ) {
-      throw new NotFoundException(ErrorMessageKey.TOPIC_CONTENT_LECTURE_REQUIRED);
+      throw new NotFoundException(
+        ErrorMessageKey.TOPIC_CONTENT_LECTURE_REQUIRED,
+      );
     }
 
     const cloDescriptions = topic.course.clos.map((clo) => clo.description);
@@ -180,7 +197,8 @@ export class TopicContentService {
   async getGenerateStatus(jobId: string) {
     const job = await this.contentQueue.getJob(jobId);
 
-    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
+    if (!job)
+      throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
 
     const state = await job.getState();
     const cancelled =
@@ -215,13 +233,16 @@ export class TopicContentService {
 
   assertGenerationNotCancelled(jobId: string | number | undefined | null) {
     if (this.isGenerationCancelled(jobId)) {
-      throw new BadRequestException(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED);
+      throw new BadRequestException(
+        ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED,
+      );
     }
   }
 
   async cancelGenerate(jobId: string) {
     const job = await this.contentQueue.getJob(jobId);
-    if (!job) throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
+    if (!job)
+      throw new NotFoundException(ErrorMessageKey.GENERATION_JOB_NOT_FOUND);
 
     const state = await job.getState();
     if (state === 'completed') {
@@ -270,7 +291,10 @@ export class TopicContentService {
     }
 
     // Drop the cancel flag later so memory does not grow forever
-    setTimeout(() => this.cancelledGenerationJobs.delete(String(jobId)), 30 * 60 * 1000);
+    setTimeout(
+      () => this.cancelledGenerationJobs.delete(String(jobId)),
+      30 * 60 * 1000,
+    );
 
     return {
       jobId,
@@ -283,7 +307,9 @@ export class TopicContentService {
     if (!content || typeof content !== 'object') return null;
     const data = content as Record<string, unknown>;
 
-    const readMeta = (meta: Record<string, unknown>): UploadedFileMeta | null => {
+    const readMeta = (
+      meta: Record<string, unknown>,
+    ): UploadedFileMeta | null => {
       if (
         meta.source !== 'upload' ||
         typeof meta.fileName !== 'string' ||
@@ -298,7 +324,9 @@ export class TopicContentService {
         filePath: meta.filePath,
         size: typeof meta.size === 'number' ? meta.size : 0,
         mimeType:
-          typeof meta.mimeType === 'string' ? meta.mimeType : 'application/octet-stream',
+          typeof meta.mimeType === 'string'
+            ? meta.mimeType
+            : 'application/octet-stream',
       };
     };
 
@@ -358,11 +386,7 @@ export class TopicContentService {
       );
     }
 
-    const relativeDir = join(
-      'slide-images',
-      String(tenantId),
-      String(topicId),
-    );
+    const relativeDir = join('slide-images', String(tenantId), String(topicId));
     const uploadDir = join(process.cwd(), 'public', relativeDir);
     await mkdir(uploadDir, { recursive: true });
     const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
@@ -468,10 +492,19 @@ export class TopicContentService {
         `Uploaded lecture extracted for topic ${topicId}: method=${extraction.method}, pages=${extraction.pageCount}, characters=${extraction.characterCount}`,
       );
 
-      return this.saveContent(topicId, topic.courseId, tenantId, 'LECTURE', content);
+      return this.saveContent(
+        topicId,
+        topic.courseId,
+        tenantId,
+        'LECTURE',
+        content,
+      );
     }
 
-    const content: UploadedFileMeta & { uploadedAt: string; materialType: UploadMaterialType } = {
+    const content: UploadedFileMeta & {
+      uploadedAt: string;
+      materialType: UploadMaterialType;
+    } = {
       source: 'upload',
       fileName: originalName,
       filePath: relativePath,
@@ -519,7 +552,9 @@ export class TopicContentService {
     }
 
     if (!meta) {
-      throw new NotFoundException(`Uploaded ${type.toLowerCase()} file not found`);
+      throw new NotFoundException(
+        `Uploaded ${type.toLowerCase()} file not found`,
+      );
     }
 
     return {
@@ -559,7 +594,9 @@ export class TopicContentService {
         : null);
 
     if (!meta) {
-      throw new NotFoundException(`Uploaded ${type.toLowerCase()} file not found`);
+      throw new NotFoundException(
+        `Uploaded ${type.toLowerCase()} file not found`,
+      );
     }
 
     try {
@@ -631,6 +668,7 @@ export class TopicContentService {
     type: ContentType,
     content: any,
   ) {
+    const review = resolveReviewStatus(type, 'DRAFT');
     return await this.prisma.topicContent.upsert({
       where: { topicId_type: { topicId, type } },
       create: {
@@ -639,12 +677,12 @@ export class TopicContentService {
         tenantId,
         type,
         status: 'PROCESSING',
-        reviewStatus: 'DRAFT',
+        reviewStatus: review,
         content,
       },
       update: {
         status: 'PROCESSING',
-        reviewStatus: 'DRAFT',
+        reviewStatus: review,
         content,
       },
     });
@@ -658,23 +696,26 @@ export class TopicContentService {
     content: any,
     reviewStatus: 'DRAFT' | 'ACCEPTED' = 'DRAFT',
   ) {
-    return await this.prisma.topicContent.upsert({
-      where: { topicId_type: { topicId, type } },
-      create: {
-        topicId,
-        courseId,
-        tenantId,
-        type,
-        status: 'COMPLETED',
-        reviewStatus,
-        content,
-      },
-      update: {
-        status: 'COMPLETED',
-        reviewStatus,
-        content,
-      },
-    });
+    const review = resolveReviewStatus(type, reviewStatus);
+    return await withDbRetry(() =>
+      this.prisma.topicContent.upsert({
+        where: { topicId_type: { topicId, type } },
+        create: {
+          topicId,
+          courseId,
+          tenantId,
+          type,
+          status: 'COMPLETED',
+          reviewStatus: review,
+          content,
+        },
+        update: {
+          status: 'COMPLETED',
+          reviewStatus: review,
+          content,
+        },
+      }),
+    );
   }
 
   async acceptContent(
@@ -683,65 +724,65 @@ export class TopicContentService {
     type: ContentType,
     content?: unknown,
   ) {
-    const topic = await this.prisma.topic.findFirst({
-      where: { id: topicId, course: { tenantId } },
-      include: {
-        topicContents: {
-          where: { type },
-          take: 1,
+    // Single scoped write on the happy path; the tenant check rides along in
+    // the filter so accepting never needs a second round trip.
+    const updated = await withDbRetry(() =>
+      this.prisma.topicContent.updateMany({
+        where: { topicId, type, course: { tenantId } },
+        data: {
+          status: 'COMPLETED',
+          reviewStatus: 'ACCEPTED',
+          ...(content != null ? { content: content as any } : {}),
         },
-      },
-    });
+      }),
+    );
+
+    if (updated.count > 0) {
+      return { topicId, type, reviewStatus: 'ACCEPTED' as const };
+    }
+
+    const topic = await withDbRetry(() =>
+      this.prisma.topic.findFirst({
+        where: { id: topicId, course: { tenantId } },
+        select: { id: true, courseId: true },
+      }),
+    );
 
     if (!topic) {
       throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
     }
-
-    const existing = topic.topicContents[0];
-    if (!existing && content == null) {
+    if (content == null) {
       throw new BadRequestException('No content to accept');
     }
 
-    const nextContent = content != null ? content : existing?.content;
-
-    return this.saveContent(
+    await this.saveContent(
       topicId,
       topic.courseId,
       tenantId,
       type,
-      nextContent,
+      content,
       'ACCEPTED',
     );
+    return { topicId, type, reviewStatus: 'ACCEPTED' as const };
   }
 
-  async markContentDraft(
-    tenantId: number,
-    topicId: number,
-    type: ContentType,
-  ) {
-    const topic = await this.prisma.topic.findFirst({
-      where: { id: topicId, course: { tenantId } },
-      include: {
-        topicContents: {
-          where: { type },
-          take: 1,
-        },
-      },
-    });
-
-    if (!topic) {
-      throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+  async markContentDraft(tenantId: number, topicId: number, type: ContentType) {
+    if (isAlwaysAccepted(type)) {
+      return { topicId, type, reviewStatus: 'ACCEPTED' as const };
     }
 
-    const existing = topic.topicContents[0];
-    if (!existing) {
+    const updated = await withDbRetry(() =>
+      this.prisma.topicContent.updateMany({
+        where: { topicId, type, course: { tenantId } },
+        data: { reviewStatus: 'DRAFT' },
+      }),
+    );
+
+    if (updated.count === 0) {
       throw new NotFoundException('Topic content not found');
     }
 
-    return this.prisma.topicContent.update({
-      where: { id: existing.id },
-      data: { reviewStatus: 'DRAFT' },
-    });
+    return { topicId, type, reviewStatus: 'DRAFT' as const };
   }
 
   async updateSlidesDeck(

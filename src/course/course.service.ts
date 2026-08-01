@@ -350,6 +350,7 @@ export class CourseService {
               id: true,
               type: true,
               status: true,
+              reviewStatus: true,
               content: true,
               createdAt: true,
             },

@@ -27,20 +27,21 @@ export class ContentGeneratonProcessor extends WorkerHost {
       this.assertNotCancelled(job);
 
       if (job.data.type === 'LECTURE') {
-        const result = await this.topicContentAiService.generateLectureStreaming(
-          job.data,
-          async (progress) => {
-            this.assertNotCancelled(job);
-            await job.updateProgress(progress);
-            await this.topicContentService.savePartialContent(
-              job.data.topicId,
-              job.data.courseId,
-              job.data.tenantId,
-              job.data.type,
-              progress.partial,
-            );
-          },
-        );
+        const result =
+          await this.topicContentAiService.generateLectureStreaming(
+            job.data,
+            async (progress) => {
+              this.assertNotCancelled(job);
+              await job.updateProgress(progress);
+              await this.topicContentService.savePartialContent(
+                job.data.topicId,
+                job.data.courseId,
+                job.data.tenantId,
+                job.data.type,
+                progress.partial,
+              );
+            },
+          );
 
         this.assertNotCancelled(job);
         await this.topicContentService.saveContent(
@@ -82,6 +83,34 @@ export class ContentGeneratonProcessor extends WorkerHost {
           job.data.tenantId,
           'SLIDES',
           result,
+        );
+        return result;
+      }
+
+      if (job.data.type === 'LAB') {
+        const result = await this.topicContentAiService.generateLabStreaming(
+          job.data,
+          async (progress) => {
+            this.assertNotCancelled(job);
+            await job.updateProgress(progress);
+            await this.topicContentService.savePartialContent(
+              job.data.topicId,
+              job.data.courseId,
+              job.data.tenantId,
+              'LAB',
+              progress.partial,
+            );
+          },
+        );
+
+        this.assertNotCancelled(job);
+        await this.topicContentService.saveContent(
+          job.data.topicId,
+          job.data.courseId,
+          job.data.tenantId,
+          'LAB',
+          result,
+          'ACCEPTED',
         );
         return result;
       }

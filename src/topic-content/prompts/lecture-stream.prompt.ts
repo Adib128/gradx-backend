@@ -119,6 +119,10 @@ Rules:
 - Include at least one fully worked example with concrete values.
 - Map this module explicitly to the most relevant priority CLO(s); respect teachingStrategies/assessmentMethods when provided.
 - Escape strings for valid JSON. No markdown fences.
+- mermaidDiagramCode must parse (a broken diagram is dropped): start with "graph TD" or "graph LR",
+  quote every label (A["Label"], B{"Question?"}), use single-word node ids, give subgraphs an id
+  (subgraph S1["Forward Pass"]), write edge labels as A -->|"label"| B, never leave an arrow without a
+  target, never put LaTeX backslashes in a label (write "∇f", not "\\nabla f"), and emit no linkStyle or note lines.
 - Associated CLO ids: ${JSON.stringify(data.targetedCloIds)}
 
 Return ONLY JSON for this single module object:

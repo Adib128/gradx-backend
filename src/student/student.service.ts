@@ -111,16 +111,39 @@ export class StudentService {
       this.cellToString(cell).toLowerCase().replace(/[\s_]+/g, ''),
     );
 
-    const studentIdHeader = ['studentid', 'id', 'code'].includes(headers[0]);
-    const nameHeader = headers[1] === 'name';
-    const sectionHeader = ['section', 'class'].includes(headers[2]);
-    const departmentHeader = ['departement', 'department'].includes(headers[3]);
+    const studentIdHeader = [
+      'studentid',
+      'id',
+      'code',
+      'studentcode',
+      'studentnumber',
+    ].includes(headers[0]);
+    const nameHeader = [
+      'name',
+      'studentname',
+      'fullname',
+      'studentfullname',
+    ].includes(headers[1]);
+    const sectionHeader = ['section', 'class', 'group'].includes(headers[2]);
+    const departmentHeader = [
+      'departement',
+      'department',
+      'dept',
+      'departmentname',
+    ].includes(headers[3]);
 
     return studentIdHeader && nameHeader && sectionHeader && departmentHeader;
   }
 
   private cellToString(value: unknown) {
-    return value === undefined || value === null ? '' : String(value).trim();
+    if (value === undefined || value === null) return '';
+    // Excel often stores IDs as numbers; keep integer form without scientific notation.
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Number.isInteger(value)
+        ? String(value)
+        : String(value).replace(/\.0+$/, '');
+    }
+    return String(value).trim();
   }
 
   findAll() {
