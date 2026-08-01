@@ -53,6 +53,18 @@ DEFAULT_CONFIG = {
         "fillThreshold": 0.25,
         "darknessDifferential": 1.3,
     },
+    # Machine-readable paper-version marker (mirrors sheet-config.ts versionCode).
+    # Solid 4 mm squares: slot 0 = start mark, slots 1-4 = version bits (MSB
+    # first), slot 5 = even parity. Replaces the old visible Key Version column.
+    "versionCode": {
+        "centerX": 0.13333,       # 28 / 210
+        "firstCenterY": 0.22222,  # 66 / 297
+        "slotPitch": 0.03367,     # 10 / 297
+        "sampleHalf": 0.00952,    # 2 / 210
+        "totalSlots": 6,
+        "dataBits": 4,
+        "fillThreshold": 0.35,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -254,6 +266,76 @@ def sample_bubble(binary, np, bx, by, radius_px):
     return dark / max(1, total)
 
 
+def sample_square(binary, x, y, half):
+    """Return fill ratio (dark pixels / total) for a square ROI."""
+    h, w = binary.shape
+    x0 = max(0, x - half)
+    y0 = max(0, y - half)
+    x1 = min(w, x + half + 1)
+    y1 = min(h, y + half + 1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+
+    roi = binary[y0:y1, x0:x1]
+    return float((roi > 0).sum()) / float(roi.size)
+
+
+def decode_version_code(binary, config):
+    """
+    Decode the covert paper-version marker.
+
+    Slot 0 is always printed, so it is used to calibrate a small positional
+    offset before the remaining slots are read.
+    Returns (version_or_none, debug_dict).
+    """
+    cfg = config.get("versionCode", DEFAULT_CONFIG["versionCode"])
+    h, w = binary.shape
+    half = max(3, int(cfg["sampleHalf"] * w))
+    nominal_x = int(cfg["centerX"] * w)
+    nominal_y = int(cfg["firstCenterY"] * h)
+    search_x = max(4, int(0.012 * w))
+    search_y = max(4, int(0.012 * h))
+    step = max(2, half // 2)
+
+    best_fill, offset_x, offset_y = 0.0, 0, 0
+    for dy in range(-search_y, search_y + 1, step):
+        for dx in range(-search_x, search_x + 1, step):
+            fill = sample_square(binary, nominal_x + dx, nominal_y + dy, half)
+            if fill > best_fill:
+                best_fill, offset_x, offset_y = fill, dx, dy
+
+    pitch = cfg["slotPitch"] * h
+    fills = [
+        sample_square(
+            binary,
+            nominal_x + offset_x,
+            int(nominal_y + offset_y + slot * pitch),
+            half,
+        )
+        for slot in range(int(cfg["totalSlots"]))
+    ]
+    marked = [fill >= cfg["fillThreshold"] for fill in fills]
+    debug = {
+        "fills": [round(f, 3) for f in fills],
+        "offset": [offset_x, offset_y],
+    }
+
+    data_bits_count = int(cfg["dataBits"])
+    if not marked[0]:
+        return None, {**debug, "reason": "start_mark_missing"}
+
+    data_bits = marked[1:1 + data_bits_count]
+    parity_expected = sum(data_bits) % 2 == 1
+    if marked[1 + data_bits_count] != parity_expected:
+        return None, {**debug, "reason": "parity_mismatch"}
+
+    value = 0
+    for bit in data_bits:
+        value = (value << 1) | (1 if bit else 0)
+
+    return (value if value > 0 else None), debug
+
+
 def analyze_answer_grid(binary, np, config):
     h, w = binary.shape
     grid = config.get("answerGrid", DEFAULT_CONFIG["answerGrid"])
@@ -329,7 +411,9 @@ def analyze_answer_grid(binary, np, config):
 def find_student_id_blobs(cv2, gray_img):
     """Locate filled bubble blobs in the student-ID region of a warped sheet."""
     h, w = gray_img.shape[:2]
-    x0, y0 = int(0.08 * w), int(0.08 * h)
+    # Left edge starts right of the version-code strip (ends at 0.143 w) so its
+    # solid squares are never mistaken for filled ID bubbles.
+    x0, y0 = int(0.17 * w), int(0.08 * h)
     x1, y1 = int(0.32 * w), int(0.36 * h)
     roi = gray_img[y0:y1, x0:x1]
     if roi.size == 0:
@@ -576,6 +660,9 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
     # Return null only when every digit is blank; partial IDs are still useful
     detected_student_id = None if re.fullmatch(r'_+', raw_student_id) else (raw_student_id or None)
 
+    # Phase 5: Paper-version marker
+    detected_version, version_debug = decode_version_code(binary, config)
+
     answered = sum(1 for d in details if d["status"] == "answered")
     total = max(1, len(details))
     bubble_conf = answered / total
@@ -585,7 +672,7 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
     return {
         "answers": answers,
         "confidence": confidence,
-        "decodedFormId": None,
+        "decodedFormId": detected_version,
         "questionDetails": details,
         "detectedStudentId": detected_student_id,
         "debug": {
@@ -598,6 +685,7 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
             "rawStudentId": raw_student_id,
             "anchors": anchor_debug,
             "studentIdDebug": sid_debug,
+            "versionCode": version_debug,
         },
     }
 

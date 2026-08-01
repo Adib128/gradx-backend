@@ -95,9 +95,10 @@ export const AssessmentObjectSchema = z.object({
   numberOfStudentIdDigits: z
     .number({ message: V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID })
     .int()
-    .min(3, V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID)
-    .max(12, V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID)
-    .default(3),
+    .refine((value) => [6, 9, 10].includes(value), {
+      message: V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID,
+    })
+    .default(9),
   includeAssessmentInstructionsSection: z.boolean().default(false),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().default(false),

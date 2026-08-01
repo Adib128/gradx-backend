@@ -1764,6 +1764,7 @@ export class AssessmentService {
 
   private createExamDocBuffer(assessment: any, version: any): Buffer {
     const headerHtml = this.buildAssessmentHeaderHtml(assessment.headerConfig);
+    const footerText = this.pickHeaderText(assessment.headerConfig?.footerText);
     const questionLines: string[] = [];
 
     if (headerHtml) {
@@ -1799,8 +1800,12 @@ export class AssessmentService {
       )
       .join('');
 
+    const footerHtml = footerText
+      ? `<div style="margin-top:28px;padding-top:10px;border-top:1px solid #cbd5e1;font-size:12px;line-height:1.55;color:#334155;white-space:pre-wrap;">${this.escapeHtml(footerText)}</div>`
+      : '';
+
     return Buffer.from(
-      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Assessment Version</title></head><body>${headerHtml}${body}</body></html>`,
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Assessment Version</title></head><body>${headerHtml}${body}${footerHtml}</body></html>`,
       'utf8',
     );
   }

@@ -131,11 +131,34 @@ export class GradingService {
       }
     }
 
-    // Score against the assessment answer key
+    // Score against the answer key for the machine-detected paper version.
+    // The marker stores a one-based version index (A=1, B=2, ...), matching
+    // assessmentVersions' creation/id order. Old sheets without a marker keep
+    // the previous Version A fallback.
+    const decodedVersionIndex =
+      processResult!.decodedFormId != null
+        ? processResult!.decodedFormId - 1
+        : 0;
+    const detectedVersion =
+      decodedVersionIndex >= 0
+        ? assessment.assessmentVersions[decodedVersionIndex]
+        : undefined;
+    const scoringVersion =
+      detectedVersion ?? assessment.assessmentVersions[0];
     const orderedQuestions =
-      assessment.assessmentVersions[0]?.versionQuestions?.length
-        ? assessment.assessmentVersions[0].versionQuestions.map((vq) => vq.question)
+      scoringVersion?.versionQuestions?.length
+        ? scoringVersion.versionQuestions.map((vq) => vq.question)
         : assessment.questions;
+
+    if (
+      processResult!.decodedFormId != null &&
+      !detectedVersion &&
+      assessment.assessmentVersions.length > 0
+    ) {
+      this.logger.warn(
+        `Decoded version ${processResult!.decodedFormId} is outside assessment ${assessmentId}'s ${assessment.assessmentVersions.length} versions; using Version A`,
+      );
+    }
 
     const { score, maxScore, questionResults } = this.gradeAnswers(
       processResult!.answers,
@@ -205,6 +228,7 @@ export class GradingService {
         score: true,
         maxScore: true,
         confidence: true,
+        decodedFormId: true,
         detectedStudentId: true,
         matchedStudentCode: true,
         confirmedAt: true,
@@ -281,6 +305,7 @@ export class GradingService {
         score: true,
         maxScore: true,
         confidence: true,
+        decodedFormId: true,
         detectedStudentId: true,
         matchedStudentCode: true,
         confirmedAt: true,

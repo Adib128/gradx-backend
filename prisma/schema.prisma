@@ -397,7 +397,7 @@ model Assessment {
   showMarksPerQuestion                    Boolean                   @default(false)
   includeStudentInfoHeader                Boolean                   @default(false)
   studentIdLabel                          AssessmentStudentIdLabel  @default(STUDENT_ID)
-  numberOfStudentIdDigits                 Int                       @default(3)
+  numberOfStudentIdDigits                 Int                       @default(9)
   includeAssessmentInstructionsSection    Boolean                   @default(false)
   assessmentInstructions                  String?
   printCloCodeNextToEachQuestion          Boolean                   @default(false)

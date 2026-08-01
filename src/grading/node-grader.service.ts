@@ -26,7 +26,7 @@ interface BubbleResult {
 interface GradeResult {
   answers: Record<string, string>;
   confidence: number;
-  decodedFormId: null;
+  decodedFormId: number | null;
   questionDetails: BubbleResult[];
   detectedStudentId: string | null;
   debug: Record<string, unknown>;
@@ -133,14 +133,16 @@ export class NodeGraderService {
       globalMean,
     );
 
+    const version = this.decodeVersionCode(grayBuf as Buffer, w, h, globalMean);
+
     this.logger.log(
-      `Node grader done: ${answeredCount}/${total} answered, conf=${confidence.toFixed(2)}, studentId=${detectedStudentId}`,
+      `Node grader done: ${answeredCount}/${total} answered, conf=${confidence.toFixed(2)}, studentId=${detectedStudentId}, version=${version.value ?? 'unknown'}`,
     );
 
     return {
       answers,
       confidence: Math.round(confidence * 1000) / 1000,
-      decodedFormId: null,
+      decodedFormId: version.value,
       questionDetails: details,
       // Return null only if every digit is blank, otherwise keep partial result
       detectedStudentId: /^_+$/.test(detectedStudentId) ? null : detectedStudentId || null,
@@ -151,7 +153,82 @@ export class NodeGraderService {
         answeredCount,
         totalQuestions: total,
         detectedStudentId,
+        versionCode: version,
       },
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Paper-version marker decoding
+  //
+  // Slot 0 is always printed, so it doubles as a calibration mark: we search a
+  // small window around its nominal position, then read the remaining slots at
+  // the same offset.
+  // -------------------------------------------------------------------------
+  private decodeVersionCode(
+    gray: Buffer,
+    w: number,
+    h: number,
+    globalMean: number,
+  ): { value: number | null; fills: number[]; offsetPx: [number, number] } {
+    const cfg = SHEET_CONFIG.versionCode;
+    const radius = Math.max(3, Math.round(cfg.sampleHalf * w));
+    const nominalX = Math.round(cfg.centerX * w);
+    const nominalY = Math.round(cfg.firstCenterY * h);
+    const searchX = Math.max(4, Math.round(0.012 * w));
+    const searchY = Math.max(4, Math.round(0.012 * h));
+    const step = Math.max(2, Math.round(radius / 2));
+
+    const fillAt = (cx: number, cy: number) => {
+      if (cx < radius || cy < radius || cx >= w - radius || cy >= h - radius) {
+        return 0;
+      }
+      const mean = this.sampleMean(gray, w, h, cx, cy, radius);
+      return Math.max(0, Math.min(1, (globalMean - mean) / globalMean));
+    };
+
+    let bestFill = 0;
+    let offsetX = 0;
+    let offsetY = 0;
+    for (let dy = -searchY; dy <= searchY; dy += step) {
+      for (let dx = -searchX; dx <= searchX; dx += step) {
+        const fill = fillAt(nominalX + dx, nominalY + dy);
+        if (fill > bestFill) {
+          bestFill = fill;
+          offsetX = dx;
+          offsetY = dy;
+        }
+      }
+    }
+
+    const pitchPx = cfg.slotPitch * h;
+    const fills: number[] = [];
+    for (let slot = 0; slot < cfg.totalSlots; slot += 1) {
+      fills.push(
+        fillAt(nominalX + offsetX, Math.round(nominalY + offsetY + slot * pitchPx)),
+      );
+    }
+
+    const marked = fills.map((fill) => fill >= cfg.fillThreshold);
+    const rounded = fills.map((fill) => Math.round(fill * 1000) / 1000);
+
+    // Start mark missing -> the sheet predates the marker or the strip is unreadable
+    if (!marked[0]) {
+      return { value: null, fills: rounded, offsetPx: [offsetX, offsetY] };
+    }
+
+    const dataBits = marked.slice(1, 1 + cfg.dataBits);
+    const parityExpected = dataBits.filter(Boolean).length % 2 === 1;
+    if (marked[1 + cfg.dataBits] !== parityExpected) {
+      return { value: null, fills: rounded, offsetPx: [offsetX, offsetY] };
+    }
+
+    const value = dataBits.reduce((acc, bit) => (acc << 1) | (bit ? 1 : 0), 0);
+
+    return {
+      value: value > 0 ? value : null,
+      fills: rounded,
+      offsetPx: [offsetX, offsetY],
     };
   }
 
@@ -164,7 +241,9 @@ export class NodeGraderService {
     h: number,
     globalMean: number,
   ): Array<{ x: number; y: number; area: number }> {
-    const x0 = Math.floor(0.08 * w);
+    // Left edge starts right of the version-code strip (ends at 0.143 w) so its
+    // solid squares are never mistaken for filled ID bubbles.
+    const x0 = Math.floor(0.17 * w);
     const x1 = Math.floor(0.32 * w);
     const y0 = Math.floor(0.08 * h);
     const y1 = Math.floor(0.36 * h);

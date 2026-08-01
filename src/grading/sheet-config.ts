@@ -148,6 +148,43 @@ export const SHEET_CONFIG = {
      */
     fillThreshold: 0.20,
   },
+
+  /**
+   * Machine-readable paper-version marker.
+   *
+   * The visible "Key Version" bubble column was removed from the sheet so the
+   * student cannot tell which version they hold; the version is printed as a
+   * strip of solid 4 mm squares instead.
+   *
+   * From the jsPDF generator (lib/answer-sheet-version-code.ts):
+   *   Slot centre x = 28 mm, slot centre y = 66 + index * 10 mm, 6 slots.
+   *   Slot 0     : always printed (calibration / start mark)
+   *   Slots 1-4  : version number, 4 bits, most significant bit first
+   *   Slot 5     : even parity over the data bits
+   *
+   * The strip lies between 22 % and 40 % of the page height, well clear of the
+   * corner-anchor search windows.
+   */
+  versionCode: {
+    /** Normalised x of every slot centre (28/210). */
+    centerX: 28 / 210,
+
+    /** Normalised y of slot 0 centre (66/297). */
+    firstCenterY: 66 / 297,
+
+    /** Normalised y pitch between slots (10/297). */
+    slotPitch: 10 / 297,
+
+    /** Normalised half-size of the sampling window (2/210 of page width). */
+    sampleHalf: 2 / 210,
+
+    /** Number of slots: 1 start + 4 data + 1 parity. */
+    totalSlots: 6,
+    dataBits: 4,
+
+    /** A slot counts as printed above this fill ratio. */
+    fillThreshold: 0.35,
+  },
 } as const;
 
 export type SheetConfig = typeof SHEET_CONFIG;
