@@ -4,11 +4,14 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import * as argon2 from 'argon2';
 import { JwtService } from '@nestjs/jwt';
+import { OAuth2Client } from 'google-auth-library';
 import { LoginDto } from './dto/login.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { User, UserRole } from 'generated/prisma/browser';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { VerifyDto } from './dto/verify.dto';
@@ -18,10 +21,29 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly googleClient: OAuth2Client;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.googleClient = new OAuth2Client();
+  }
+
+  private getGoogleClientIds(): string[] {
+    const ids = [
+      this.configService.get<string>('GOOGLE_CLIENT_ID'),
+      this.configService.get<string>('GOOGLE_CLIENT_ID_WEB'),
+      this.configService.get<string>('GOOGLE_CLIENT_ID_IOS'),
+      this.configService.get<string>('GOOGLE_CLIENT_ID_ANDROID'),
+      this.configService.get<string>('GOOGLE_CLIENT_ID_EXPO'),
+    ]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .map((value) => value.trim());
+
+    return Array.from(new Set(ids));
+  }
 
   async register(registerDto: RegisterDto) {
     console.log(registerDto);
@@ -51,6 +73,7 @@ export class AuthService {
           verificationCode,
           verificationCodeExpiresAt,
           tenantId: tenant.id,
+          authProvider: 'LOCAL',
         },
       });
     });
@@ -76,7 +99,7 @@ export class AuthService {
       where: { email: loginDto.email },
     });
 
-    if (!user) {
+    if (!user || !user.passwordHash) {
       throw new UnauthorizedException(ErrorMessageKey.AUTH_INVALID_CREDENTIALS);
     }
 
@@ -94,6 +117,93 @@ export class AuthService {
     }
 
     return user;
+  }
+
+  async loginWithGoogle(googleLoginDto: GoogleLoginDto) {
+    const audience = this.getGoogleClientIds();
+    if (audience.length === 0) {
+      throw new UnauthorizedException(ErrorMessageKey.AUTH_INVALID_CREDENTIALS);
+    }
+
+    let payload: {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean | string;
+      given_name?: string;
+      family_name?: string;
+      name?: string;
+    };
+
+    try {
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken: googleLoginDto.idToken,
+        audience,
+      });
+      payload = ticket.getPayload() || {};
+    } catch {
+      throw new UnauthorizedException(ErrorMessageKey.AUTH_INVALID_CREDENTIALS);
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email?.toLowerCase().trim();
+    const emailVerified =
+      payload.email_verified === true || payload.email_verified === 'true';
+
+    if (!googleId || !email || !emailVerified) {
+      throw new UnauthorizedException(ErrorMessageKey.AUTH_INVALID_CREDENTIALS);
+    }
+
+    const firstName =
+      payload.given_name ||
+      payload.name?.split(' ')?.[0] ||
+      null;
+    const lastName =
+      payload.family_name ||
+      payload.name?.split(' ')?.slice(1).join(' ') ||
+      null;
+
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ googleId }, { email }],
+      },
+    });
+
+    if (!user) {
+      user = await this.prisma.$transaction(async (tx) => {
+        const tenant = await tx.tenant.create({ data: {} });
+        return tx.user.create({
+          data: {
+            email,
+            googleId,
+            authProvider: 'GOOGLE',
+            passwordHash: null,
+            hashVersion: null,
+            firstName,
+            lastName,
+            role: UserRole.USER,
+            isActive: true,
+            isVerified: true,
+            tenantId: tenant.id,
+            lastLogin: new Date(),
+          },
+        });
+      });
+    } else {
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          googleId: user.googleId || googleId,
+          authProvider: user.passwordHash ? user.authProvider : 'GOOGLE',
+          isVerified: true,
+          isActive: true,
+          firstName: user.firstName || firstName,
+          lastName: user.lastName || lastName,
+          lastLogin: new Date(),
+        },
+      });
+    }
+
+    return this.login(user);
   }
 
   async verify(verifyDto: VerifyDto) {
@@ -145,7 +255,7 @@ export class AuthService {
       where: { id: userId },
     });
 
-    if (!user) {
+    if (!user || !user.passwordHash) {
       throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
     }
 

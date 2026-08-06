@@ -34,6 +34,7 @@
     "@prisma/client": "^7.8.0",
     "argon2": "^0.44.0",
     "bullmq": "^5.76.8",
+    "google-auth-library": "^11.0.0",
     "install": "^0.13.0",
     "nestjs-zod": "^5.3.0",
     "npm": "^11.16.0",

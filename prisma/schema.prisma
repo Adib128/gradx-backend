@@ -136,8 +136,10 @@ model User {
   id                        Int       @id @default(autoincrement())
   email                     String    @unique
   phone                     String?   @unique
-  passwordHash              String
-  hashVersion               String
+  passwordHash              String?
+  hashVersion               String?
+  googleId                  String?   @unique
+  authProvider              String    @default("LOCAL")
   firstName                 String?
   lastName                  String?
   universityName            String?
@@ -155,6 +157,7 @@ model User {
   gradingScans              GradingScan[]
 
   @@index([email])
+  @@index([googleId])
   @@map("users")
 }
 
