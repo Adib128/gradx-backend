@@ -47,6 +47,19 @@ export class TopicContentController {
     );
   }
 
+  @Post(':topicId/preview-prompt')
+  previewPrompt(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() generateContentDto: GenerateContentDto,
+  ) {
+    return this.topicContentService.previewPrompt(
+      tenantId,
+      topicId,
+      generateContentDto,
+    );
+  }
+
   @Get('generate/:jobId/status')
   getGenerateStatus(@Param('jobId') jobId: string) {
     return this.topicContentService.getGenerateStatus(jobId);

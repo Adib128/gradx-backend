@@ -1,6 +1,6 @@
 export const EXTRACT_COURSE_PROMPT = `
 You are an expert academic data extractor.
-Extract the course specification data from this PDF and return ONLY a valid JSON object.
+Extract the course specification data from this document and return ONLY a valid JSON object.
 Do NOT include any markdown, explanation, or extra text — just raw JSON.
 
 Make sure to map the relationship between topics and Course Learning Outcomes (CLOs) by populating the "mappedClos" array inside each topic with the matching CLO codes, corresponding to the CLO-Topic matrix found in the document.

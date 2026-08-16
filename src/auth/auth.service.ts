@@ -18,6 +18,7 @@ import { VerifyDto } from './dto/verify.dto';
 import { ResponseMessageKey } from 'src/common/constants/response-message';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { withDbRetry } from 'src/common/helpers/db-retry.helper';
 
 @Injectable()
 export class AuthService {
@@ -333,9 +334,11 @@ export class AuthService {
   }
 
   async findById(userId: number): Promise<User> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+    const user = await withDbRetry(() =>
+      this.prisma.user.findUnique({
+        where: { id: userId },
+      }),
+    );
     if (!user) {
       throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
     }

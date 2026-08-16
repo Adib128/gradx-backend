@@ -12,7 +12,9 @@ import {
   ParseIntPipe,
   Query,
   BadRequestException,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { CourseService } from './course.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -246,6 +248,16 @@ export class CourseController {
     return this.courseService.remove(tenantId, +id);
   }
 
+  @Post('extract/stream')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  streamExtractFromPdf(
+    @UploadedFile() file: Express.Multer.File,
+    @Res() res: Response,
+  ) {
+    return this.courseService.streamExtractFromPdfFile(file, res);
+  }
+
   @Post('extract')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
@@ -258,6 +270,16 @@ export class CourseController {
   getExtractionStatus(@Param('jobId') jobId: string) {
     return this.courseService.getExtractionStatus(jobId);
     // → { jobId: "1", status: "completed", progress: 100, result: {...} }
+  }
+
+  @Post('references/extract-document')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  extractReferenceDocument(
+    @GetUser('tenantId') tenantId: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.courseService.extractReferenceDocument(tenantId, file);
   }
 
   @Post('confirm')

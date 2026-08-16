@@ -5,6 +5,7 @@ import {
   localContextGuidance,
   languageBlock,
   qualityModeGuidance,
+  formatReferencesWithContentForPrompt,
 } from './pedagogy.shared';
 
 export const LAB_SYSTEM_PROMPT = `You are an experienced university lab instructor in Saudi / Gulf higher education writing manuals students can complete in a supervised lab.
@@ -97,6 +98,8 @@ CLOs:
 ${formatClosForPrompt(data.clos, data.targetedCloIds)}
 Language:
 ${languageBlock(data)}
+Course references / source excerpts (use when relevant to the lab procedure):
+${formatReferencesWithContentForPrompt(data.references || [])}
 Source lecture (authoritative):
 ${JSON.stringify(data.sourceLectureContent ?? {}, null, 2)}
 `;

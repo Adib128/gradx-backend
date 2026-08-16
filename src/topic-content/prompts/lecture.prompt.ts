@@ -1,5 +1,6 @@
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 import { contentLanguageGuidance } from '../utils/content-language.util';
+import { formatReferencesWithContentForPrompt } from './pedagogy.shared';
 
 const formatReferenceCitation = (reference: unknown): string => {
   if (!reference) return '';
@@ -76,7 +77,10 @@ ${contentLanguageGuidance(data.contentLanguage)}
   * Only style ids you declared, never a multi-word title: style S1 fill:#eef.
 - Map each module to CLO codes from the list above.
 - Keep density high: no vague summaries, no placeholder text, no "as mentioned earlier" without content.
-- Cite only from provided references when possible: ${JSON.stringify(formatReferences(data.references))}
+- Cite only from provided references when possible.
+- When a reference includes source excerpts, ground definitions, examples, and terminology in that document content; do not invent conflicting facts.
+- Course references / source excerpts:
+${formatReferencesWithContentForPrompt(data.references || [])}
 - Match the requested length "${data.length}" with real academic content, not padding.
 
 ## Output Rules

@@ -93,6 +93,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     console.log(exception);
 
+    if (response.headersSent || response.writableEnded) {
+      return;
+    }
+
     const errorBody: IErrorResponse = {
       statusCode,
       message,

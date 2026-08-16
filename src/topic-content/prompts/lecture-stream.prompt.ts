@@ -5,6 +5,7 @@ import {
   localContextGuidance,
   languageBlock,
   qualityModeGuidance,
+  formatReferencesWithContentForPrompt,
 } from './pedagogy.shared';
 
 const contextBlock = (data: ContentGenerationJob) => `
@@ -30,6 +31,9 @@ ${
     ? data.targetedCloIds.map((id) => `- ${id}`).join('\n')
     : '- Emphasize CLOs most relevant to this topic'
 }
+
+## Course references (cite + use attached source text when present)
+${formatReferencesWithContentForPrompt(data.references || [])}
 
 ${localContextGuidance(data.exampleLevels)}
 

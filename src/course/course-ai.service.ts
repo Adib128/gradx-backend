@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { EXTRACT_COURSE_PROMPT } from './prompts/extract-course.prompt';
@@ -9,9 +9,17 @@ import { createHash } from 'crypto';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
 import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
+import { extractPdfText } from 'src/topic-content/utils/extract-pdf-text.util';
+
+/** Keep course-spec text prompts within a safe model context budget. */
+const MAX_COURSE_SPEC_TEXT_CHARS = 100_000;
+
+/** Prefer local text extract when the PDF has at least this many characters. */
+const MIN_PDF_TEXT_CHARS_FOR_TEXT_PATH = 200;
 
 @Injectable()
 export class CourseAIService {
+  private readonly logger = new Logger(CourseAIService.name);
   private readonly client: OpenAI;
   private readonly model: string;
   constructor(private readonly config: ConfigService) {
@@ -45,7 +53,7 @@ export class CourseAIService {
       normalizedFilename.endsWith('.pdf') ||
       !mimeType
     ) {
-      return this.extractFromPdfBase64(base64);
+      return this.extractFromPdfBuffer(buffer, base64);
     }
 
     throw new BadRequestException(
@@ -53,7 +61,73 @@ export class CourseAIService {
     );
   }
 
-  private async extractFromPdfBase64(base64: string): Promise<any> {
+  /**
+   * Course specs are typically text-layer PDFs. Prefer local text → JSON
+   * (same path as DOCX). Fall back to vision/file upload when text is thin.
+   */
+  private async extractFromPdfBuffer(
+    buffer: Buffer,
+    base64: string,
+  ): Promise<any> {
+    let pdfText = '';
+    try {
+      pdfText = (await extractPdfText(buffer)).trim();
+    } catch (error) {
+      this.logger.warn(
+        `PDF text extraction failed; falling back to vision: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    if (pdfText.length >= MIN_PDF_TEXT_CHARS_FOR_TEXT_PATH) {
+      try {
+        return await this.extractFromCourseSpecText(pdfText, 'PDF');
+      } catch (error) {
+        const isInvalidAi =
+          error instanceof BadRequestException &&
+          (error.getResponse() as { message?: string })?.message ===
+            ErrorMessageKey.COURSE_EXTRACT_AI_INVALID_RESPONSE;
+        if (!isInvalidAi) throw error;
+        this.logger.warn(
+          'Text-path course extract returned invalid JSON; retrying with PDF vision.',
+        );
+      }
+    }
+
+    return this.extractFromPdfVisionBase64(base64);
+  }
+
+  private async extractFromCourseSpecText(
+    documentText: string,
+    sourceLabel: string,
+  ): Promise<any> {
+    const truncated =
+      documentText.length > MAX_COURSE_SPEC_TEXT_CHARS
+        ? `${documentText.slice(0, MAX_COURSE_SPEC_TEXT_CHARS)}\n\n[…truncated…]`
+        : documentText;
+
+    const response = await createChatCompletion(this.client, {
+      model: this.model,
+      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+      messages: [
+        {
+          role: 'user',
+          content: `${EXTRACT_COURSE_PROMPT}
+
+Extract the course specification from the following ${sourceLabel} text content:
+
+${truncated}`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+    });
+
+    const text = response.choices[0]?.message?.content ?? '';
+    return this.parseResponse(text);
+  }
+
+  private async extractFromPdfVisionBase64(base64: string): Promise<any> {
     const response = await createChatCompletion(this.client, {
       model: this.model,
       max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
@@ -77,7 +151,6 @@ export class CourseAIService {
     });
 
     const text = response.choices[0]?.message?.content ?? '';
-
     return this.parseResponse(text);
   }
 
@@ -89,25 +162,7 @@ export class CourseAIService {
       throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_EMPTY_DOCX);
     }
 
-    const response = await createChatCompletion(this.client, {
-      model: this.model,
-      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-      messages: [
-        {
-          role: 'user',
-          content: `${EXTRACT_COURSE_PROMPT}
-
-Extract the course specification from the following DOCX text content:
-
-${documentText}`,
-        },
-      ],
-      response_format: { type: 'json_object' },
-    });
-
-    const text = response.choices[0]?.message?.content ?? '';
-
-    return this.parseResponse(text);
+    return this.extractFromCourseSpecText(documentText, 'DOCX');
   }
 
   private readZipTextFile(buffer: Buffer, filename: string): string {
@@ -485,11 +540,51 @@ ${JSON.stringify(payload, null, 2)}`,
     };
   }
 
+  /**
+   * Models often wrap JSON in fences or emit LaTeX-style single backslashes
+   * that break strict JSON.parse. Repair and slice to the outermost object.
+   */
+  private repairJsonEscapes(input: string): string {
+    return input.replace(
+      /\\(u[0-9a-fA-F]{4}|[\s\S]|$)/g,
+      (match, seq: string) =>
+        /^(?:["\\/nr]|u[0-9a-fA-F]{4})$/.test(seq) ? match : `\\\\${seq}`,
+    );
+  }
+
+  private extractJsonObject(text: string): string {
+    const cleaned = text
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
+
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return cleaned.slice(start, end + 1);
+    }
+    return cleaned;
+  }
+
   private parseResponse(text: string): any {
+    const cleaned = this.repairJsonEscapes(this.extractJsonObject(text || ''));
+
+    if (!cleaned) {
+      throw new BadRequestException(
+        ErrorMessageKey.COURSE_EXTRACT_AI_INVALID_RESPONSE,
+      );
+    }
+
     try {
-      const clean = text.replace(/```json|```/g, '').trim();
-      return JSON.parse(clean);
-    } catch {
+      return JSON.parse(cleaned);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const pos = Number(/position (\d+)/i.exec(message)?.[1] ?? 0);
+      this.logger.warn(
+        `Course extract JSON parse failed: ${message}; context=${JSON.stringify(
+          cleaned.slice(Math.max(0, pos - 60), pos + 60),
+        )}`,
+      );
       throw new BadRequestException(
         ErrorMessageKey.COURSE_EXTRACT_AI_INVALID_RESPONSE,
       );

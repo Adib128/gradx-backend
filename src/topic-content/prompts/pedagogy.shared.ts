@@ -78,6 +78,8 @@ Include at least one applied example grounded in Saudi Arabia or the wider Gulf 
 `.trim();
 }
 
+export { formatReferencesWithContentForPrompt } from 'src/course/utils/extract-reference-document.util';
+
 export function languageBlock(data: ContentGenerationJob): string {
   return contentLanguageGuidance(data.contentLanguage);
 }

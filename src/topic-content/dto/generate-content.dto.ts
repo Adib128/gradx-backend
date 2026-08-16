@@ -68,6 +68,14 @@ const GenerateContentFields: ZodFieldsFromInterface<ContentGenerationJob> = {
   contentLanguage: z.enum(['ar', 'en']).optional() as unknown as z.ZodType<
     ContentGenerationJob['contentLanguage']
   >,
+  useReferenceDocuments: z.boolean().optional() as unknown as z.ZodType<
+    ContentGenerationJob['useReferenceDocuments']
+  >,
+  referenceDocumentIndices: z
+    .array(z.number().int().nonnegative())
+    .optional() as unknown as z.ZodType<
+    ContentGenerationJob['referenceDocumentIndices']
+  >,
 };
 
 export const GenerateContentSchema = z.object(GenerateContentFields);

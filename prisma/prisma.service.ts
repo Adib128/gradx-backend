@@ -87,7 +87,9 @@ export class PrismaService
       // Neon's pooler closes idle connections; recycle ours first so queries
       // are never issued on a socket the server already dropped.
       idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
+      // Cold-start / brief Neon pooler stalls need more than a few seconds.
+      connectionTimeoutMillis:
+        Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS) || 20_000,
       keepAlive: true,
     });
     // An idle client error is emitted on the pool, and would be an unhandled

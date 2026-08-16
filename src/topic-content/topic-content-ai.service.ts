@@ -795,6 +795,220 @@ export class TopicContentAiService {
     return finalContent;
   }
 
+  /**
+   * Build the exact system/user prompts that generation would send for this
+   * job, without calling the model. Later stages that depend on prior model
+   * output use placeholder plan items so reviewers still see the template.
+   */
+  previewPrompts(data: ContentGenerationJob) {
+    const type = String(data.type || 'LECTURE').toUpperCase() as ContentType;
+    const model = this.model;
+
+    if (type === 'LECTURE') {
+      const placeholderModules = [
+        {
+          moduleIndex: 1,
+          title: '<module title from plan stage>',
+        },
+        {
+          moduleIndex: 2,
+          title: '<module title from plan stage>',
+        },
+        {
+          moduleIndex: 3,
+          title: '<module title from plan stage>',
+        },
+      ];
+
+      return {
+        type,
+        model,
+        note: 'Lecture generation sends several sequential chats. Stage 1 (plan) is exact; later stages are filled after the model returns a module plan.',
+        prompts: [
+          {
+            id: 'system',
+            role: 'system',
+            title: 'System',
+            dependent: false,
+            content: LECTURE_STREAM_SYSTEM,
+          },
+          {
+            id: 'plan',
+            role: 'user',
+            title: '1 · Plan modules',
+            dependent: false,
+            content: LECTURE_PLAN_PROMPT(data),
+          },
+          {
+            id: 'overview',
+            role: 'user',
+            title: '2 · Overview (after plan)',
+            dependent: true,
+            content: LECTURE_OVERVIEW_PROMPT(data, {
+              modules: placeholderModules,
+            }),
+          },
+          {
+            id: 'module',
+            role: 'user',
+            title: '3 · Each module (repeated per planned module)',
+            dependent: true,
+            content: LECTURE_MODULE_PROMPT(
+              data,
+              placeholderModules[0],
+              [],
+            ),
+          },
+          {
+            id: 'closing',
+            role: 'user',
+            title: '4 · Assessment & references',
+            dependent: true,
+            content: LECTURE_CLOSING_PROMPT(data, placeholderModules),
+          },
+        ],
+      };
+    }
+
+    if (type === 'SLIDES') {
+      const compactLecture = compactLectureForSlides(
+        data.sourceLectureContent,
+      );
+      const slidesJob = {
+        ...data,
+        sourceLectureContent: compactLecture,
+      };
+      const modules = Array.isArray((compactLecture as any)?.modules)
+        ? ((compactLecture as any).modules as Record<string, unknown>[])
+        : [];
+      const budget = resolveSlideBudget(data.slidesLength, modules.length);
+      const firstModule = modules[0] ?? {
+        title: '<module from lecture>',
+        moduleIndex: 1,
+      };
+
+      const prompts = [
+        {
+          id: 'system',
+          role: 'system',
+          title: 'System',
+          dependent: false,
+          content: SLIDES_SYSTEM_PROMPT,
+        },
+        {
+          id: 'opening',
+          role: 'user',
+          title: '1 · Opening slides',
+          dependent: false,
+          content: SLIDES_OPENING_PROMPT(slidesJob, budget.opening),
+        },
+      ];
+
+      if (modules.length === 0) {
+        prompts.push({
+          id: 'full',
+          role: 'user',
+          title: '2 · Full deck (no lecture modules)',
+          dependent: false,
+          content: SLIDES_PROMPT(slidesJob),
+        });
+      } else {
+        prompts.push({
+          id: 'module',
+          role: 'user',
+          title: '2 · Each lecture module (repeated)',
+          dependent: false,
+          content: SLIDES_MODULE_PROMPT(
+            slidesJob,
+            firstModule,
+            1,
+            Math.max(1, modules.length),
+            budget.perModule + (budget.remainder > 0 ? 1 : 0),
+          ),
+        });
+        prompts.push({
+          id: 'closing',
+          role: 'user',
+          title: '3 · Closing slides',
+          dependent: false,
+          content: SLIDES_CLOSING_PROMPT(slidesJob, budget.closing),
+        });
+      }
+
+      return {
+        type,
+        model,
+        note: 'Slides prompts are built from the current accepted lecture content.',
+        prompts,
+      };
+    }
+
+    if (type === 'LAB') {
+      const placeholderSections = [
+        {
+          sectionNumber: 1,
+          title: '<activity title from plan stage>',
+          cloCode: '',
+        },
+        {
+          sectionNumber: 2,
+          title: '<activity title from plan stage>',
+          cloCode: '',
+        },
+      ];
+
+      return {
+        type,
+        model,
+        note: 'Lab generation sends sequential chats. Stage 1 (plan) is exact; later stages include the model plan.',
+        prompts: [
+          {
+            id: 'system',
+            role: 'system',
+            title: 'System',
+            dependent: false,
+            content: LAB_SYSTEM_PROMPT,
+          },
+          {
+            id: 'plan',
+            role: 'user',
+            title: '1 · Plan lab activities',
+            dependent: false,
+            content: LAB_PLAN_PROMPT(data),
+          },
+          {
+            id: 'overview',
+            role: 'user',
+            title: '2 · Overview & setup (after plan)',
+            dependent: true,
+            content: LAB_OVERVIEW_PROMPT(data, {
+              title: `Lab Manual: ${data.topicTitle}`,
+              sections: placeholderSections,
+            }),
+          },
+          {
+            id: 'section',
+            role: 'user',
+            title: '3 · Each activity (repeated)',
+            dependent: true,
+            content: LAB_SECTION_PROMPT(data, placeholderSections[0]),
+          },
+          {
+            id: 'closing',
+            role: 'user',
+            title: '4 · Closing / deliverables',
+            dependent: true,
+            content: LAB_CLOSING_PROMPT(data, placeholderSections),
+          },
+        ],
+      };
+    }
+
+    throw new BadRequestException(
+      `Prompt preview is not available for type ${type}`,
+    );
+  }
+
   private normalizePlanModules(planRaw: any): Array<{
     moduleIndex: number;
     title: string;

@@ -130,12 +130,48 @@ export const CreateCourseSchema = z.object({
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? Math.round(numberValue) : 70;
   }, z.number().int().min(0, V.PASS_RATE_INVALID).max(100, V.PASS_RATE_INVALID).default(70)),
-  teachingMode: z.preprocess(
-    emptyStringToUndefined,
-    z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB'], {
-      message: V.TEACHING_MODE_INVALID,
-    }).optional(),
-  ),
+  teachingMode: z.preprocess((value) => {
+    const cleaned = emptyStringToUndefined(value);
+    if (cleaned == null) return undefined;
+    const raw = String(cleaned).trim().toUpperCase();
+    if (['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB'].includes(raw)) {
+      return raw;
+    }
+    // AI extract often returns free-text mode labels — map best-effort.
+    const lower = String(cleaned).trim().toLowerCase();
+    if (
+      lower.includes('hybrid') ||
+      lower.includes('blended') ||
+      lower.includes('مختلط')
+    ) {
+      return 'HYBRID';
+    }
+    if (
+      lower.includes('online') ||
+      lower.includes('distance') ||
+      lower.includes('remote') ||
+      lower.includes('عن بعد') ||
+      lower.includes('إلكتروني')
+    ) {
+      return 'ONLINE';
+    }
+    if (lower.includes('lab') || lower.includes('مختبر')) {
+      return 'LAB';
+    }
+    if (
+      lower.includes('traditional') ||
+      lower.includes('face') ||
+      lower.includes('classroom') ||
+      lower.includes('in-person') ||
+      lower.includes('onsite') ||
+      lower.includes('on-site') ||
+      lower.includes('حضوري') ||
+      lower.includes('تقليدي')
+    ) {
+      return 'TRADITIONAL';
+    }
+    return undefined;
+  }, z.enum(['TRADITIONAL', 'ONLINE', 'HYBRID', 'LAB']).optional()),
 
   teachingModes: z
     .preprocess(

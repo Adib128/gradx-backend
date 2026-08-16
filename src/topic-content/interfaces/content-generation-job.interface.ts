@@ -125,4 +125,11 @@ export interface ContentGenerationJob {
   humanReviewChecks: HumanReviewCheck[];
   /** Detected from course/topic text; drives generation language. */
   contentLanguage?: 'ar' | 'en';
+  /**
+   * When true, include attached reference document text for the indices listed
+   * in `referenceDocumentIndices`. When false/omitted, bibliographic citations only.
+   */
+  useReferenceDocuments?: boolean;
+  /** Indices into the course `references` array whose extracted text may be used. */
+  referenceDocumentIndices?: number[];
 }

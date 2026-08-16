@@ -12,7 +12,6 @@ import { PrismaService } from 'prisma/prisma.service';
 import { GenerateContentDto } from './dto/generate-content.dto';
 import { ContentGenerationJob } from './interfaces/content-generation-job.interface';
 import { TopicContentAiService } from './topic-content-ai.service';
-import { ReferenceSchemaDto } from 'src/course/dto/create-reference.dto';
 import z from 'zod';
 import { ReferenceSchema } from 'src/course/schemas/reference.schema';
 import { ContentType } from 'generated/prisma/enums';
@@ -28,6 +27,40 @@ const ALWAYS_ACCEPTED_TYPES = new Set<ContentType>(['SLIDES', 'LAB']);
 
 function isAlwaysAccepted(type: ContentType) {
   return ALWAYS_ACCEPTED_TYPES.has(type);
+}
+
+type CourseReference = z.infer<typeof ReferenceSchema>;
+
+/**
+ * Keep bibliographic refs; only keep `extractedText` for selected indices when opted in.
+ */
+function applyReferenceDocumentSelection(
+  references: CourseReference[],
+  useReferenceDocuments?: boolean,
+  referenceDocumentIndices?: number[],
+): CourseReference[] {
+  const selectedIndices = new Set(
+    (referenceDocumentIndices ?? []).filter(
+      (index) => Number.isInteger(index) && index >= 0,
+    ),
+  );
+  const includeBodies =
+    Boolean(useReferenceDocuments) && selectedIndices.size > 0;
+
+  return references.map((reference, index) => {
+    if (includeBodies && selectedIndices.has(index)) {
+      return reference;
+    }
+
+    return {
+      ...reference,
+      extractedText: null,
+      characterCount: null,
+      truncated: null,
+      extractionMethod: null,
+      extractedAt: null,
+    };
+  });
 }
 
 function resolveReviewStatus(
@@ -105,6 +138,44 @@ export class TopicContentService {
     topicId: number,
     generationContentDto: GenerateContentDto,
   ) {
+    const contentGeneration = await this.buildGenerationJob(
+      tenantId,
+      topicId,
+      generationContentDto,
+    );
+
+    const job = await this.contentQueue.add(
+      'topic-content-generation',
+      contentGeneration,
+      {
+        attempts: 3,
+        removeOnComplete: false,
+        removeOnFail: false,
+      },
+    );
+
+    return { jobId: job.id, status: 'processing' };
+  }
+
+  async previewPrompt(
+    tenantId: number,
+    topicId: number,
+    generationContentDto: GenerateContentDto,
+  ) {
+    const contentGeneration = await this.buildGenerationJob(
+      tenantId,
+      topicId,
+      generationContentDto,
+    );
+
+    return this.topicContentAiService.previewPrompts(contentGeneration);
+  }
+
+  private async buildGenerationJob(
+    tenantId: number,
+    topicId: number,
+    generationContentDto: GenerateContentDto,
+  ): Promise<ContentGenerationJob> {
     const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
       include: {
@@ -152,7 +223,32 @@ export class TopicContentService {
             ...cloDescriptions,
           );
 
-    const contentGeneration: ContentGenerationJob = {
+    const courseReferences = z
+      .array(ReferenceSchema)
+      .parse(topic.course.references ?? []);
+    const rawUseReferenceDocuments = (
+      generationContentDto as {
+        useReferenceDocuments?: boolean;
+      }
+    ).useReferenceDocuments;
+    const rawReferenceDocumentIndices = (
+      generationContentDto as {
+        referenceDocumentIndices?: number[];
+      }
+    ).referenceDocumentIndices;
+    const useReferenceDocuments = Boolean(rawUseReferenceDocuments);
+    const referenceDocumentIndices = Array.isArray(rawReferenceDocumentIndices)
+      ? rawReferenceDocumentIndices.filter(
+          (index) => Number.isInteger(index) && index >= 0,
+        )
+      : [];
+    const references = applyReferenceDocumentSelection(
+      courseReferences,
+      useReferenceDocuments,
+      referenceDocumentIndices,
+    );
+
+    return {
       ...(generationContentDto as unknown as ContentGenerationJob),
       tenantId,
       topicId: topic.id,
@@ -176,22 +272,12 @@ export class TopicContentService {
         assessmentMethods: clo.assessmentMethods,
         courseId: clo.courseId,
       })),
-      references: z.array(ReferenceSchema).parse(topic.course.references ?? []),
+      references,
+      useReferenceDocuments,
+      referenceDocumentIndices,
       sourceLectureContentId: lectureContent?.id,
       sourceLectureContent: lectureContent?.content,
     };
-
-    const job = await this.contentQueue.add(
-      'topic-content-generation',
-      contentGeneration,
-      {
-        attempts: 3,
-        removeOnComplete: false,
-        removeOnFail: false,
-      },
-    );
-
-    return { jobId: job.id, status: 'processing' };
   }
 
   async getGenerateStatus(jobId: string) {
