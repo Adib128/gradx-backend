@@ -1,6 +1,8 @@
 import {
   ConflictException,
   Injectable,
+  InternalServerErrorException,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -15,19 +17,25 @@ import { GoogleLoginDto } from './dto/google-login.dto';
 import { User, UserRole } from 'generated/prisma/browser';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { VerifyDto } from './dto/verify.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ResponseMessageKey } from 'src/common/constants/response-message';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { withDbRetry } from 'src/common/helpers/db-retry.helper';
+import { EmailService } from 'src/email/email.service';
+import { EmailLanguage } from 'src/email/email.templates';
+import { randomInt } from 'crypto';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly googleClient: OAuth2Client;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly emailService: EmailService,
   ) {
     this.googleClient = new OAuth2Client();
   }
@@ -46,17 +54,48 @@ export class AuthService {
     return Array.from(new Set(ids));
   }
 
+  private createVerificationCode(): string {
+    return randomInt(100000, 1000000).toString();
+  }
+
+  private verificationExpiry(): Date {
+    return new Date(Date.now() + 10 * 60 * 1000);
+  }
+
+  private normalizeLanguage(language?: string): EmailLanguage {
+    return language === 'ar' ? 'ar' : 'en';
+  }
+
+  private async sendVerificationEmail(
+    email: string,
+    code: string,
+    language?: string,
+  ) {
+    try {
+      await this.emailService.sendVerificationCode(
+        email,
+        code,
+        this.normalizeLanguage(language),
+      );
+    } catch (error) {
+      this.logger.error(
+        `Verification email failed for ${email}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      throw new InternalServerErrorException(ErrorMessageKey.EMAIL_SEND_FAILED);
+    }
+  }
+
   async register(registerDto: RegisterDto) {
-    console.log(registerDto);
     await this.checkUniqueFields({
       phone: registerDto.phone,
       email: registerDto.email,
     });
 
     const hash = await argon2.hash(registerDto.password);
-    //const verificationCode = randomInt(100000, 999999).toString();
-    const verificationCode = '123456';
-    const verificationCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const verificationCode = this.createVerificationCode();
+    const verificationCodeExpiresAt = this.verificationExpiry();
+    const language = this.normalizeLanguage(registerDto.language);
 
     await this.prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({ data: {} });
@@ -78,9 +117,56 @@ export class AuthService {
         },
       });
     });
+
+    await this.sendVerificationEmail(
+      registerDto.email,
+      verificationCode,
+      language,
+    );
+
     return {
       message: ResponseMessageKey.REGISTER_SUCCESS,
+      ...(this.emailService.exposesVerificationCode()
+        ? { verificationCode }
+        : {}),
+    };
+  }
+
+  async resendVerification(dto: ResendVerificationDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
+
+    if (!user) {
+      throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
+    }
+
+    if (user.isVerified) {
+      throw new ConflictException(ErrorMessageKey.USER_ALREADY_VERIFIED);
+    }
+
+    const verificationCode = this.createVerificationCode();
+    const verificationCodeExpiresAt = this.verificationExpiry();
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationCode,
+        verificationCodeExpiresAt,
+      },
+    });
+
+    await this.sendVerificationEmail(
+      user.email,
       verificationCode,
+      dto.language,
+    );
+
+    return {
+      message: ResponseMessageKey.VERIFICATION_CODE_SENT,
+      ...(this.emailService.exposesVerificationCode()
+        ? { verificationCode }
+        : {}),
     };
   }
 

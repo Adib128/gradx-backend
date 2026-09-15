@@ -132,4 +132,6 @@ export interface ContentGenerationJob {
   useReferenceDocuments?: boolean;
   /** Indices into the course `references` array whose extracted text may be used. */
   referenceDocumentIndices?: number[];
+  /** Optional chapter indices per selected reference document (omit/empty = all chapters). */
+  referenceDocumentChapterIndices?: Record<number, number | number[]>;
 }

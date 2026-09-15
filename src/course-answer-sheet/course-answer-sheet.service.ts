@@ -9,6 +9,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreateCourseAnswerSheetDto } from './dto/create-course-answer-sheet.dto';
 import { UpdateCourseAnswerSheetDto } from './dto/update-course-answer-sheet.dto';
+import { academicYearMatchValues } from 'src/course/utils/academic-year.util';
+import { Prisma } from 'generated/prisma/client';
 
 const includeFull = {
   questions: { orderBy: { sortOrder: 'asc' as const } },
@@ -24,9 +26,32 @@ const includeFull = {
 export class CourseAnswerSheetService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findByTenant(tenantId: number) {
+  async findByTenant(
+    tenantId: number,
+    filters?: { academicYear?: string; semester?: string },
+  ) {
+    const academicYear = String(filters?.academicYear || '').trim();
+    const semester = String(filters?.semester || '')
+      .trim()
+      .toUpperCase();
+
+    const courseWhere: Prisma.CourseWhereInput = {};
+    if (academicYear) {
+      courseWhere.academicYear = {
+        in: academicYearMatchValues(academicYear),
+      };
+    }
+    if (semester && ['FIRST', 'SECOND', 'THIRD'].includes(semester)) {
+      courseWhere.semester = semester;
+    }
+
+    const where: Prisma.CourseAnswerSheetWhereInput = {
+      tenantId,
+      ...(Object.keys(courseWhere).length > 0 ? { course: courseWhere } : {}),
+    };
+
     return this.prisma.courseAnswerSheet.findMany({
-      where: { tenantId },
+      where,
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -45,6 +70,8 @@ export class CourseAnswerSheetService {
             id: true,
             title: true,
             code: true,
+            academicYear: true,
+            semester: true,
           },
         },
         _count: {

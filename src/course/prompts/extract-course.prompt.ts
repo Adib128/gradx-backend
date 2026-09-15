@@ -33,27 +33,26 @@ Then produce:
   { "modeOfInstruction": "Traditional classroom", "contactHours": 45, "percentage": 100 }
 ]
 
-Some course specifications also include an Assessment / Activities / Evaluation table with timing (when the activity occurs) and grade-weight percentage. Extract every row into "assessments".
+Some course specifications also include an Assessment / Activities / Evaluation table with grade-weight percentage. Extract every row into "assessments".
 
 If the document contains a table like:
 
-No | Assessment Task | Timing | Percentage of Total Assessment
-1. | Mid-Term Exam | Week 7 | 20%
-2. | Quizzes | Throughout the term | 10%
-3. | Final Exam | End of semester | 40%
+No | Assessment Task | Percentage of Total Assessment
+1. | Mid-Term Exam | 20%
+2. | Quizzes | 10%
+3. | Final Exam | 40%
 
 Then produce:
 
 "assessments": [
-  { "title": "Mid-Term Exam", "type": "MID_TERM_EXAM", "timing": "Week 7", "percentage": 20, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Quizzes", "type": "QUIZ", "timing": "Throughout the term", "percentage": 10, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Final Exam", "type": "FINAL_EXAM", "timing": "End of semester", "percentage": 40, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
+  { "title": "Mid-Term Exam", "type": "MID_TERM_EXAM", "percentage": 20, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Quizzes", "type": "QUIZ", "percentage": 10, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Final Exam", "type": "FINAL_EXAM", "percentage": 40, "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
 ]
 
-Rules for assessment timing and percentage:
-- "timing" is the schedule / when it happens (e.g. "Week 7", "End of semester", "Throughout the term"). Use null only if the document truly has no timing info.
+Rules for assessment percentage:
 - "percentage" is the grade weight toward the final grade as a number (e.g. 20 for 20%). Do NOT confuse this with totalMarks (exam point total) or teachingModes percentage.
-- Prefer explicit Assessment / Evaluation / Activities tables when present. Also scan narrative course-description text for activity weights and timings.
+- Prefer explicit Assessment / Evaluation / Activities tables when present. Also scan narrative course-description text for activity weights.
 - Keep "duration" as exam length in minutes when stated; keep "totalMarks" as point total when stated. These are separate from "percentage".
 
 Rules for mainObjective:
@@ -118,7 +117,6 @@ The JSON must follow this exact structure:
     {
       "title": string,
       "type": "QUIZ" | "FINAL_EXAM" | "MID_TERM_EXAM" | "LAB" | "ASSIGNMENT" | "OTHER",
-      "timing": string | null,
       "percentage": number | null,
       "duration": number | null,
       "totalMarks": number | null,

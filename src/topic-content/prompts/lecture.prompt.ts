@@ -78,7 +78,8 @@ ${contentLanguageGuidance(data.contentLanguage)}
 - Map each module to CLO codes from the list above.
 - Keep density high: no vague summaries, no placeholder text, no "as mentioned earlier" without content.
 - Cite only from provided references when possible.
-- When a reference includes source excerpts, ground definitions, examples, and terminology in that document content; do not invent conflicting facts.
+- When a reference includes source excerpts (selected chapters), ground definitions, examples, and terminology in that document content; do not invent conflicting facts.
+- When figure images are attached, use them to describe diagrams and labeled components accurately.
 - Course references / source excerpts:
 ${formatReferencesWithContentForPrompt(data.references || [])}
 - Match the requested length "${data.length}" with real academic content, not padding.

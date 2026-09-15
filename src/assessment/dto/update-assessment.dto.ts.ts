@@ -22,7 +22,6 @@ export const CreateAssessmentSchema = AssessmentObjectSchema.extend({
 export const UpdateAssessmentSchema = z.object({
   title: z.string().min(1, V.ASSESSMENT_TITLE_REQUIRED).optional(),
   type: prismaEnumToZod(AssessmentType, V.ASSESSMENT_TYPE_INVALID).optional(),
-  timing: z.string().nullable().optional(),
   percentage: z
     .number({ message: V.ASSESSMENT_TOTAL_MARKS_INVALID })
     .int()
@@ -75,6 +74,16 @@ export const UpdateAssessmentSchema = z.object({
   printCloCodeNextToEachQuestion: z.boolean().optional(),
   printBloomLevelNextToEachQuestion: z.boolean().optional(),
   printDifficultyLabelNextToEachQuestion: z.boolean().optional(),
+  academicYear: z.string().trim().min(1).nullable().optional(),
+  semester: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .refine((value) => ['FIRST', 'SECOND', 'THIRD'].includes(value), {
+      message: V.SEMESTER_INVALID,
+    })
+    .nullable()
+    .optional(),
   headerConfig: z.unknown().nullable().optional(),
   language: prismaEnumToZod(Language, V.ASSESSMENT_LANGUAGE_INVALID)
     .nullable()

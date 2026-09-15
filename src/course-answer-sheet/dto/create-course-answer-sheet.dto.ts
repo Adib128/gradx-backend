@@ -12,7 +12,7 @@ const QuestionSchema = z.object({
   sortOrder: z.number().int().min(0).default(0),
   name: z.string().min(1),
   type: prismaEnumToZod(CourseAnswerSheetQuestionType).default(
-    'MULTIPLE_CHOICE',
+    'MCQ',
   ),
   labels: z.string().default('ABCD'),
 });

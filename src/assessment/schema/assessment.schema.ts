@@ -38,11 +38,6 @@ const normalizeAssessmentMeta = (value: unknown) => {
     assessment.percentage = Number.isFinite(parsed) ? parsed : null;
   }
 
-  if (assessment.timing != null) {
-    const timing = String(assessment.timing).trim();
-    assessment.timing = timing || null;
-  }
-
   if (!assessment.difficulty || String(assessment.difficulty).trim() === '') {
     assessment.difficulty = 'BALANCED';
   }
@@ -53,7 +48,6 @@ const normalizeAssessmentMeta = (value: unknown) => {
 export const AssessmentObjectSchema = z.object({
   title: z.string().min(1, V.ASSESSMENT_TITLE_REQUIRED),
   type: prismaEnumToZod(AssessmentType, V.ASSESSMENT_TYPE_INVALID),
-  timing: z.string().nullable().optional(),
   percentage: nullableNonNegativeInt,
   duration: z
     .number({ message: V.ASSESSMENT_DURATION_INVALID })
@@ -104,6 +98,16 @@ export const AssessmentObjectSchema = z.object({
   printCloCodeNextToEachQuestion: z.boolean().default(false),
   printBloomLevelNextToEachQuestion: z.boolean().default(false),
   printDifficultyLabelNextToEachQuestion: z.boolean().default(false),
+  academicYear: z.string().trim().min(1).nullable().optional(),
+  semester: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .refine((value) => ['FIRST', 'SECOND', 'THIRD'].includes(value), {
+      message: V.SEMESTER_INVALID,
+    })
+    .nullable()
+    .optional(),
   headerConfig: z.unknown().nullable().optional(),
   language: prismaEnumToZod(Language, V.ASSESSMENT_LANGUAGE_INVALID)
     .nullable()

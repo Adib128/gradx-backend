@@ -33,6 +33,8 @@ ${
 }
 
 ## Course references (cite + use attached source text when present)
+Prefer the attached source excerpts below (selected reference chapters). Ground definitions, examples, formulas, and terminology in that text when it is provided.
+When figure images are attached to this request, use them to explain diagrams, architecture, and labeled components accurately — do not invent figure contents that contradict the images.
 ${formatReferencesWithContentForPrompt(data.references || [])}
 
 ${localContextGuidance(data.exampleLevels)}

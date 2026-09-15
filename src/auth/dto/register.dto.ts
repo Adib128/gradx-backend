@@ -37,6 +37,8 @@ export const RegisterSchema = z.object({
 
   firstName: z.string().min(3, V.FIRST_NAME_MIN_LENGTH).optional(),
   lastName: z.string().min(3, V.LAST_NAME_MIN_LENGTH).optional(),
+
+  language: z.enum(['en', 'ar']).optional().default('en'),
 });
 
 export class RegisterDto extends createZodDto(RegisterSchema) {}

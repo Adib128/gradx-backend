@@ -16,6 +16,7 @@ import { UserResponseSchema } from './dto/user-response.dto';
 import { GetUser } from './decorators/get-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { VerifyDto } from './dto/verify.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
@@ -47,6 +48,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async verify(@Body() verifyDto: VerifyDto) {
     return this.authService.verify(verifyDto);
+  }
+
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@Body() dto: ResendVerificationDto) {
+    return this.authService.resendVerification(dto);
   }
 
   @UseGuards(JwtAuthGuard)

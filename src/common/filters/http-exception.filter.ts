@@ -31,9 +31,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let message: string = ErrorMessageKey.INTERNAL_SERVER_ERROR;
     let messageKey: ErrorMessageKey | string | undefined =
       ErrorMessageKey.INTERNAL_SERVER_ERROR;
+    let detail: string | undefined;
     let errors: FormattedValidationError[] | undefined;
 
-    if (exception instanceof ZodError) {
+    if (isPayloadTooLargeError(exception)) {
+      statusCode = HttpStatus.PAYLOAD_TOO_LARGE;
+      message = ErrorMessageKey.REQUEST_PAYLOAD_TOO_LARGE;
+      messageKey = ErrorMessageKey.REQUEST_PAYLOAD_TOO_LARGE;
+    } else if (exception instanceof ZodError) {
       statusCode = HttpStatus.BAD_REQUEST;
       message = 'Validation failed';
       messageKey = ErrorMessageKey.VALIDATION_FAILED;
@@ -87,6 +92,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
             message = body.error;
             messageKey = body.error;
           }
+
+          if (typeof body.detail === 'string' && body.detail.trim()) {
+            detail = body.detail.trim();
+          }
         }
       }
     }
@@ -101,6 +110,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode,
       message,
       messageKey,
+      ...(detail && { detail }),
       errors,
       timestamp: new Date().toISOString(),
       path: request.url,
@@ -142,6 +152,12 @@ function mapPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): {
         message: ErrorMessageKey.COURSE_NOT_FOUND,
         messageKey: ErrorMessageKey.COURSE_NOT_FOUND,
       };
+    case 'P2028':
+      return {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        message: ErrorMessageKey.DATABASE_UNAVAILABLE,
+        messageKey: ErrorMessageKey.DATABASE_UNAVAILABLE,
+      };
     default:
       return {
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
@@ -149,4 +165,14 @@ function mapPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): {
         messageKey: ErrorMessageKey.INTERNAL_SERVER_ERROR,
       };
   }
+}
+
+function isPayloadTooLargeError(exception: unknown): boolean {
+  if (!exception || typeof exception !== 'object') return false;
+  const typed = exception as { type?: unknown; status?: unknown; statusCode?: unknown };
+  return (
+    typed.type === 'entity.too.large' ||
+    typed.status === 413 ||
+    typed.statusCode === 413
+  );
 }

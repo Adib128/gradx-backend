@@ -590,4 +590,76 @@ ${JSON.stringify(payload, null, 2)}`,
       );
     }
   }
+
+  /**
+   * Rapid relevance check: is the uploaded file plausibly course-related reference material?
+   * Fails closed only when the model explicitly returns isRelevant=false.
+   */
+  async validateReferenceDocumentRelevance(params: {
+    courseTitle: string;
+    courseCode?: string;
+    courseDescription?: string;
+    topicTitles?: string[];
+    referenceTitle?: string;
+    documentExcerpt: string;
+  }): Promise<void> {
+    const excerpt = params.documentExcerpt.slice(0, 4000);
+    const topics =
+      (params.topicTitles ?? [])
+        .map((title) => String(title || '').trim())
+        .filter(Boolean)
+        .slice(0, 12)
+        .join('; ') || '(none provided)';
+
+    const response = await createChatCompletion(this.client, {
+      model: this.model,
+      max_tokens: 180,
+      messages: [
+        {
+          role: 'user',
+          content: `You are a rapid document classifier for academic course authoring.
+
+Course title: ${params.courseTitle || '(unknown)'}
+Course code: ${params.courseCode || '(none)'}
+Course description: ${String(params.courseDescription || '(none)').slice(0, 600)}
+Course topics: ${topics}
+Bibliographic reference title: ${params.referenceTitle || '(unknown)'}
+
+Document excerpt:
+"""
+${excerpt}
+"""
+
+Decide whether this uploaded file is plausibly a textbook, course reference, lecture notes, lab manual, or academic material related to the same subject/domain as the course.
+
+Reject clearly unrelated files (wrong domain, invoices, forms, novels, blank scans, random documents).
+
+Reply with JSON only: {"isRelevant": true|false, "reason": "brief reason when false"}`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+    });
+
+    const text = response.choices[0]?.message?.content ?? '';
+    let parsed: { isRelevant?: boolean; reason?: string } = {};
+    try {
+      parsed = JSON.parse(this.extractJsonObject(text));
+    } catch (error) {
+      this.logger.warn(
+        `Reference relevance check returned unparsable JSON; allowing upload: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+
+    if (parsed.isRelevant === false) {
+      const reason = String(parsed.reason || '').trim();
+      throw new BadRequestException({
+        message: ErrorMessageKey.REFERENCE_DOCUMENT_NOT_RELEVANT,
+        messageKey: ErrorMessageKey.REFERENCE_DOCUMENT_NOT_RELEVANT,
+        ...(reason && { detail: reason }),
+      });
+    }
+  }
 }

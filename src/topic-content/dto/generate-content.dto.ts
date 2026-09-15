@@ -76,6 +76,17 @@ const GenerateContentFields: ZodFieldsFromInterface<ContentGenerationJob> = {
     .optional() as unknown as z.ZodType<
     ContentGenerationJob['referenceDocumentIndices']
   >,
+  referenceDocumentChapterIndices: z
+    .record(
+      z.string(),
+      z.union([
+        z.number().int().nonnegative(),
+        z.array(z.number().int().nonnegative()),
+      ]),
+    )
+    .optional() as unknown as z.ZodType<
+    ContentGenerationJob['referenceDocumentChapterIndices']
+  >,
 };
 
 export const GenerateContentSchema = z.object(GenerateContentFields);

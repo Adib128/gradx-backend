@@ -13,8 +13,10 @@ import {
   Query,
   BadRequestException,
   Res,
+  StreamableFile,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { createReadStream } from 'node:fs';
 import { CourseService } from './course.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
@@ -47,6 +49,23 @@ export class CourseController {
     return this.courseService.findAll(tenantId, courseQueryDto);
   }
 
+  /** Authenticated stream of a stored reference PDF/DOCX/figure (tenant-scoped path). */
+  @Get('reference-files')
+  async getReferenceArchiveFile(
+    @GetUser('tenantId') tenantId: number,
+    @Query('path') path?: string,
+  ) {
+    if (!path?.trim()) {
+      throw new BadRequestException('REFERENCE_FILE_REQUIRED');
+    }
+    const { filePath, fileName, mimeType } =
+      await this.courseService.getReferenceArchiveFile(tenantId, path);
+    return new StreamableFile(createReadStream(filePath), {
+      type: mimeType,
+      disposition: `inline; filename="${fileName}"`,
+    });
+  }
+
   @Get(':id')
   findOne(
     @GetUser('tenantId') tenantId: number,
@@ -60,6 +79,24 @@ export class CourseController {
           .filter(Boolean)
       : undefined;
     return this.courseService.findOne(tenantId, +id, includes);
+  }
+
+  @Get(':id/references/:refIndex/file')
+  async getCourseReferenceDocumentFile(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('refIndex', ParseIntPipe) refIndex: number,
+  ) {
+    const { filePath, fileName, mimeType } =
+      await this.courseService.getCourseReferenceDocumentFile(
+        tenantId,
+        id,
+        refIndex,
+      );
+    return new StreamableFile(createReadStream(filePath), {
+      type: mimeType,
+      disposition: `inline; filename="${fileName}"`,
+    });
   }
 
   @Get(':id/reports/clo-achievement')
@@ -240,6 +277,16 @@ export class CourseController {
     return this.courseService.updateMeta(tenantId, id, body);
   }
 
+  /** Persist syllabus builder data. Merges extras; does not rewrite CLOs/topics. */
+  @Patch(':id/syllabus')
+  saveSyllabus(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: Record<string, any>,
+  ) {
+    return this.courseService.saveSyllabus(tenantId, id, body);
+  }
+
   @Delete(':id')
   remove(
     @GetUser('tenantId') tenantId: number,
@@ -278,8 +325,76 @@ export class CourseController {
   extractReferenceDocument(
     @GetUser('tenantId') tenantId: number,
     @UploadedFile() file: Express.Multer.File,
+    @Body('courseTitle') courseTitle?: string,
+    @Body('courseCode') courseCode?: string,
+    @Body('courseDescription') courseDescription?: string,
+    @Body('topicTitles') topicTitles?: string,
   ) {
-    return this.courseService.extractReferenceDocument(tenantId, file);
+    let parsedTopicTitles: string[] | undefined;
+    if (topicTitles) {
+      try {
+        const parsed = JSON.parse(topicTitles);
+        if (Array.isArray(parsed)) {
+          parsedTopicTitles = parsed
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+        }
+      } catch {
+        parsedTopicTitles = topicTitles
+          .split(/[,;\n]+/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }
+    }
+
+    return this.courseService.extractReferenceDocument(tenantId, file, {
+      courseTitle,
+      courseCode,
+      courseDescription,
+      topicTitles: parsedTopicTitles,
+    });
+  }
+
+  @Post('references/extract-document/stream')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('file'))
+  streamExtractReferenceDocument(
+    @GetUser('tenantId') tenantId: number,
+    @UploadedFile() file: Express.Multer.File,
+    @Res() res: Response,
+    @Body('courseTitle') courseTitle?: string,
+    @Body('courseCode') courseCode?: string,
+    @Body('courseDescription') courseDescription?: string,
+    @Body('topicTitles') topicTitles?: string,
+  ) {
+    let parsedTopicTitles: string[] | undefined;
+    if (topicTitles) {
+      try {
+        const parsed = JSON.parse(topicTitles);
+        if (Array.isArray(parsed)) {
+          parsedTopicTitles = parsed
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+        }
+      } catch {
+        parsedTopicTitles = topicTitles
+          .split(/[,;\n]+/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }
+    }
+
+    return this.courseService.streamExtractReferenceDocument(
+      tenantId,
+      file,
+      res,
+      {
+        courseTitle,
+        courseCode,
+        courseDescription,
+        topicTitles: parsedTopicTitles,
+      },
+    );
   }
 
   @Post('confirm')

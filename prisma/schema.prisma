@@ -105,10 +105,8 @@ enum GradingScanStatus {
 }
 
 enum CourseAnswerSheetQuestionType {
-  MULTIPLE_CHOICE
-  MULTIPLE_VERBOSE
-  VERBOSE_LABEL
-  NUMERIC_ENTRY
+  MCQ
+  TRUE_FALSE
 }
 
 enum CourseAnswerSheetAnswerType {
@@ -221,6 +219,8 @@ model Course {
   description       String?
   creditHours       Int?
   level             String?
+  academicYear      String?
+  semester          String?
   passRate          Int     @default(70)
   teachingMode      String?
   teachingModes     Json?
@@ -232,11 +232,15 @@ model Course {
   /// Main purpose / objectives of the course (NCAAA-style free text)
   mainObjective     String?
   requiredFacilitiesAndEquipment Json?
+  /// Bibliography + optional attachment: original file on disk (`filePath`),
+  /// chapter-split plain text (`chapters`) as AI source of truth. No image blobs.
   references        Json?
   /// Cached AI CLO achievement analyses keyed by report fingerprint
   cloAnalysisCache  Json?
-  /// Syllabus assessment plan (type/timing/percentage) — not real Assessment rows
+  /// Syllabus assessment plan (type/percentage) — not real Assessment rows
   assessmentPlan    Json?
+  /// Syllabus builder extras + snapshots. Merged on save; never recreates CLOs/topics.
+  syllabusData      Json?
 
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
@@ -386,7 +390,6 @@ model Assessment {
   id                                      Int                       @id @default(autoincrement())
   type                                    AssessmentType
   title                                   String
-  timing                                  String?
   percentage                              Int?
   duration                                Int?
   totalMarks                              Int?
@@ -409,6 +412,11 @@ model Assessment {
   /// Institutional exam header (country, ministry, university, faculty, academic year, etc.)
   headerConfig                            Json?
   generationConfig                        Json?
+
+  /// Academic year for this assessment (e.g. 1446-1447)
+  academicYear                            String?
+  /// Semester code: FIRST | SECOND | THIRD
+  semester                                String?
 
   courseId Int
   course   Course @relation(fields: [courseId], references: [id])
@@ -564,7 +572,7 @@ model CourseAnswerSheetQuestion {
   id            Int                         @id @default(autoincrement())
   sortOrder     Int                         @default(0)
   name          String
-  type          CourseAnswerSheetQuestionType @default(MULTIPLE_CHOICE)
+  type          CourseAnswerSheetQuestionType @default(MCQ)
   labels        String                      @default("ABCD")
 
   answerSheetId Int

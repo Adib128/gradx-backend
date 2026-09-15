@@ -37,6 +37,26 @@ import {
   resolveSlideBudget,
   type SlideDeckSlide,
 } from './utils/slide-deck.util';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+const MAX_REFERENCE_VISION_IMAGES = 4;
+const MAX_REFERENCE_VISION_BYTES = 900_000;
+
+type ReferenceVisionImage = {
+  mimeType: string;
+  base64: string;
+  caption: string;
+};
+
+type CourseReferenceLike = {
+  title?: string | null;
+  figures?: Array<{
+    caption?: string | null;
+    filePath?: string | null;
+    mimeType?: string | null;
+  }> | null;
+};
 
 export type LectureStreamProgress = {
   stage: 'plan' | 'overview' | 'module' | 'assessment' | 'done';
@@ -497,9 +517,12 @@ export class TopicContentAiService {
       },
     });
 
+    const visionImages = await this.loadReferenceVisionImages(data.references);
+
     const planRaw = await this.chatJson(
       LECTURE_STREAM_SYSTEM,
       LECTURE_PLAN_PROMPT(data),
+      visionImages,
     );
     const planModules = this.normalizePlanModules(planRaw);
     const moduleCount = planModules.length;
@@ -532,6 +555,7 @@ export class TopicContentAiService {
     const overviewRaw = await this.chatJson(
       LECTURE_STREAM_SYSTEM,
       LECTURE_OVERVIEW_PROMPT(data, { modules: planModules }),
+      visionImages,
     );
 
     partial = {
@@ -574,6 +598,7 @@ export class TopicContentAiService {
           planModule,
           modules.map((m) => String(m?.title ?? '')),
         ),
+        visionImages,
       );
 
       const moduleObj = {
@@ -616,6 +641,7 @@ export class TopicContentAiService {
           title: String(m.title ?? ''),
         })),
       ),
+      visionImages,
     );
 
     const finalContent: Record<string, unknown> = {
@@ -668,9 +694,12 @@ export class TopicContentAiService {
       partial: { ...base, streamStatus: 'planning' },
     });
 
+    const visionImages = await this.loadReferenceVisionImages(data.references);
+
     const planRaw = await this.chatJson(
       LAB_SYSTEM_PROMPT,
       LAB_PLAN_PROMPT(data),
+      visionImages,
     );
     const rawSections = Array.isArray(planRaw?.sections)
       ? planRaw.sections
@@ -710,6 +739,7 @@ export class TopicContentAiService {
         title: partial.title,
         sections: plannedSections,
       }),
+      visionImages,
     );
     partial = {
       ...partial,
@@ -746,6 +776,7 @@ export class TopicContentAiService {
       const generated = await this.chatJson(
         LAB_SYSTEM_PROMPT,
         LAB_SECTION_PROMPT(data, plan),
+        visionImages,
       );
       sections.push({
         ...generated,
@@ -778,6 +809,7 @@ export class TopicContentAiService {
     const closing = await this.chatJson(
       LAB_SYSTEM_PROMPT,
       LAB_CLOSING_PROMPT(data, plannedSections),
+      visionImages,
     );
     const finalContent = {
       ...partial,
@@ -1039,14 +1071,74 @@ export class TopicContentAiService {
     }));
   }
 
-  private async chatJson(system: string, prompt: string): Promise<any> {
+  private async loadReferenceVisionImages(
+    references: CourseReferenceLike[] | null | undefined,
+  ): Promise<ReferenceVisionImage[]> {
+    if (!Array.isArray(references) || references.length === 0) return [];
+
+    const images: ReferenceVisionImage[] = [];
+    for (const reference of references) {
+      const figures = Array.isArray(reference.figures)
+        ? reference.figures
+        : [];
+      for (const figure of figures) {
+        if (images.length >= MAX_REFERENCE_VISION_IMAGES) break;
+        const relativePath = String(figure.filePath || '').trim();
+        if (!relativePath) continue;
+        try {
+          const absolutePath = resolve(process.cwd(), relativePath);
+          const buffer = await readFile(absolutePath);
+          if (!buffer.length || buffer.length > MAX_REFERENCE_VISION_BYTES) {
+            continue;
+          }
+          images.push({
+            mimeType: String(figure.mimeType || 'image/jpeg'),
+            base64: buffer.toString('base64'),
+            caption:
+              String(figure.caption || '').trim() ||
+              String(reference.title || 'Reference figure'),
+          });
+        } catch {
+          // Missing figure files are non-fatal for generation.
+        }
+      }
+      if (images.length >= MAX_REFERENCE_VISION_IMAGES) break;
+    }
+    return images;
+  }
+
+  private async chatJson(
+    system: string,
+    prompt: string,
+    images: ReferenceVisionImage[] = [],
+  ): Promise<any> {
+    const figureNotes =
+      images.length > 0
+        ? `\n\nAttached figure images (${images.length}):\n${images
+            .map((image, index) => `${index + 1}. ${image.caption}`)
+            .join('\n')}`
+        : '';
+
+    const userContent =
+      images.length > 0
+        ? ([
+            { type: 'text', text: `${prompt}${figureNotes}` },
+            ...images.map((image) => ({
+              type: 'image_url' as const,
+              image_url: {
+                url: `data:${image.mimeType};base64,${image.base64}`,
+              },
+            })),
+          ] as OpenAI.Chat.Completions.ChatCompletionContentPart[])
+        : `${prompt}${figureNotes}`;
+
     const response = await createChatCompletion(this.client, {
       model: this.model,
       temperature: 0.35,
       max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: prompt },
+        { role: 'user', content: userContent },
       ],
     });
 

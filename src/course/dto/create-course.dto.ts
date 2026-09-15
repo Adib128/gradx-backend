@@ -2,6 +2,7 @@ import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 import { TopicSchema } from '../schemas/topic.schema';
 import { ReferenceSchema } from '../schemas/reference.schema';
+import { normalizeReferencesForStorage } from '../utils/normalize-course-confirm.util';
 import { AssessmentObjectSchema } from 'src/assessment/schema/assessment.schema';
 import { CloSchema } from 'src/clo/schemas/clo.schema';
 import { ValidationMessageKey as V } from 'src/common/constants/validation-message';
@@ -48,10 +49,6 @@ const normalizeCourseAssessment = (value: unknown) => {
     assessment.score !== ''
   ) {
     assessment.percentage = assessment.score;
-  }
-
-  if (assessment.timing != null) {
-    assessment.timing = String(assessment.timing).trim() || null;
   }
 
   if (assessment.percentage != null && assessment.percentage !== '') {
@@ -117,6 +114,24 @@ const RequiredFacilitiesAndEquipmentRowSchema = z.object({
   resources: z.string().nullable().optional().default(''),
 });
 
+const normalizeCourseSemester = (value: unknown) => {
+  const cleaned = emptyStringToUndefined(value);
+  if (cleaned == null) return undefined;
+  const raw = String(cleaned).trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (['FIRST', 'SECOND', 'THIRD'].includes(raw)) return raw;
+  const lower = String(cleaned).trim().toLowerCase();
+  if (lower.includes('third') || lower.includes('3') || lower.includes('ثالث')) {
+    return 'THIRD';
+  }
+  if (lower.includes('second') || lower.includes('2') || lower.includes('ثاني')) {
+    return 'SECOND';
+  }
+  if (lower.includes('first') || lower.includes('1') || lower.includes('أول')) {
+    return 'FIRST';
+  }
+  return undefined;
+};
+
 export const CreateCourseSchema = z.object({
   title: z.string().min(1, V.TITLE_REQUIRED),
   code: z.string().nullable().optional(),
@@ -125,6 +140,14 @@ export const CreateCourseSchema = z.object({
 
   creditHours: nullablePositiveInt,
   level: z.string().nullable().optional(),
+  academicYear: z.preprocess((value) => {
+    const cleaned = emptyStringToUndefined(value);
+    return cleaned == null ? null : String(cleaned).trim();
+  }, z.string().min(1, V.ACADEMIC_YEAR_REQUIRED).nullable().optional()),
+  semester: z.preprocess(
+    normalizeCourseSemester,
+    z.enum(['FIRST', 'SECOND', 'THIRD'], { message: V.SEMESTER_INVALID }).nullable().optional(),
+  ),
   passRate: z.preprocess((value) => {
     if (value === null || value === undefined || value === '') return 70;
     const numberValue = Number(value);
@@ -210,7 +233,9 @@ export const CreateCourseSchema = z.object({
       rows.filter((row) => row.item.trim() || String(row.resources ?? '').trim()),
     )
     .default([]),
-  references: z.array(ReferenceSchema).default([]),
+  references: z
+    .preprocess(normalizeReferencesForStorage, z.array(ReferenceSchema))
+    .default([]),
 
   clos: z.array(CloSchema).default([]),
   topics: z.array(TopicSchema).default([]),

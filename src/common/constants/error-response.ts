@@ -5,6 +5,8 @@ export interface IErrorResponse {
   statusCode: number;
   message: string;
   messageKey?: ErrorMessageKey | string;
+  /** Optional human-readable detail (e.g. AI relevance rejection reason). */
+  detail?: string;
   errors?: FormattedValidationError[];
   timestamp: string;
   path: string;

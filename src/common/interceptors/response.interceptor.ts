@@ -3,10 +3,12 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
+  StreamableFile,
 } from '@nestjs/common';
 import { Observable, of } from 'rxjs';
 import { mergeMap } from 'rxjs/operators';
 import { Request, Response } from 'express';
+import { Readable } from 'node:stream';
 
 export interface ISuccessResponse<T> {
   success: boolean;
@@ -27,12 +29,12 @@ export interface ISuccessResponse<T> {
 @Injectable()
 export class ResponseInterceptor<T> implements NestInterceptor<
   T,
-  ISuccessResponse<T> | undefined
+  ISuccessResponse<T> | T | undefined
 > {
   intercept(
     context: ExecutionContext,
     next: CallHandler,
-  ): Observable<ISuccessResponse<T> | undefined> {
+  ): Observable<ISuccessResponse<T> | T | undefined> {
     const response = context.switchToHttp().getResponse<Response>();
     const request = context.switchToHttp().getRequest<Request>();
 
@@ -48,6 +50,18 @@ export class ResponseInterceptor<T> implements NestInterceptor<
           )
         ) {
           return of(undefined);
+        }
+
+        // Binary downloads / PDF/image streams must stay as StreamableFile.
+        if (
+          payload instanceof StreamableFile ||
+          (payload &&
+            typeof (payload as { getStream?: unknown }).getStream ===
+              'function') ||
+          payload instanceof Readable ||
+          Buffer.isBuffer(payload)
+        ) {
+          return of(payload);
         }
 
         return of({

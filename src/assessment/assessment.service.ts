@@ -83,7 +83,6 @@ export class AssessmentService {
       data: {
         title: dto.title,
         type: dto.type,
-        timing: dto.timing ?? null,
         percentage: dto.percentage ?? null,
         duration: dto.duration,
         totalMarks: dto.totalMarks,
@@ -103,6 +102,8 @@ export class AssessmentService {
           dto.printBloomLevelNextToEachQuestion,
         printDifficultyLabelNextToEachQuestion:
           dto.printDifficultyLabelNextToEachQuestion,
+        academicYear: dto.academicYear ?? null,
+        semester: dto.semester ?? null,
         headerConfig: toPrismaJson(dto.headerConfig),
         language: dto.language,
         difficulty: dto.difficulty,
@@ -2278,6 +2279,8 @@ export class AssessmentService {
             id: true,
             title: true,
             code: true,
+            academicYear: true,
+            semester: true,
             _count: { select: { students: true } },
           },
         },
@@ -2346,8 +2349,19 @@ export class AssessmentService {
         createdAt: true,
         updatedAt: true,
         generationConfig: true,
+        academicYear: true,
+        semester: true,
         _count: { select: { questions: true } },
-        course: { select: { id: true, title: true, code: true, tenantId: true } },
+        course: {
+          select: {
+            id: true,
+            title: true,
+            code: true,
+            tenantId: true,
+            academicYear: true,
+            semester: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });

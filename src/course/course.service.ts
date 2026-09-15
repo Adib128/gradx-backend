@@ -8,6 +8,8 @@ import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { CourseQueryDto } from './dto/course-query.dto';
+import { academicYearMatchValues } from './utils/academic-year.util';
+
 import { paginate } from 'src/common/helpers/paginate.helper';
 import { Job, Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -22,13 +24,17 @@ import {
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { CourseAIService } from './course-ai.service';
 import type { Response } from 'express';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { normalizeReferencesForStorage } from './utils/normalize-course-confirm.util';
 import {
   extractReferenceDocumentText,
   MAX_REFERENCE_UPLOAD_BYTES,
-  sanitizeTextForJsonStorage,
 } from './utils/extract-reference-document.util';
+import {
+  resolveTenantReferenceFilePath,
+  storeReferenceDocumentFile,
+} from './utils/reference-document-storage.util';
+import { extractReferenceFigureAssets } from './utils/extract-reference-figures.util';
+import { basename } from 'node:path';
 
 type ExtractStreamSection = {
   id: string;
@@ -124,6 +130,8 @@ export class CourseService {
       totalContactHours,
       lectureHours,
       labHours,
+      academicYear,
+      semester,
       mainObjective,
     } = createCourseDto;
 
@@ -154,30 +162,15 @@ export class CourseService {
           .map((assessment) => ({
             title: String(assessment.title ?? '').trim() || null,
             type: assessment.type,
-            timing: assessment.timing ?? null,
             percentage:
               assessment.percentage != null &&
               Number.isFinite(Number(assessment.percentage))
                 ? Math.round(Number(assessment.percentage))
                 : null,
           }))
-          .filter((item) => Boolean(item.type));
+          .filter((item) => Boolean(item.title && item.type));
 
-        const sanitizedReferences = (references ?? []).map((reference) => {
-          if (!reference || typeof reference !== 'object') return reference;
-          const extractedText =
-            typeof reference.extractedText === 'string'
-              ? sanitizeTextForJsonStorage(reference.extractedText)
-              : reference.extractedText;
-          return {
-            ...reference,
-            extractedText,
-            characterCount:
-              typeof extractedText === 'string'
-                ? extractedText.length
-                : reference.characterCount ?? null,
-          };
-        });
+        const sanitizedReferences = normalizeReferencesForStorage(references);
 
         const courseCreateData: Prisma.CourseUncheckedCreateInput = {
           title,
@@ -194,6 +187,8 @@ export class CourseService {
           totalContactHours: totalContactHours ?? null,
           lectureHours: lectureHours ?? null,
           labHours: labHours ?? null,
+          academicYear: academicYear ?? null,
+          semester: semester ?? null,
           mainObjective: mainObjective ?? null,
           tenantId,
           prerequisites: prerequisites ?? [],
@@ -337,12 +332,12 @@ export class CourseService {
         throw new BadRequestException(ErrorMessageKey.VALIDATION_FAILED);
       }
 
-      throw error;
+      throw new BadRequestException(ErrorMessageKey.COURSE_CONFIRM_FAILED);
     }
   }
 
   async findAll(tenantId: number, courseQueryDto: CourseQueryDto) {
-    const { page, limit, search } = courseQueryDto;
+    const { page, limit, search, academicYear, semester } = courseQueryDto;
 
     const skip = (page - 1) * limit;
 
@@ -354,6 +349,10 @@ export class CourseService {
           { code: { contains: search, mode: 'insensitive' as const } },
         ],
       }),
+      ...(academicYear && {
+        academicYear: { in: academicYearMatchValues(academicYear) },
+      }),
+      ...(semester && { semester }),
     };
 
     const [courses, total] = await Promise.all([
@@ -369,6 +368,8 @@ export class CourseService {
           program: true,
           creditHours: true,
           totalContactHours: true,
+          academicYear: true,
+          semester: true,
           updatedAt: true,
           _count: {
             select: {
@@ -574,12 +575,19 @@ export class CourseService {
   }
 
   /**
-   * Upload a PDF/DOCX for a course bibliography reference: store the file and
-   * return truncated plain text ready to persist on Course.references JSON.
+   * Upload a PDF/DOCX for a bibliography reference: archive the original file
+   * under uploads/reference-documents and return chapter-split plain text
+   * (AI source of truth) for Course.references JSON. No image blobs.
    */
   async extractReferenceDocument(
     tenantId: number,
     file: Express.Multer.File,
+    context?: {
+      courseTitle?: string;
+      courseCode?: string;
+      courseDescription?: string;
+      topicTitles?: string[];
+    },
   ) {
     if (!file?.buffer?.length) {
       throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_REQUIRED);
@@ -607,40 +615,372 @@ export class CourseService {
       throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED);
     }
 
+    const courseTitle = String(context?.courseTitle || '').trim();
+    const topicTitles = (context?.topicTitles ?? [])
+      .map((title) => String(title || '').trim())
+      .filter(Boolean);
+    const excerpt =
+      extracted.chapters
+        .map((chapter) => `${chapter.name}\n${chapter.content}`)
+        .join('\n')
+        .slice(0, 4000) ||
+      String(extracted.extractedText || '').slice(0, 4000);
+
+    if (excerpt.trim()) {
+      await this.courseAIService.validateReferenceDocumentRelevance({
+        courseTitle: courseTitle || '(not specified)',
+        courseCode: String(context?.courseCode || '').trim() || undefined,
+        courseDescription:
+          String(context?.courseDescription || '').trim() || undefined,
+        topicTitles: topicTitles.length ? topicTitles : undefined,
+        referenceTitle: extracted.fileName,
+        documentExcerpt: excerpt,
+      });
+    }
+
     const safeTenant = requireTenantId(tenantId);
-    const uploadDir = join(
-      process.cwd(),
-      'tmp',
-      'reference-uploads',
-      String(safeTenant),
-    );
-    await mkdir(uploadDir, { recursive: true });
+    const stored = await storeReferenceDocumentFile({
+      tenantId: safeTenant,
+      originalName: file.originalname || 'document',
+      buffer: file.buffer,
+    });
 
-    const safeName = String(file.originalname || 'document')
-      .replace(/[^\w.\-]+/g, '_')
-      .slice(0, 80);
-    const storedName = `ref-${Date.now()}-${safeName}`;
-    const filePath = join(uploadDir, storedName);
-    await writeFile(filePath, file.buffer);
-
-    const relativePath = join(
-      'tmp',
-      'reference-uploads',
-      String(safeTenant),
-      storedName,
-    );
+    let figures: Awaited<ReturnType<typeof extractReferenceFigureAssets>> = [];
+    const isPdf =
+      String(file.mimetype || '').toLowerCase().includes('pdf') ||
+      String(file.originalname || '').toLowerCase().endsWith('.pdf');
+    if (isPdf) {
+      try {
+        figures = await extractReferenceFigureAssets({
+          buffer: file.buffer,
+          tenantId: safeTenant,
+          documentStoredName: stored.storedName,
+        });
+      } catch {
+        figures = [];
+      }
+    }
 
     return {
       fileName: extracted.fileName,
-      filePath: relativePath,
+      filePath: stored.relativePath,
       mimeType: extracted.mimeType,
       fileSize: extracted.size,
-      extractedText: extracted.extractedText,
+      extractedText: null,
+      chapters: extracted.chapters,
+      figures,
       characterCount: extracted.characterCount,
       truncated: extracted.truncated,
       extractionMethod: extracted.extractionMethod,
       extractedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * SSE reference extract: stream stages + each chapter as it is prepared.
+   */
+  async streamExtractReferenceDocument(
+    tenantId: number,
+    file: Express.Multer.File,
+    res: Response,
+    context?: {
+      courseTitle?: string;
+      courseCode?: string;
+      courseDescription?: string;
+      topicTitles?: string[];
+    },
+  ): Promise<void> {
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
+
+    let closed = false;
+    const onClose = () => {
+      closed = true;
+    };
+    res.on('close', onClose);
+
+    const emit = (event: string, data: unknown) => {
+      if (closed || res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    try {
+      if (!file?.buffer?.length) {
+        throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_REQUIRED);
+      }
+      if (file.size > MAX_REFERENCE_UPLOAD_BYTES) {
+        throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_TOO_LARGE);
+      }
+
+      emit('progress', {
+        percent: 5,
+        stage: 'upload',
+        message: 'Receiving reference document…',
+      });
+      await sleep(80);
+
+      emit('progress', {
+        percent: 15,
+        stage: 'reading',
+        message: 'Reading document text…',
+      });
+
+      let extracted;
+      try {
+        extracted = await extractReferenceDocumentText({
+          buffer: file.buffer,
+          fileName: file.originalname || 'document',
+          mimeType: file.mimetype,
+        });
+      } catch (error: unknown) {
+        const code = String((error as { message?: string })?.message || '');
+        if (code === 'UNSUPPORTED_FILE') {
+          throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_UNSUPPORTED);
+        }
+        if (code === 'EMPTY_DOCUMENT') {
+          throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EMPTY);
+        }
+        throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED);
+      }
+
+      if (closed) return;
+
+      emit('progress', {
+        percent: 35,
+        stage: 'relevance',
+        message: 'Checking document relevance…',
+      });
+
+      const courseTitle = String(context?.courseTitle || '').trim();
+      const topicTitles = (context?.topicTitles ?? [])
+        .map((title) => String(title || '').trim())
+        .filter(Boolean);
+      const excerpt =
+        extracted.chapters
+          .map((chapter) => `${chapter.name}\n${chapter.content}`)
+          .join('\n')
+          .slice(0, 4000) ||
+        String(extracted.extractedText || '').slice(0, 4000);
+
+      if (excerpt.trim()) {
+        await this.courseAIService.validateReferenceDocumentRelevance({
+          courseTitle: courseTitle || '(not specified)',
+          courseCode: String(context?.courseCode || '').trim() || undefined,
+          courseDescription:
+            String(context?.courseDescription || '').trim() || undefined,
+          topicTitles: topicTitles.length ? topicTitles : undefined,
+          referenceTitle: extracted.fileName,
+          documentExcerpt: excerpt,
+        });
+      }
+
+      if (closed) return;
+
+      const chapters = extracted.chapters;
+      const total = Math.max(chapters.length, 1);
+
+      emit('progress', {
+        percent: 45,
+        stage: 'chapters',
+        message: `Preparing ${chapters.length} chapter${chapters.length === 1 ? '' : 's'}…`,
+        totalChapters: chapters.length,
+      });
+
+      for (let index = 0; index < chapters.length; index++) {
+        if (closed) return;
+        const chapter = chapters[index];
+        const chapterPercent = 45 + Math.round(((index + 1) / total) * 40);
+        emit('chapter', {
+          index,
+          total,
+          name: chapter.name,
+          characterCount: chapter.content.length,
+          content: chapter.content,
+          percent: chapterPercent,
+          stage: 'chapters',
+          message: `Saving chapter ${index + 1} of ${total}…`,
+        });
+        emit('progress', {
+          percent: chapterPercent,
+          stage: 'chapters',
+          message: `Saving chapter ${index + 1} of ${total}…`,
+          chapterIndex: index,
+          totalChapters: total,
+        });
+        await sleep(Math.min(120, Math.max(40, 900 / total)));
+      }
+
+      if (closed) return;
+
+      emit('progress', {
+        percent: 90,
+        stage: 'saving',
+        message: 'Saving reference file…',
+      });
+
+      const safeTenant = requireTenantId(tenantId);
+      const stored = await storeReferenceDocumentFile({
+        tenantId: safeTenant,
+        originalName: file.originalname || 'document',
+        buffer: file.buffer,
+      });
+
+      emit('progress', {
+        percent: 94,
+        stage: 'figures',
+        message: 'Extracting figures and diagrams…',
+      });
+
+      let figures: Awaited<ReturnType<typeof extractReferenceFigureAssets>> = [];
+      const isPdf =
+        String(file.mimetype || '').toLowerCase().includes('pdf') ||
+        String(file.originalname || '').toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        try {
+          figures = await extractReferenceFigureAssets({
+            buffer: file.buffer,
+            tenantId: safeTenant,
+            documentStoredName: stored.storedName,
+          });
+        } catch {
+          figures = [];
+        }
+      }
+
+      const result = {
+        fileName: extracted.fileName,
+        filePath: stored.relativePath,
+        mimeType: extracted.mimeType,
+        fileSize: extracted.size,
+        extractedText: null,
+        chapters: extracted.chapters,
+        figures,
+        characterCount: extracted.characterCount,
+        truncated: extracted.truncated,
+        extractionMethod: extracted.extractionMethod,
+        extractedAt: new Date().toISOString(),
+      };
+
+      emit('done', {
+        percent: 100,
+        stage: 'complete',
+        message: 'Reference document ready',
+        result,
+      });
+    } catch (error: unknown) {
+      let messageKey: string = ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED;
+      let detail: string | undefined;
+
+      if (
+        error &&
+        typeof error === 'object' &&
+        typeof (error as { getResponse?: () => unknown }).getResponse ===
+          'function'
+      ) {
+        const exceptionResponse = (
+          error as { getResponse: () => unknown }
+        ).getResponse();
+        if (typeof exceptionResponse === 'string') {
+          messageKey = exceptionResponse;
+        } else if (exceptionResponse && typeof exceptionResponse === 'object') {
+          const body = exceptionResponse as Record<string, unknown>;
+          if (typeof body.messageKey === 'string') {
+            messageKey = body.messageKey;
+          } else if (typeof body.message === 'string') {
+            messageKey = body.message;
+          }
+          if (typeof body.detail === 'string') detail = body.detail;
+        }
+      } else if ((error as { message?: string })?.message) {
+        messageKey = String((error as { message: string }).message);
+      }
+
+      emit('error', {
+        percent: 100,
+        stage: 'failed',
+        message: messageKey,
+        errorKey: messageKey,
+        ...(detail && { detail }),
+      });
+    } finally {
+      res.off('close', onClose);
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
+  }
+
+  /**
+   * Stream a tenant-scoped reference archive file (original PDF/DOCX or figure JPEG).
+   */
+  async getReferenceArchiveFile(tenantId: number, relativePath: string) {
+    const tid = requireTenantId(tenantId);
+    let resolved: { absolutePath: string; relativePath: string };
+    try {
+      resolved = await resolveTenantReferenceFilePath(tid, relativePath);
+    } catch (error: unknown) {
+      const code = String((error as { message?: string })?.message || '');
+      if (code === 'REFERENCE_FILE_FORBIDDEN') {
+        throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_UNSUPPORTED);
+      }
+      throw new NotFoundException(ErrorMessageKey.REFERENCE_FILE_REQUIRED);
+    }
+
+    const lower = resolved.relativePath.toLowerCase();
+    const mimeType = lower.endsWith('.pdf')
+      ? 'application/pdf'
+      : lower.endsWith('.docx')
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : lower.endsWith('.png')
+            ? 'image/png'
+            : 'application/octet-stream';
+
+    return {
+      filePath: resolved.absolutePath,
+      fileName: basename(resolved.relativePath),
+      mimeType,
+    };
+  }
+
+  async getCourseReferenceDocumentFile(
+    tenantId: number,
+    courseId: number,
+    referenceIndex: number,
+  ) {
+    const tid = requireTenantId(tenantId);
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId: tid, deletedAt: null },
+      select: { references: true },
+    });
+    if (!course) {
+      throw new NotFoundException(ErrorMessageKey.COURSE_NOT_FOUND);
+    }
+
+    const references = Array.isArray(course.references)
+      ? (course.references as Array<Record<string, unknown>>)
+      : [];
+    const reference = references[referenceIndex];
+    if (!reference) {
+      throw new NotFoundException(ErrorMessageKey.REFERENCE_FILE_REQUIRED);
+    }
+
+    const relativePath = String(reference.filePath || '').trim();
+    if (!relativePath) {
+      throw new NotFoundException(ErrorMessageKey.REFERENCE_FILE_REQUIRED);
+    }
+
+    return this.getReferenceArchiveFile(tid, relativePath);
   }
 
   async findOne(tenantId: number, id: number, includes?: string[]) {
@@ -703,7 +1043,7 @@ export class CourseService {
       };
     }
 
-    const course = await this.prisma.course.findFirst({
+    const course = await this.prisma.extended.course.findFirst({
       where: { id, tenantId: tid },
       include,
     });
@@ -720,6 +1060,7 @@ export class CourseService {
     const {
       title, code, program, description, creditHours, level, passRate,
       teachingMode, teachingModes, totalContactHours, lectureHours, labHours,
+      academicYear, semester,
       prerequisites, coRequisites, mainObjective, requiredFacilitiesAndEquipment, references,
     } = updateCourseDto;
 
@@ -742,6 +1083,8 @@ export class CourseService {
         ...(totalContactHours !== undefined && { totalContactHours }),
         ...(lectureHours !== undefined && { lectureHours }),
         ...(labHours !== undefined && { labHours }),
+        ...(academicYear !== undefined && { academicYear }),
+        ...(semester !== undefined && { semester }),
         ...(prerequisites !== undefined && { prerequisites }),
         ...(coRequisites !== undefined && { coRequisites }),
         ...(mainObjective !== undefined && { mainObjective }),
@@ -749,6 +1092,131 @@ export class CourseService {
           requiredFacilitiesAndEquipment: requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
         }),
         ...(references !== undefined && { references: references as unknown as Prisma.InputJsonValue }),
+      },
+    });
+  }
+
+  /**
+   * Save syllabus builder data.
+   * First save writes syllabusData; later saves merge into the same JSON.
+   * Course scalars/JSON are patched in place. CLOs and topics are never rewritten.
+   */
+  async saveSyllabus(
+    tenantId: number,
+    id: number,
+    body: Record<string, unknown>,
+  ) {
+    const course = await this.findCourse(tenantId, id);
+
+    const existingSyllabus =
+      course.syllabusData &&
+      typeof course.syllabusData === 'object' &&
+      !Array.isArray(course.syllabusData)
+        ? (course.syllabusData as Record<string, unknown>)
+        : {};
+
+    const incomingSyllabusRaw = body.syllabusData;
+    const incomingSyllabus =
+      incomingSyllabusRaw &&
+      typeof incomingSyllabusRaw === 'object' &&
+      !Array.isArray(incomingSyllabusRaw)
+        ? (incomingSyllabusRaw as Record<string, unknown>)
+        : {};
+
+    const syllabusData = {
+      ...existingSyllabus,
+      ...incomingSyllabus,
+    } as Prisma.InputJsonValue;
+
+    const optionalNumber = (value: unknown) => {
+      if (value === undefined) return undefined;
+      if (value === null || value === '') return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.round(parsed) : null;
+    };
+
+    const optionalStringList = (value: unknown) => {
+      if (value === undefined) return undefined;
+      if (Array.isArray(value)) {
+        return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+      }
+      if (typeof value === 'string') {
+        return value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+      return [];
+    };
+
+    const title =
+      typeof body.title === 'string' && body.title.trim()
+        ? body.title.trim()
+        : undefined;
+
+    return this.prisma.course.update({
+      where: { id },
+      data: {
+        syllabusData,
+        ...(title !== undefined && { title }),
+        ...(body.code !== undefined && {
+          code: String(body.code ?? '').trim() || null,
+        }),
+        ...(body.program !== undefined && {
+          program: String(body.program ?? '').trim() || null,
+        }),
+        ...(body.description !== undefined && {
+          description: String(body.description ?? '').trim() || null,
+        }),
+        ...(body.creditHours !== undefined && {
+          creditHours: optionalNumber(body.creditHours),
+        }),
+        ...(body.level !== undefined && {
+          level: String(body.level ?? '').trim() || null,
+        }),
+        ...(body.academicYear !== undefined && {
+          academicYear: String(body.academicYear ?? '').trim() || null,
+        }),
+        ...(body.semester !== undefined && {
+          semester: String(body.semester ?? '').trim() || null,
+        }),
+        ...(body.totalContactHours !== undefined && {
+          totalContactHours: optionalNumber(body.totalContactHours),
+        }),
+        ...(body.lectureHours !== undefined && {
+          lectureHours: optionalNumber(body.lectureHours),
+        }),
+        ...(body.labHours !== undefined && {
+          labHours: optionalNumber(body.labHours),
+        }),
+        ...(body.prerequisites !== undefined && {
+          prerequisites: optionalStringList(body.prerequisites) ?? [],
+        }),
+        ...(body.coRequisites !== undefined && {
+          coRequisites: optionalStringList(body.coRequisites) ?? [],
+        }),
+        ...(body.teachingModes !== undefined && {
+          teachingModes: (Array.isArray(body.teachingModes)
+            ? body.teachingModes
+            : []) as Prisma.InputJsonValue,
+        }),
+        ...(body.requiredFacilitiesAndEquipment !== undefined && {
+          requiredFacilitiesAndEquipment: (Array.isArray(
+            body.requiredFacilitiesAndEquipment,
+          )
+            ? body.requiredFacilitiesAndEquipment
+            : []) as Prisma.InputJsonValue,
+        }),
+        ...(body.references !== undefined && {
+          references: normalizeReferencesForStorage(
+            body.references,
+          ) as Prisma.InputJsonValue,
+        }),
+        ...(body.assessmentPlan !== undefined && {
+          assessmentPlan: (Array.isArray(body.assessmentPlan)
+            ? body.assessmentPlan
+            : []) as Prisma.InputJsonValue,
+        }),
       },
     });
   }
@@ -768,6 +1236,8 @@ export class CourseService {
       totalContactHours?: number | null;
       lectureHours?: number | null;
       labHours?: number | null;
+      academicYear?: string | null;
+      semester?: string | null;
       prerequisites?: string[];
       coRequisites?: string[];
       mainObjective?: string | null;
@@ -794,6 +1264,18 @@ export class CourseService {
         ...(body.totalContactHours !== undefined && { totalContactHours: body.totalContactHours }),
         ...(body.lectureHours !== undefined && { lectureHours: body.lectureHours }),
         ...(body.labHours !== undefined && { labHours: body.labHours }),
+        ...(body.academicYear !== undefined && {
+          academicYear:
+            body.academicYear === null || String(body.academicYear).trim() === ''
+              ? null
+              : String(body.academicYear).trim(),
+        }),
+        ...(body.semester !== undefined && {
+          semester:
+            body.semester === null || String(body.semester).trim() === ''
+              ? null
+              : String(body.semester).trim().toUpperCase(),
+        }),
         ...(body.prerequisites !== undefined && { prerequisites: body.prerequisites }),
         ...(body.coRequisites !== undefined && { coRequisites: body.coRequisites }),
         ...(body.mainObjective !== undefined && {
@@ -821,7 +1303,7 @@ export class CourseService {
 
   private async findCourse(tenantId: number, id: number) {
     const tid = requireTenantId(tenantId);
-    const course = await this.prisma.course.findFirst({
+    const course = await this.prisma.extended.course.findFirst({
       where: { id, tenantId: tid },
     });
     if (!course) {

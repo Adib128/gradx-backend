@@ -29,15 +29,19 @@ function isAlwaysAccepted(type: ContentType) {
   return ALWAYS_ACCEPTED_TYPES.has(type);
 }
 
+import { filterFiguresForChapters } from 'src/course/utils/extract-reference-figures.util';
+
 type CourseReference = z.infer<typeof ReferenceSchema>;
 
 /**
- * Keep bibliographic refs; only keep `extractedText` for selected indices when opted in.
+ * Keep bibliographic refs; attach selected chapter text for AI (source of truth).
+ * Does not flatten chapters into extractedText — prompts resolve from `chapters`.
  */
 function applyReferenceDocumentSelection(
   references: CourseReference[],
   useReferenceDocuments?: boolean,
   referenceDocumentIndices?: number[],
+  referenceDocumentChapterIndices?: Record<number, number | number[]>,
 ): CourseReference[] {
   const selectedIndices = new Set(
     (referenceDocumentIndices ?? []).filter(
@@ -46,21 +50,99 @@ function applyReferenceDocumentSelection(
   );
   const includeBodies =
     Boolean(useReferenceDocuments) && selectedIndices.size > 0;
+  const chapterMap = referenceDocumentChapterIndices;
+  const chapterMapProvided =
+    chapterMap != null && typeof chapterMap === 'object';
+
+  const readChapterSelection = (
+    docIndex: number,
+  ): number[] | null | undefined => {
+    if (!chapterMapProvided || !chapterMap) return undefined;
+    if (Object.prototype.hasOwnProperty.call(chapterMap, docIndex)) {
+      return normalizeChapterSelection(chapterMap[docIndex]);
+    }
+    if (Object.prototype.hasOwnProperty.call(chapterMap, String(docIndex))) {
+      return normalizeChapterSelection(
+        (chapterMap as Record<string, number | number[]>)[String(docIndex)],
+      );
+    }
+    return undefined;
+  };
+
+  const clearBody = (reference: CourseReference): CourseReference => ({
+    ...reference,
+    extractedText: null,
+    characterCount: null,
+    truncated: null,
+    extractionMethod: null,
+    extractedAt: null,
+    chapters: null,
+    figures: null,
+  });
 
   return references.map((reference, index) => {
-    if (includeBodies && selectedIndices.has(index)) {
-      return reference;
+    if (!(includeBodies && selectedIndices.has(index))) {
+      return clearBody(reference);
     }
+
+    const selection = readChapterSelection(index);
+    const chapters = Array.isArray(reference.chapters)
+      ? reference.chapters
+      : [];
+
+    if (chapters.length > 0) {
+      let picked = chapters;
+      if (selection != null) {
+        if (selection.length === 0) return clearBody(reference);
+        picked = selection
+          .filter((chapterIndex) => chapterIndex < chapters.length)
+          .map((chapterIndex) => chapters[chapterIndex]);
+      }
+      if (picked.length === 0) return clearBody(reference);
+
+      const characterCount = picked.reduce(
+        (total, chapter) => total + chapter.content.length,
+        0,
+      );
+      const figures = filterFiguresForChapters(reference.figures, picked);
+      return {
+        ...reference,
+        extractedText: null,
+        chapters: picked,
+        characterCount,
+        figures: figures.length ? figures : null,
+      };
+    }
+
+    // Legacy flat text only when no chapters exist yet.
+    if (selection != null && selection.length === 0) {
+      return clearBody(reference);
+    }
+    const body = String(reference.extractedText || '').trim();
+    if (!body) return clearBody(reference);
 
     return {
       ...reference,
-      extractedText: null,
-      characterCount: null,
-      truncated: null,
-      extractionMethod: null,
-      extractedAt: null,
+      extractedText: body,
+      chapters: null,
+      characterCount: body.length,
+      figures: Array.isArray(reference.figures) ? reference.figures : null,
     };
   });
+}
+
+function normalizeChapterSelection(
+  raw: number | number[] | undefined,
+): number[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item >= 0);
+  }
+  if (raw != null && Number.isInteger(Number(raw))) {
+    return [Number(raw)];
+  }
+  return [];
 }
 
 function resolveReviewStatus(
@@ -236,16 +318,46 @@ export class TopicContentService {
         referenceDocumentIndices?: number[];
       }
     ).referenceDocumentIndices;
+    const rawReferenceDocumentChapterIndices = (
+      generationContentDto as {
+        referenceDocumentChapterIndices?: Record<number, number | number[]>;
+      }
+    ).referenceDocumentChapterIndices;
     const useReferenceDocuments = Boolean(rawUseReferenceDocuments);
     const referenceDocumentIndices = Array.isArray(rawReferenceDocumentIndices)
       ? rawReferenceDocumentIndices.filter(
           (index) => Number.isInteger(index) && index >= 0,
         )
       : [];
+    const referenceDocumentChapterIndices =
+      rawReferenceDocumentChapterIndices &&
+      typeof rawReferenceDocumentChapterIndices === 'object'
+        ? Object.fromEntries(
+            Object.entries(rawReferenceDocumentChapterIndices)
+              .map(([key, value]) => {
+                const docIndex = Number(key);
+                if (!Number.isInteger(docIndex) || docIndex < 0) return null;
+
+                if (Array.isArray(value)) {
+                  const indices = value
+                    .map((item) => Number(item))
+                    .filter((item) => Number.isInteger(item) && item >= 0);
+                  // Keep empty arrays — they mean "no chapters selected".
+                  return [docIndex, indices] as const;
+                }
+
+                const single = Number(value);
+                if (!Number.isInteger(single) || single < 0) return null;
+                return [docIndex, [single]] as const;
+              })
+              .filter(Boolean) as Array<[number, number[]]>,
+          )
+        : undefined;
     const references = applyReferenceDocumentSelection(
       courseReferences,
       useReferenceDocuments,
       referenceDocumentIndices,
+      referenceDocumentChapterIndices,
     );
 
     return {
@@ -275,6 +387,7 @@ export class TopicContentService {
       references,
       useReferenceDocuments,
       referenceDocumentIndices,
+      referenceDocumentChapterIndices,
       sourceLectureContentId: lectureContent?.id,
       sourceLectureContent: lectureContent?.content,
     };

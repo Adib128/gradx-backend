@@ -60,3 +60,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Runtime uploaded slide images
 /public/slide-images/
+
+# Original reference PDF/DOCX archives (chapter text is in DB JSON)
+/uploads/reference-documents/
