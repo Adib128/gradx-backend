@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -10,6 +11,7 @@ import { PrismaService } from 'prisma/prisma.service';
 import { OpenCvGradingService } from './opencv-grading.service';
 import { NodeGraderService } from './node-grader.service';
 import { SHEET_CONFIG } from './sheet-config';
+import * as XLSX from 'xlsx';
 
 type RequestUser = {
   userId: number;
@@ -320,8 +322,17 @@ export class GradingService {
             title: true,
             type: true,
             courseId: true,
+            code: true,
+            academicYear: true,
+            semester: true,
             course: {
-              select: { id: true, title: true, code: true },
+              select: {
+                id: true,
+                title: true,
+                code: true,
+                academicYear: true,
+                semester: true,
+              },
             },
           },
         },
@@ -329,6 +340,411 @@ export class GradingService {
       orderBy: { createdAt: 'desc' },
       take: 500,
     });
+  }
+
+  /**
+   * Validate grading Excel without inserting.
+   * Expected columns:
+   * course_code | assessment_code | student_id | student_name | score | max_score | confidence
+   */
+  async validateExcel(user: RequestUser, file: Express.Multer.File) {
+    const outcome = await this.processGradingExcel(user, file, { dryRun: true });
+    return {
+      total: outcome.total,
+      valid: outcome.valid,
+      invalid: outcome.failed,
+      canImport: outcome.total > 0 && outcome.failed.length === 0,
+      preview: outcome.preview,
+    };
+  }
+
+  /**
+   * Import confirmed grading rows from Excel (after validation).
+   * Rejects the whole file if any row is invalid.
+   */
+  async importExcel(user: RequestUser, file: Express.Multer.File) {
+    const outcome = await this.processGradingExcel(user, file, { dryRun: false });
+    if (outcome.failed.length > 0) {
+      throw new BadRequestException({
+        message: 'Grading import validation failed',
+        total: outcome.total,
+        valid: outcome.valid,
+        invalid: outcome.failed,
+        canImport: false,
+      });
+    }
+    return {
+      success: outcome.valid,
+      failed: outcome.failed,
+      total: outcome.total,
+    };
+  }
+
+  private async processGradingExcel(
+    user: RequestUser,
+    file: Express.Multer.File,
+    options: { dryRun: boolean },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Excel file is required');
+    }
+
+    const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) {
+      throw new BadRequestException('Excel file is empty');
+    }
+    const sheet = workbook.Sheets[sheetName];
+    const sheetRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: '',
+    });
+
+    const hasHeader = this.isGradingImportHeader(sheetRows[0]);
+    const rows = sheetRows.slice(hasHeader ? 1 : 0).map((row, index) => ({
+      rowNumber: index + (hasHeader ? 2 : 1),
+      courseCode: this.cellToString(row[0]),
+      assessmentCode: this.cellToString(row[1]),
+      studentCode: this.cellToString(row[2]),
+      studentName: this.cellToString(row[3]),
+      score: this.cellToNumber(row[4]),
+      maxScore: this.cellToNumber(row[5]),
+      confidence: this.normalizeConfidence(this.cellToNumber(row[6])),
+    }));
+
+    if (!rows.length) {
+      throw new BadRequestException('Excel file has no data rows');
+    }
+
+    const failed: { row: number; reason: string }[] = [];
+    const preview: Array<{
+      row: number;
+      courseCode: string;
+      assessmentCode: string;
+      studentId: string;
+      studentName: string;
+      score: number;
+      maxScore: number;
+      studentAction: 'existing' | 'create';
+    }> = [];
+    let valid = 0;
+
+    const courseCache = new Map<
+      string,
+      { id: number; title: string; code: string | null } | null
+    >();
+    const assessmentCache = new Map<
+      string,
+      {
+        id: number;
+        title: string;
+        code: string;
+        courseId: number;
+        totalMarks: number | null;
+      } | null
+    >();
+
+    type PreparedRow = {
+      rowNumber: number;
+      course: { id: number; title: string; code: string | null };
+      assessment: {
+        id: number;
+        title: string;
+        code: string;
+        courseId: number;
+        totalMarks: number | null;
+      };
+      studentCode: string;
+      studentName: string;
+      score: number;
+      maxScore: number;
+      confidence: number | null;
+      studentAction: 'existing' | 'create';
+      existingStudentId?: number;
+    };
+
+    const prepared: PreparedRow[] = [];
+
+    for (const row of rows) {
+      try {
+        if (!row.courseCode) {
+          failed.push({ row: row.rowNumber, reason: 'Missing course_code' });
+          continue;
+        }
+        if (!row.assessmentCode) {
+          failed.push({
+            row: row.rowNumber,
+            reason: 'Missing assessment_code',
+          });
+          continue;
+        }
+        if (!row.studentCode) {
+          failed.push({ row: row.rowNumber, reason: 'Missing student_id' });
+          continue;
+        }
+        if (row.score == null || !Number.isFinite(row.score)) {
+          failed.push({
+            row: row.rowNumber,
+            reason: 'Missing or invalid score',
+          });
+          continue;
+        }
+
+        const courseKey = row.courseCode.toLowerCase();
+        let course = courseCache.get(courseKey);
+        if (course === undefined) {
+          const matches = await this.prisma.course.findMany({
+            where: {
+              tenantId: user.tenantId,
+              deletedAt: null,
+              code: { equals: row.courseCode, mode: 'insensitive' },
+            },
+            select: { id: true, title: true, code: true },
+            take: 2,
+          });
+          if (matches.length === 0) {
+            course = null;
+          } else if (matches.length > 1) {
+            failed.push({
+              row: row.rowNumber,
+              reason: `Multiple courses found for code ${row.courseCode}`,
+            });
+            continue;
+          } else {
+            course = matches[0];
+          }
+          courseCache.set(courseKey, course);
+        }
+
+        if (!course) {
+          failed.push({
+            row: row.rowNumber,
+            reason: `Course not found for code ${row.courseCode}`,
+          });
+          continue;
+        }
+
+        const assessmentKey = row.assessmentCode.toLowerCase();
+        let assessment = assessmentCache.get(assessmentKey);
+        if (assessment === undefined) {
+          const matches = await this.prisma.assessment.findMany({
+            where: {
+              tenantId: user.tenantId,
+              code: { equals: row.assessmentCode, mode: 'insensitive' },
+            },
+            select: {
+              id: true,
+              title: true,
+              code: true,
+              courseId: true,
+              totalMarks: true,
+            },
+            take: 2,
+          });
+          if (matches.length === 0) {
+            assessment = null;
+          } else if (matches.length > 1) {
+            failed.push({
+              row: row.rowNumber,
+              reason: `Multiple assessments found for code ${row.assessmentCode}`,
+            });
+            continue;
+          } else {
+            assessment = matches[0];
+          }
+          assessmentCache.set(assessmentKey, assessment);
+        }
+
+        if (!assessment) {
+          failed.push({
+            row: row.rowNumber,
+            reason: `Assessment not found for code ${row.assessmentCode}`,
+          });
+          continue;
+        }
+
+        if (assessment.courseId !== course.id) {
+          failed.push({
+            row: row.rowNumber,
+            reason: `Assessment ${row.assessmentCode} does not belong to course ${row.courseCode}`,
+          });
+          continue;
+        }
+
+        const maxScore =
+          row.maxScore != null &&
+          Number.isFinite(row.maxScore) &&
+          row.maxScore > 0
+            ? row.maxScore
+            : assessment.totalMarks != null && assessment.totalMarks > 0
+              ? assessment.totalMarks
+              : null;
+
+        if (maxScore == null) {
+          failed.push({
+            row: row.rowNumber,
+            reason: 'Missing max_score (and assessment has no totalMarks)',
+          });
+          continue;
+        }
+
+        if (row.score < 0 || row.score > maxScore) {
+          failed.push({
+            row: row.rowNumber,
+            reason: `Score ${row.score} is outside 0..${maxScore}`,
+          });
+          continue;
+        }
+
+        const existingStudent = await this.prisma.student.findUnique({
+          where: { studentId: row.studentCode },
+          select: { id: true, studentId: true, courseId: true },
+        });
+
+        let studentAction: 'existing' | 'create' = 'existing';
+        if (!existingStudent) {
+          if (!row.studentName) {
+            failed.push({
+              row: row.rowNumber,
+              reason: `Student ${row.studentCode} not found (provide student_name to create)`,
+            });
+            continue;
+          }
+          studentAction = 'create';
+        }
+
+        valid += 1;
+        const preparedRow: PreparedRow = {
+          rowNumber: row.rowNumber,
+          course,
+          assessment,
+          studentCode: row.studentCode,
+          studentName: row.studentName || '',
+          score: row.score,
+          maxScore,
+          confidence: row.confidence,
+          studentAction,
+          existingStudentId: existingStudent?.id,
+        };
+        prepared.push(preparedRow);
+
+        if (preview.length < 8) {
+          preview.push({
+            row: row.rowNumber,
+            courseCode: course.code || row.courseCode,
+            assessmentCode: assessment.code,
+            studentId: row.studentCode,
+            studentName: row.studentName || '',
+            score: row.score,
+            maxScore,
+            studentAction,
+          });
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Grading import row ${row.rowNumber} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        failed.push({ row: row.rowNumber, reason: 'Unexpected error' });
+      }
+    }
+
+    if (!options.dryRun && failed.length === 0) {
+      for (const row of prepared) {
+        let studentId = row.existingStudentId;
+        if (row.studentAction === 'create') {
+          const created = await this.prisma.student.create({
+            data: {
+              studentId: row.studentCode,
+              name: row.studentName,
+              courseId: row.course.id,
+            },
+            select: { id: true },
+          });
+          studentId = created.id;
+        } else if (studentId) {
+          const existing = await this.prisma.student.findUnique({
+            where: { id: studentId },
+            select: { courseId: true },
+          });
+          if (existing && !existing.courseId) {
+            await this.prisma.student.update({
+              where: { id: studentId },
+              data: { courseId: row.course.id },
+            });
+          }
+        }
+
+        await this.prisma.gradingScan.create({
+          data: {
+            assessmentId: row.assessment.id,
+            tenantId: user.tenantId,
+            graderUserId: user.userId,
+            status: 'COMPLETED',
+            score: row.score,
+            maxScore: row.maxScore,
+            confidence: row.confidence,
+            detectedStudentId: row.studentCode,
+            matchedStudentCode: row.studentCode,
+            studentId: studentId ?? null,
+            confirmedAt: new Date(),
+            questionDetails: [],
+            detectedAnswers: {},
+          },
+        });
+      }
+    }
+
+    return {
+      total: rows.length,
+      valid,
+      failed,
+      preview,
+    };
+  }
+
+  private isGradingImportHeader(row?: unknown[]) {
+    if (!row) return false;
+    const headers = row.map((cell) =>
+      this.cellToString(cell).toLowerCase().replace(/[\s_-]+/g, ''),
+    );
+    return (
+      ['coursecode', 'course', 'code'].includes(headers[0] || '') &&
+      [
+        'assessmentcode',
+        'assessment',
+        'exam',
+        'assessmentname',
+        'assessmenttitle',
+        'examcode',
+      ].includes(headers[1] || '') &&
+      ['studentid', 'id', 'studentcode', 'studentnumber'].includes(
+        headers[2] || '',
+      )
+    );
+  }
+
+  private cellToString(value: unknown) {
+    if (value == null) return '';
+    return String(value).trim();
+  }
+
+  private cellToNumber(value: unknown): number | null {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const cleaned = String(value).replace(/[%\s,]/g, '').trim();
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private normalizeConfidence(value: number | null): number | null {
+    if (value == null || !Number.isFinite(value)) return null;
+    if (value > 1) return Math.min(1, value / 100);
+    if (value < 0) return null;
+    return value;
   }
 
   /** All scans attributed to a student code (detected or matched). */

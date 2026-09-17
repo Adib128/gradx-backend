@@ -390,6 +390,8 @@ model Assessment {
   id                                      Int                       @id @default(autoincrement())
   type                                    AssessmentType
   title                                   String
+  /// Unique auto-generated alphanumeric code (e.g. ASM000001)
+  code                                    String                    @unique
   percentage                              Int?
   duration                                Int?
   totalMarks                              Int?

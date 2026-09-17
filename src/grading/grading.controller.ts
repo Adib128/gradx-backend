@@ -75,6 +75,26 @@ export class GradingController {
     return this.gradingService.getGradingHistory(user);
   }
 
+  /** Validate grading Excel rows (no inserts). */
+  @Post('import/validate')
+  @UseInterceptors(FileInterceptor('file'))
+  validateImportFromExcel(
+    @GetUser() user: JwtUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.gradingService.validateExcel(user, file);
+  }
+
+  /** Import confirmed grading rows from Excel (course code + assessment code). */
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file'))
+  importFromExcel(
+    @GetUser() user: JwtUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.gradingService.importExcel(user, file);
+  }
+
   /** All grading scans attributed to a student (by their detected student code). */
   @Get('students/:studentCode/history')
   getStudentHistory(

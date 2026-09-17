@@ -79,38 +79,69 @@ export class AssessmentService {
       throw new NotFoundException('Course not found');
     }
 
-    return await this.prisma.assessment.create({
-      data: {
-        title: dto.title,
-        type: dto.type,
-        percentage: dto.percentage ?? null,
-        duration: dto.duration,
-        totalMarks: dto.totalMarks,
-        passMark: dto.passMark,
-        numberOfVersions: dto.numberOfVersions,
-        paperSize: dto.paperSize,
-        answerSheetMode: dto.answerSheetMode,
-        showMarksPerQuestion: dto.showMarksPerQuestion,
-        includeStudentInfoHeader: dto.includeStudentInfoHeader,
-        studentIdLabel: dto.studentIdLabel,
-        numberOfStudentIdDigits: dto.numberOfStudentIdDigits,
-        includeAssessmentInstructionsSection:
-          dto.includeAssessmentInstructionsSection,
-        assessmentInstructions: dto.assessmentInstructions,
-        printCloCodeNextToEachQuestion: dto.printCloCodeNextToEachQuestion,
-        printBloomLevelNextToEachQuestion:
-          dto.printBloomLevelNextToEachQuestion,
-        printDifficultyLabelNextToEachQuestion:
-          dto.printDifficultyLabelNextToEachQuestion,
-        academicYear: dto.academicYear ?? null,
-        semester: dto.semester ?? null,
-        headerConfig: toPrismaJson(dto.headerConfig),
-        language: dto.language,
-        difficulty: dto.difficulty,
-        tenantId: tid,
-        courseId,
-      },
+    return await this.prisma.$transaction(async (tx) => {
+      const code = await this.allocateAssessmentCode(tx);
+      return tx.assessment.create({
+        data: {
+          code,
+          title: dto.title,
+          type: dto.type,
+          percentage: dto.percentage ?? null,
+          duration: dto.duration,
+          totalMarks: dto.totalMarks,
+          passMark: dto.passMark,
+          numberOfVersions: dto.numberOfVersions,
+          paperSize: dto.paperSize,
+          answerSheetMode: dto.answerSheetMode,
+          showMarksPerQuestion: dto.showMarksPerQuestion,
+          includeStudentInfoHeader: dto.includeStudentInfoHeader,
+          studentIdLabel: dto.studentIdLabel,
+          numberOfStudentIdDigits: dto.numberOfStudentIdDigits,
+          includeAssessmentInstructionsSection:
+            dto.includeAssessmentInstructionsSection,
+          assessmentInstructions: dto.assessmentInstructions,
+          printCloCodeNextToEachQuestion: dto.printCloCodeNextToEachQuestion,
+          printBloomLevelNextToEachQuestion:
+            dto.printBloomLevelNextToEachQuestion,
+          printDifficultyLabelNextToEachQuestion:
+            dto.printDifficultyLabelNextToEachQuestion,
+          academicYear: dto.academicYear ?? null,
+          semester: dto.semester ?? null,
+          headerConfig: toPrismaJson(dto.headerConfig),
+          language: dto.language,
+          difficulty: dto.difficulty,
+          tenantId: tid,
+          courseId,
+        },
+      });
     });
+  }
+
+  /** Next unique assessment code: ASM + zero-padded auto-increment (letters + digits). */
+  private async allocateAssessmentCode(
+    tx: Prisma.TransactionClient,
+  ): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const latest = await tx.assessment.findFirst({
+        where: { code: { startsWith: 'ASM' } },
+        orderBy: { code: 'desc' },
+        select: { code: true },
+      });
+      let next = 1;
+      const match = latest?.code?.match(/^ASM(\d+)$/i);
+      if (match) {
+        next = Number(match[1]) + 1;
+      }
+      const code = `ASM${String(next).padStart(6, '0')}`;
+      const exists = await tx.assessment.findUnique({
+        where: { code },
+        select: { id: true },
+      });
+      if (!exists) return code;
+    }
+    throw new InternalServerErrorException(
+      'Could not allocate a unique assessment code',
+    );
   }
 
   /**
