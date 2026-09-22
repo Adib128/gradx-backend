@@ -19,6 +19,10 @@ export const MAX_REFERENCE_UPLOAD_BYTES = 20 * 1024 * 1024;
 export type ReferenceChapter = {
   name: string;
   content: string;
+  /** 1-based PDF page where this chapter begins (from `--- Page N ---` markers). */
+  startPage?: number | null;
+  /** 1-based PDF page where this chapter ends. */
+  endPage?: number | null;
 };
 
 export type ReferenceDocumentExtraction = {
@@ -192,6 +196,74 @@ function collectWileyTitleLines(
   return { titleParts, bodyStartIndex: index };
 }
 
+function isPageMarkerLine(line: string): boolean {
+  return /^---\s*Page\s+\d+\s*---$/i.test(line.trim());
+}
+
+function parsePageMarkerNumber(line: string): number | null {
+  const match = line.trim().match(/^---\s*Page\s+(\d+)\s*---$/i);
+  if (!match) return null;
+  const page = Number(match[1]);
+  return Number.isFinite(page) && page > 0 ? page : null;
+}
+
+/** Walk back a few lines for the page banner that belongs with a chapter header. */
+function findPageMarkerBefore(
+  lines: string[],
+  beforeIndex: number,
+): string | null {
+  for (let i = beforeIndex - 1; i >= Math.max(0, beforeIndex - 8); i -= 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (isPageMarkerLine(trimmed)) return lines[i];
+    // Stop at other chapter markers / real body so we don't steal an earlier page.
+    if (parseWileyChapterMarkerLine(trimmed) || isChapterHeaderLine(trimmed)) {
+      break;
+    }
+    if (trimmed.length > 20) break;
+  }
+  return null;
+}
+
+/**
+ * When a chapter header is found, trailing `--- Page N ---` lines still sit in
+ * the previous section's buffer. Move them (and blank lines) onto the new chapter
+ * so the chapter's first page marker is the real chapter-start page.
+ */
+function peelTrailingPageMarkers(lines: string[]): string[] {
+  const peeled: string[] = [];
+  while (lines.length > 0) {
+    const last = lines[lines.length - 1];
+    const trimmed = last.trim();
+    if (!trimmed) {
+      lines.pop();
+      continue;
+    }
+    if (isPageMarkerLine(trimmed)) {
+      peeled.unshift(lines.pop()!);
+      continue;
+    }
+    break;
+  }
+  return peeled;
+}
+
+function pageRangeFromLines(lines: string[]): {
+  startPage: number | null;
+  endPage: number | null;
+} {
+  const pages: number[] = [];
+  for (const line of lines) {
+    const page = parsePageMarkerNumber(line);
+    if (page != null) pages.push(page);
+  }
+  if (pages.length === 0) return { startPage: null, endPage: null };
+  return {
+    startPage: Math.min(...pages),
+    endPage: Math.max(...pages),
+  };
+}
+
 function formatWileyChapterName(
   chapterNumber: number,
   titleParts: string[],
@@ -232,6 +304,13 @@ function splitByWileyChapterMarkers(text: string): RawSection[] {
 
     const bodyEnd = nextMarker?.lineIndex ?? lines.length;
     const bodyLines = lines.slice(bodyStartIndex, bodyEnd);
+    const pageMarker = findPageMarkerBefore(lines, marker.lineIndex);
+    if (
+      pageMarker &&
+      !bodyLines.some((line) => line.trim() === pageMarker.trim())
+    ) {
+      bodyLines.unshift(pageMarker);
+    }
 
     sections.push({
       header: formatWileyChapterName(marker.chapterNumber, titleParts),
@@ -248,10 +327,15 @@ function sectionsToChapters(sections: RawSection[]): ReferenceChapter[] {
   const meaningful = filterMeaningfulSections(merged);
   if (meaningful.length === 0) return [];
 
-  return meaningful.map((section, index) => ({
-    name: normalizeChapterName(section.header, index + 1),
-    content: sanitizeTextForJsonStorage(section.lines.join('\n')),
-  }));
+  return meaningful.map((section, index) => {
+    const { startPage, endPage } = pageRangeFromLines(section.lines);
+    return {
+      name: normalizeChapterName(section.header, index + 1),
+      content: sanitizeTextForJsonStorage(section.lines.join('\n')),
+      startPage,
+      endPage,
+    };
+  });
 }
 
 function splitByStandardChapterHeaders(text: string): RawSection[] {
@@ -275,10 +359,12 @@ function splitByStandardChapterHeaders(text: string): RawSection[] {
   for (const line of lines) {
     if (isChapterHeaderLine(line)) {
       const trimmed = line.trim();
+      const leadingPageMarkers = peelTrailingPageMarkers(currentLines);
       if (currentLines.length > 0 || currentHeader) {
         pushSection();
       }
       currentHeader = trimmed;
+      currentLines = [...leadingPageMarkers];
       continue;
     }
     currentLines.push(line);
@@ -373,6 +459,7 @@ export function splitReferenceIntoChapters(text: string): ReferenceChapter[] {
     {
       name: 'Full document',
       content: normalized,
+      ...pageRangeFromLines(normalized.split('\n')),
     },
   ];
 }
@@ -385,6 +472,8 @@ function truncateChaptersForStorage(
     .map((chapter) => ({
       name: chapter.name,
       content: sanitizeTextForJsonStorage(chapter.content),
+      startPage: chapter.startPage ?? null,
+      endPage: chapter.endPage ?? null,
     }))
     .filter((chapter) => chapter.content.length > 0);
 

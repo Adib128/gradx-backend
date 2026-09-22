@@ -72,7 +72,6 @@ export const UpdateAssessmentSchema = z.object({
   includeAssessmentInstructionsSection: z.boolean().optional(),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().optional(),
-  printBloomLevelNextToEachQuestion: z.boolean().optional(),
   printDifficultyLabelNextToEachQuestion: z.boolean().optional(),
   academicYear: z.string().trim().min(1).nullable().optional(),
   semester: z

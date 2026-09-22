@@ -60,15 +60,6 @@ enum UserRole {
   ADMIN
 }
 
-enum Bloom {
-  REMEMBER
-  UNDERSTAND
-  APPLY
-  ANALYZE
-  EVALUATE
-  CREATE
-}
-
 enum DifficultyDistribution {
   BEGINNER
   EASY
@@ -327,7 +318,6 @@ model Question {
   id          Int          @id @default(autoincrement())
   type        QuestionType
   text        String
-  bloom       Bloom?
   explanation String?
   points      Int          @default(1)
 
@@ -409,7 +399,6 @@ model Assessment {
   includeAssessmentInstructionsSection    Boolean                   @default(false)
   assessmentInstructions                  String?
   printCloCodeNextToEachQuestion          Boolean                   @default(false)
-  printBloomLevelNextToEachQuestion       Boolean                   @default(false)
   printDifficultyLabelNextToEachQuestion  Boolean                   @default(false)
   /// Institutional exam header (country, ministry, university, faculty, academic year, etc.)
   headerConfig                            Json?

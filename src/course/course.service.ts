@@ -785,6 +785,27 @@ export class CourseService {
 
       if (closed) return;
 
+      const safeTenant = requireTenantId(tenantId);
+      emit('progress', {
+        percent: 42,
+        stage: 'saving',
+        message: 'Saving reference file…',
+      });
+      const stored = await storeReferenceDocumentFile({
+        tenantId: safeTenant,
+        originalName: file.originalname || 'document',
+        buffer: file.buffer,
+      });
+      emit('file', {
+        percent: 44,
+        stage: 'saving',
+        message: 'Original document ready',
+        fileName: extracted.fileName,
+        filePath: stored.relativePath,
+        mimeType: extracted.mimeType,
+        fileSize: extracted.size,
+      });
+
       const chapters = extracted.chapters;
       const total = Math.max(chapters.length, 1);
 
@@ -805,6 +826,8 @@ export class CourseService {
           name: chapter.name,
           characterCount: chapter.content.length,
           content: chapter.content,
+          startPage: chapter.startPage ?? null,
+          endPage: chapter.endPage ?? null,
           percent: chapterPercent,
           stage: 'chapters',
           message: `Saving chapter ${index + 1} of ${total}…`,
@@ -822,22 +845,9 @@ export class CourseService {
       if (closed) return;
 
       emit('progress', {
-        percent: 90,
-        stage: 'saving',
-        message: 'Saving reference file…',
-      });
-
-      const safeTenant = requireTenantId(tenantId);
-      const stored = await storeReferenceDocumentFile({
-        tenantId: safeTenant,
-        originalName: file.originalname || 'document',
-        buffer: file.buffer,
-      });
-
-      emit('progress', {
         percent: 94,
         stage: 'figures',
-        message: 'Extracting figures and diagrams…',
+        message: 'Extracting figures…',
       });
 
       let figures: Awaited<ReturnType<typeof extractReferenceFigureAssets>> = [];

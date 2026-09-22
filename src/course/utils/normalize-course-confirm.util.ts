@@ -93,9 +93,19 @@ function sanitizeReferenceChapters(value: unknown): {
       `Chapter ${chapters.length + 1}`;
     const content = sanitizeTextForJsonStorage(String(row.content ?? ''));
     if (!content) continue;
+    const startPageRaw = Number(row.startPage);
+    const endPageRaw = Number(row.endPage);
+    const startPage =
+      Number.isFinite(startPageRaw) && startPageRaw > 0
+        ? Math.round(startPageRaw)
+        : null;
+    const endPage =
+      Number.isFinite(endPageRaw) && endPageRaw > 0
+        ? Math.round(endPageRaw)
+        : null;
 
     if (content.length <= remaining) {
-      chapters.push({ name, content });
+      chapters.push({ name, content, startPage, endPage });
       remaining -= content.length;
       continue;
     }
@@ -103,6 +113,8 @@ function sanitizeReferenceChapters(value: unknown): {
     chapters.push({
       name,
       content: `${content.slice(0, remaining)}\n\n[…truncated for storage limit…]`,
+      startPage,
+      endPage,
     });
     truncated = true;
     remaining = 0;

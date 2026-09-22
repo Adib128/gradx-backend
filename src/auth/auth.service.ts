@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   InternalServerErrorException,
@@ -21,6 +22,11 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ResponseMessageKey } from 'src/common/constants/response-message';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyResetCodeDto,
+} from './dto/forgot-password.dto';
 import { withDbRetry } from 'src/common/helpers/db-retry.helper';
 import { EmailService } from 'src/email/email.service';
 import { EmailLanguage } from 'src/email/email.templates';
@@ -368,6 +374,119 @@ export class AuthService {
         passwordHash: newPasswordHash,
       },
     });
+    return {
+      message: ResponseMessageKey.CHANGE_PASSWORD_SUCCESS,
+    };
+  }
+
+  private async findUserForPasswordReset(dto: {
+    email?: string;
+    phone?: string;
+  }) {
+    if (dto.email) {
+      return this.prisma.user.findUnique({ where: { email: dto.email } });
+    }
+    if (dto.phone) {
+      return this.prisma.user.findFirst({
+        where: {
+          OR: [{ phone: dto.phone }, { phone: dto.phone.replace(/\s+/g, '') }],
+        },
+      });
+    }
+    return null;
+  }
+
+  private assertResetCode(user: User, code: string) {
+    if (!user.verificationCode || !user.verificationCodeExpiresAt) {
+      throw new UnauthorizedException(
+        ErrorMessageKey.INVALID_VERIFICATION_CODE,
+      );
+    }
+    if (user.verificationCodeExpiresAt < new Date()) {
+      throw new UnauthorizedException(
+        ErrorMessageKey.VERIFICATION_CODE_EXPIRED,
+      );
+    }
+    if (user.verificationCode !== code) {
+      throw new UnauthorizedException(
+        ErrorMessageKey.INVALID_VERIFICATION_CODE,
+      );
+    }
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const user = await this.findUserForPasswordReset(dto);
+    if (!user) {
+      throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
+    }
+    if (!user.passwordHash) {
+      throw new BadRequestException(
+        'Password reset is not available for this account',
+      );
+    }
+
+    const verificationCode = this.createVerificationCode();
+    const verificationCodeExpiresAt = this.verificationExpiry();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        verificationCode,
+        verificationCodeExpiresAt,
+      },
+    });
+
+    if (user.email) {
+      await this.sendVerificationEmail(
+        user.email,
+        verificationCode,
+        dto.language,
+      );
+    }
+
+    return {
+      message: ResponseMessageKey.VERIFICATION_CODE_SENT,
+      ...(this.emailService.exposesVerificationCode()
+        ? { verificationCode }
+        : {}),
+    };
+  }
+
+  async verifyResetCode(dto: VerifyResetCodeDto) {
+    const user = await this.findUserForPasswordReset(dto);
+    if (!user) {
+      throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
+    }
+    this.assertResetCode(user, dto.code);
+    return { valid: true };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const user = await this.findUserForPasswordReset(dto);
+    if (!user || !user.passwordHash) {
+      throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
+    }
+    this.assertResetCode(user, dto.code);
+
+    const isSamePassword = await argon2.verify(
+      user.passwordHash,
+      dto.newPassword,
+    );
+    if (isSamePassword) {
+      throw new ConflictException(ErrorMessageKey.PASSWORD_SAME_AS_OLD);
+    }
+
+    const newPasswordHash = await argon2.hash(dto.newPassword);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: newPasswordHash,
+        verificationCode: null,
+        verificationCodeExpiresAt: null,
+        isVerified: true,
+        isActive: true,
+      },
+    });
+
     return {
       message: ResponseMessageKey.CHANGE_PASSWORD_SUCCESS,
     };

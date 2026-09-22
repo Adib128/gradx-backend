@@ -14,7 +14,7 @@ import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
-import { AssessmentType, Bloom, Prisma } from 'generated/prisma/client';
+import { AssessmentType, Prisma } from 'generated/prisma/client';
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
@@ -101,8 +101,6 @@ export class AssessmentService {
             dto.includeAssessmentInstructionsSection,
           assessmentInstructions: dto.assessmentInstructions,
           printCloCodeNextToEachQuestion: dto.printCloCodeNextToEachQuestion,
-          printBloomLevelNextToEachQuestion:
-            dto.printBloomLevelNextToEachQuestion,
           printDifficultyLabelNextToEachQuestion:
             dto.printDifficultyLabelNextToEachQuestion,
           academicYear: dto.academicYear ?? null,
@@ -1472,7 +1470,6 @@ export class AssessmentService {
         contactHours: topic.contactHours,
         clos: topic.topicClos.map((topicClo) => topicClo.clo),
       })),
-      blooms: Object.values(Bloom),
       questionTypes: ACTIVE_GENERATION_QUESTION_TYPES,
     };
   }

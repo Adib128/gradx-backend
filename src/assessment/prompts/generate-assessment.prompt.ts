@@ -64,8 +64,6 @@ ${topicGenerations
 #### [Topic Block ${index + 1}] ID: ${tg.topicId} — ${tg.topicTitle}
 - **Target Course Learning Outcomes (CLOs) to Evaluate:**
 ${tg.closDetails.map((c: any) => `  * [${c.code}] (${c.category || 'Skill'}): ${c.description}`).join('\n')}
-- **Target Cognitive Domains (Bloom's Taxonomy):**
-  * ${tg.blooms.map((b: string) => b).join(', ')}
 - **Required Question Blueprint (Exact Tally Count):**
 ${tg.questionTypes.map((q: any) => `  * Generate exactly ${q.questionTypeNumber} item(s) of type: "${q.questionType}"`).join('\n')}
 ---
@@ -130,7 +128,6 @@ TOPIC TARGET
 ${(tg.closDetails || [])
   .map((c: any) => `  * [${c.code}] (${c.category || 'Skill'}): ${c.description}`)
   .join('\n')}
-- **Bloom levels:** ${(tg.blooms || []).join(', ') || 'APPLY'}
 
 Pick ONE CLO code from the list above for this question and include it as "cloCode" (example: "1.1").
 

@@ -34,6 +34,8 @@ export const ReferenceSchema = z.object({
       z.object({
         name: z.string().min(1),
         content: z.string().max(MAX_REFERENCE_EXTRACTED_CHARS + 80),
+        startPage: z.number().int().positive().nullable().optional(),
+        endPage: z.number().int().positive().nullable().optional(),
       }),
     )
     .max(200)

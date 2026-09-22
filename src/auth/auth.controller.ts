@@ -20,6 +20,11 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyResetCodeDto,
+} from './dto/forgot-password.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -54,6 +59,24 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerification(dto);
+  }
+
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('verify-reset-code')
+  @HttpCode(HttpStatus.OK)
+  async verifyResetCode(@Body() dto: VerifyResetCodeDto) {
+    return this.authService.verifyResetCode(dto);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto);
   }
 
   @UseGuards(JwtAuthGuard)
