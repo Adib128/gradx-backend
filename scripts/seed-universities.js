@@ -114,6 +114,97 @@ const UNIVERSITIES = [
       },
     ],
   },
+  // Private universities (from client list + logos)
+  {
+    code: 'psu',
+    nameEn: 'Prince Sultan University',
+    nameAr: 'جامعة الأمير سلطان',
+    website: 'https://www.psu.edu.sa',
+  },
+  {
+    code: 'pmu',
+    nameEn: 'Prince Mohammad Bin Fahd University',
+    nameAr: 'جامعة الأمير محمد بن فهد',
+    website: 'https://www.pmu.edu.sa',
+  },
+  {
+    code: 'um',
+    nameEn: 'University of Prince Mugrin',
+    nameAr: 'جامعة الأمير مقرن بن عبدالعزيز',
+    website: 'https://upm.edu.sa',
+  },
+  {
+    code: 'alfaisal',
+    nameEn: 'Alfaisal University',
+    nameAr: 'جامعة الفيصل',
+    website: 'https://www.alfaisal.edu',
+  },
+  {
+    code: 'yu',
+    nameEn: 'Al Yamamah University',
+    nameAr: 'جامعة اليمامة',
+    website: 'https://yu.edu.sa',
+  },
+  {
+    code: 'dau',
+    nameEn: 'Dar Al Uloom University',
+    nameAr: 'جامعة دار العلوم',
+    website: 'https://dau.edu.sa',
+  },
+  {
+    code: 'almaarefa',
+    nameEn: 'Almaarefa University',
+    nameAr: 'جامعة المعرفة',
+    website: 'https://um.edu.sa',
+  },
+  {
+    code: 'reu',
+    nameEn: 'Riyadh Elm University',
+    nameAr: 'جامعة رياض العلم',
+    website: 'https://www.riyadh.edu.sa',
+  },
+  {
+    code: 'effat',
+    nameEn: 'Effat University',
+    nameAr: 'جامعة عفت',
+    website: 'https://www.effatuniversity.edu.sa',
+  },
+  {
+    code: 'dah',
+    nameEn: 'Dar Al-Hekma University',
+    nameAr: 'جامعة دار الحكمة',
+    website: 'https://www.dah.edu.sa',
+  },
+  {
+    code: 'ubt',
+    nameEn: 'University of Business and Technology',
+    nameAr: 'جامعة الأعمال والتكنولوجيا',
+    website: 'https://www.ubt.edu.sa',
+  },
+  {
+    code: 'fbsu',
+    nameEn: 'Fahad Bin Sultan University',
+    nameAr: 'جامعة فهد بن سلطان',
+    website: 'https://www.fbsu.edu.sa',
+  },
+  {
+    code: 'sru',
+    nameEn: 'Sulaiman Al Rajhi University',
+    nameAr: 'جامعة سليمان الراجحي',
+    website: 'https://www.sr.edu.sa',
+  },
+  {
+    code: 'fu',
+    nameEn: 'Future University',
+    nameAr: 'جامعة المستقبل',
+    website: 'https://www.futureu.edu.sa',
+  },
+  {
+    code: 'aou',
+    nameEn: 'Arab Open University — Saudi Arabia',
+    nameAr: 'الجامعة العربية المفتوحة – فرع السعودية',
+    website: 'https://www.arabou.edu.sa',
+  },
 ];
 
 function resolveLogoUrl(code) {

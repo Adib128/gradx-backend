@@ -93,6 +93,9 @@ export const AssessmentObjectSchema = z.object({
       message: V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID,
     })
     .default(9),
+  studentIdPosition: z
+    .enum(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+    .default('TOP_LEFT'),
   includeAssessmentInstructionsSection: z.boolean().default(false),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().default(false),

@@ -8,19 +8,11 @@
  *   - The Python/OpenCV grader: warps using detected registration marks and
  *     maps their expected page positions to a 1000 × 1414 canvas.
  *
- * Source: jsPDF answer-sheet generator (downloads/page.tsx)
+ * Source: jsPDF answer-sheet generator
  *   Page: 210 × 297 mm
  *   Registration marks (top-left corner of 4.5 × 4.5 mm squares):
- *     TL (18, 12)  TR (187, 12)  BL (18, 216)  BR (187, 216)
- *   Answer blocks:
- *     Top row  y = 55:  columns at x ∈ {88, 144}        (Q  1-10, Q 11-20)
- *     Bot row  y = 135: columns at x ∈ {32, 88, 144}    (Q 21-30, Q 31-40, Q 41-50)
- *   Bubble layout per block:
- *     First bubble A: blockX + 7 mm
- *     Bubble pitch:   5.5 mm
- *     First row y:    blockY + 6.5 mm
- *     Row pitch:      7.5 mm
- *     Bubble radius:  2.2 mm
+ *     TL (8, 12)  TR (197.5, 12)  BL (8, 216)  BR (197.5, 216)
+ *   Version strip centre x = left mark centre = 10.25 mm
  */
 
 // Warp output dimensions (pixels) — A4 aspect ratio (297/210 ≈ 1.414)
@@ -58,13 +50,13 @@ export const SHEET_CONFIG = {
   /**
    * Expected centres of the four corner registration marks,
    * in full-page normalised coordinates.
-   * Mark top-left (18, 12) + half-size (2.25) → centre = (20.25, 14.25)
+   * Mark top-left (8, 12) + half-size (2.25) → centre = (10.25, 14.25)
    */
   inputAnchors: {
-    topLeft:     { x: nx(20.25), y: ny(14.25)  },   // ≈ (0.0964, 0.0480)
-    topRight:    { x: nx(189.25), y: ny(14.25)  },  // ≈ (0.9012, 0.0480)
-    bottomLeft:  { x: nx(20.25), y: ny(218.25) },   // ≈ (0.0964, 0.7349)
-    bottomRight: { x: nx(189.25), y: ny(218.25) },  // ≈ (0.9012, 0.7349)
+    topLeft:     { x: nx(10.25), y: ny(14.25)  },
+    topRight:    { x: nx(199.75), y: ny(14.25)  },
+    bottomLeft:  { x: nx(10.25), y: ny(218.25) },
+    bottomRight: { x: nx(199.75), y: ny(218.25) },
   },
 
   /**
@@ -157,7 +149,8 @@ export const SHEET_CONFIG = {
    * strip of solid 4 mm squares instead.
    *
    * From the jsPDF generator (lib/answer-sheet-version-code.ts):
-   *   Slot centre x = 28 mm, slot centre y = 66 + index * 10 mm, 6 slots.
+   *   Slot centre x = 10.25 mm (aligned with left registration marks),
+   *   slot centre y = 66 + index * 10 mm, 6 slots.
    *   Slot 0     : always printed (calibration / start mark)
    *   Slots 1-4  : version number, 4 bits, most significant bit first
    *   Slot 5     : even parity over the data bits
@@ -166,8 +159,8 @@ export const SHEET_CONFIG = {
    * corner-anchor search windows.
    */
   versionCode: {
-    /** Normalised x of every slot centre (28/210). */
-    centerX: 28 / 210,
+    /** Normalised x of every slot centre (10.25/210) — left mark centre. */
+    centerX: 10.25 / 210,
 
     /** Normalised y of slot 0 centre (66/297). */
     firstCenterY: 66 / 297,

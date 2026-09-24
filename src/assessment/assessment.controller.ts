@@ -57,6 +57,12 @@ export class AssessmentController {
     return this.assessmentService.getGenerateStatus(jobId);
   }
 
+  /** Preview the next auto-generated assessment code (ASM######). */
+  @Get('next-code')
+  peekNextCode() {
+    return this.assessmentService.peekNextAssessmentCode();
+  }
+
   /** List all assessments for the current tenant (used by mobile app). */
   @Get()
   findByTenant(@GetUser('tenantId') tenantId: number) {

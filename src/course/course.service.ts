@@ -135,6 +135,8 @@ export class CourseService {
       mainObjective,
     } = createCourseDto;
 
+    await this.assertCourseCodeAvailable(tenantId, code);
+
     const { clos, codeRemap } = normalizeClosForStorage(rawClos ?? []);
     const topics = (rawTopics ?? []).map((topic, index) => ({
       topicNumber:
@@ -1074,6 +1076,10 @@ export class CourseService {
       prerequisites, coRequisites, mainObjective, requiredFacilitiesAndEquipment, references,
     } = updateCourseDto;
 
+    if (code !== undefined) {
+      await this.assertCourseCodeAvailable(tenantId, code, id);
+    }
+
     return this.prisma.course.update({
       where: { id },
       data: {
@@ -1309,6 +1315,33 @@ export class CourseService {
     return await this.prisma.extended.course.delete({
       where: { id },
     });
+  }
+
+  /**
+   * Course codes must be unique per tenant (case-insensitive) among active courses.
+   * Empty / null codes are allowed and skipped.
+   */
+  private async assertCourseCodeAvailable(
+    tenantId: number,
+    code: string | null | undefined,
+    excludeCourseId?: number,
+  ) {
+    const normalized = String(code ?? '').trim();
+    if (!normalized) return;
+
+    const existing = await this.prisma.course.findFirst({
+      where: {
+        tenantId,
+        deletedAt: null,
+        code: { equals: normalized, mode: 'insensitive' },
+        ...(excludeCourseId != null ? { id: { not: excludeCourseId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new ConflictException(ErrorMessageKey.COURSE_CODE_EXIST);
+    }
   }
 
   private async findCourse(tenantId: number, id: number) {

@@ -69,6 +69,9 @@ export const UpdateAssessmentSchema = z.object({
     .min(3, V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID)
     .max(12, V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID)
     .optional(),
+  studentIdPosition: z
+    .enum(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+    .optional(),
   includeAssessmentInstructionsSection: z.boolean().optional(),
   assessmentInstructions: z.string().nullable().optional(),
   printCloCodeNextToEachQuestion: z.boolean().optional(),

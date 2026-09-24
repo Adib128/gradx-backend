@@ -47,6 +47,9 @@ export const CreateCourseAnswerSheetSchema = z.object({
   includeStudentInfoHeader: z.boolean().default(true),
   studentInfoLabel: z.string().nullable().optional(),
   numberOfStudentIdDigits: z.number().int().min(1).max(20).default(9),
+  studentIdPosition: z
+    .enum(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
+    .default('TOP_LEFT'),
   includeKeyVersionSection: z.boolean().default(true),
   numberOfKeyVersions: z.number().int().positive().default(3),
   keyVersionLetters: z.string().default('ABCD'),

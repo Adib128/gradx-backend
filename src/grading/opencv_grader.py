@@ -19,12 +19,12 @@ import math
 # ---------------------------------------------------------------------------
 DEFAULT_CONFIG = {
     # Expected registration mark centres in full-page normalised coords
-    # (mark TL corner + 2.25mm half-size, divided by 210 or 297)
+    # Mark TL (8, 12) + half 2.25 → (10.25, 14.25) / (210, 297)
     "inputAnchors": {
-        "topLeft":     {"x": 0.0964, "y": 0.0480},
-        "topRight":    {"x": 0.9012, "y": 0.0480},
-        "bottomLeft":  {"x": 0.0964, "y": 0.7349},
-        "bottomRight": {"x": 0.9012, "y": 0.7349},
+        "topLeft":     {"x": 0.0488, "y": 0.0480},
+        "topRight":    {"x": 0.9512, "y": 0.0480},
+        "bottomLeft":  {"x": 0.0488, "y": 0.7349},
+        "bottomRight": {"x": 0.9512, "y": 0.7349},
     },
     "anchorSearchHalf": 0.12,
     # Warp target: A4 ratio 1000 × 1414
@@ -33,10 +33,10 @@ DEFAULT_CONFIG = {
     # Warp DESTINATION of each anchor in the output image
     # (same normalised coords × output size)
     "anchorDst": {
-        "topLeft":     {"x": 0.0964, "y": 0.0480},
-        "topRight":    {"x": 0.9012, "y": 0.0480},
-        "bottomLeft":  {"x": 0.0964, "y": 0.7349},
-        "bottomRight": {"x": 0.9012, "y": 0.7349},
+        "topLeft":     {"x": 0.0488, "y": 0.0480},
+        "topRight":    {"x": 0.9512, "y": 0.0480},
+        "bottomLeft":  {"x": 0.0488, "y": 0.7349},
+        "bottomRight": {"x": 0.9512, "y": 0.7349},
     },
     "answerGrid": {
         "columns": [
@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
     # Solid 4 mm squares: slot 0 = start mark, slots 1-4 = version bits (MSB
     # first), slot 5 = even parity. Replaces the old visible Key Version column.
     "versionCode": {
-        "centerX": 0.13333,       # 28 / 210
+        "centerX": 0.04881,       # 10.25 / 210 (aligned with left marks)
         "firstCenterY": 0.22222,  # 66 / 297
         "slotPitch": 0.03367,     # 10 / 297
         "sampleHalf": 0.00952,    # 2 / 210
@@ -157,8 +157,8 @@ def perspective_warp(cv2, np, image, config):
     # Search in the CORNER QUADRANTS of the actual image.
     #
     # GradX answer sheet registration mark Y positions (fraction of 297 mm page):
-    #   Top marks    (18/187 mm, 12 mm)   → y ≈  4.8 %  → top strip  [0,   20%] ✓
-    #   Bottom marks (18/187 mm, 216 mm)  → y ≈ 72.7 %  → MUST search from 60 %
+    #   Top marks    (8/197.5 mm, 12 mm)   → y ≈  4.8 %  → top strip  [0,   20%] ✓
+    #   Bottom marks (8/197.5 mm, 216 mm)  → y ≈ 72.7 %  → MUST search from 60 %
     #   Middle marks (18 mm, 140 mm) etc. → y ≈ 47–59 %  → excluded by 60 % floor
     #
     # The bottom marks at 72.7 % would be MISSED by the old [80 %, 100 %] window.

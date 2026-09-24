@@ -97,6 +97,7 @@ export class AssessmentService {
           includeStudentInfoHeader: dto.includeStudentInfoHeader,
           studentIdLabel: dto.studentIdLabel,
           numberOfStudentIdDigits: dto.numberOfStudentIdDigits,
+          studentIdPosition: dto.studentIdPosition,
           includeAssessmentInstructionsSection:
             dto.includeAssessmentInstructionsSection,
           assessmentInstructions: dto.assessmentInstructions,
@@ -115,22 +116,34 @@ export class AssessmentService {
     });
   }
 
+  /** Preview the next ASM###### code without reserving it. */
+  async peekNextAssessmentCode(): Promise<{ code: string }> {
+    const code = await this.computeNextAssessmentCode(this.prisma);
+    return { code };
+  }
+
   /** Next unique assessment code: ASM + zero-padded auto-increment (letters + digits). */
+  private async computeNextAssessmentCode(
+    client: Prisma.TransactionClient | typeof this.prisma,
+  ): Promise<string> {
+    const latest = await client.assessment.findFirst({
+      where: { code: { startsWith: 'ASM' } },
+      orderBy: { code: 'desc' },
+      select: { code: true },
+    });
+    let next = 1;
+    const match = latest?.code?.match(/^ASM(\d+)$/i);
+    if (match) {
+      next = Number(match[1]) + 1;
+    }
+    return `ASM${String(next).padStart(6, '0')}`;
+  }
+
   private async allocateAssessmentCode(
     tx: Prisma.TransactionClient,
   ): Promise<string> {
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const latest = await tx.assessment.findFirst({
-        where: { code: { startsWith: 'ASM' } },
-        orderBy: { code: 'desc' },
-        select: { code: true },
-      });
-      let next = 1;
-      const match = latest?.code?.match(/^ASM(\d+)$/i);
-      if (match) {
-        next = Number(match[1]) + 1;
-      }
-      const code = `ASM${String(next).padStart(6, '0')}`;
+      const code = await this.computeNextAssessmentCode(tx);
       const exists = await tx.assessment.findUnique({
         where: { code },
         select: { id: true },
@@ -1477,7 +1490,7 @@ export class AssessmentService {
   private async createAssessmentVersionsWithShuffle(
     tx: any,
     assessmentId: number,
-    questions: { id: number }[],
+    questions: { id: number; type?: string }[],
     numberOfVersions = 2,
   ): Promise<void> {
     const assessment = await tx.assessment.findUnique({
@@ -1493,6 +1506,25 @@ export class AssessmentService {
       return;
     }
 
+    // Ensure each question has a type so we can shuffle within MCQ / T-F bands.
+    const typedQuestions: { id: number; type: string }[] = await (async () => {
+      if (questions.every((q) => typeof q.type === 'string' && q.type)) {
+        return questions.map((q) => ({
+          id: q.id,
+          type: String(q.type).toUpperCase(),
+        }));
+      }
+      const rows = await tx.question.findMany({
+        where: { id: { in: questions.map((q) => q.id) } },
+        select: { id: true, type: true },
+      });
+      const byId = new Map(rows.map((row: any) => [row.id, row.type]));
+      return questions.map((q) => ({
+        id: q.id,
+        type: String(byId.get(q.id) || 'MCQ').toUpperCase(),
+      }));
+    })();
+
     const safeNumberOfVersions = Math.max(1, numberOfVersions ?? 2);
     const versionNames = this.buildAssessmentVersionNames(safeNumberOfVersions);
 
@@ -1506,7 +1538,7 @@ export class AssessmentService {
         },
       });
 
-      const shuffledQuestions = this.shuffleQuestions(questions);
+      const shuffledQuestions = this.shuffleQuestionsByType(typedQuestions);
 
       if (shuffledQuestions.length) {
         await tx.assessmentVersionQuestion.createMany({
@@ -1526,7 +1558,7 @@ export class AssessmentService {
       select: {
         numberOfVersions: true,
         questions: {
-          select: { id: true },
+          select: { id: true, type: true },
           orderBy: { id: 'asc' },
         },
       },
@@ -1576,6 +1608,23 @@ export class AssessmentService {
     }
 
     return shuffled;
+  }
+
+  /**
+   * Keep MCQ and True/False as separate bands; shuffle order only inside each band.
+   * Final order: [shuffled MCQs…][shuffled True/False…].
+   */
+  private shuffleQuestionsByType<T extends { type?: string }>(questions: T[]): T[] {
+    const isTrueFalse = (type?: string) => {
+      const raw = String(type || '').toUpperCase();
+      return raw.includes('TRUE') || raw.includes('FALSE') || raw === 'TF';
+    };
+    const mcq = questions.filter((q) => !isTrueFalse(q.type));
+    const trueFalse = questions.filter((q) => isTrueFalse(q.type));
+    return [
+      ...this.shuffleQuestions(mcq),
+      ...this.shuffleQuestions(trueFalse),
+    ];
   }
 
   private buildVersionDocumentLines(assessment: any, version: any): string[] {
@@ -1942,7 +1991,7 @@ export class AssessmentService {
       orderBy: { updatedAt: 'desc' },
       include: {
         course: { select: { title: true } },
-        questions: { select: { id: true }, orderBy: { id: 'asc' } },
+        questions: { select: { id: true, type: true }, orderBy: { id: 'asc' } },
         assessmentVersions: {
           orderBy: { id: 'asc' },
           include: {
@@ -1976,7 +2025,7 @@ export class AssessmentService {
       where: { id: assessmentId, tenantId },
       include: {
         course: { select: { title: true } },
-        questions: { select: { id: true }, orderBy: { id: 'asc' } },
+        questions: { select: { id: true, type: true }, orderBy: { id: 'asc' } },
         assessmentVersions: {
           orderBy: { id: 'asc' },
           include: {
@@ -2036,7 +2085,7 @@ export class AssessmentService {
       where: { id: assessment.id },
       include: {
         course: { select: { title: true } },
-        questions: { select: { id: true }, orderBy: { id: 'asc' } },
+        questions: { select: { id: true, type: true }, orderBy: { id: 'asc' } },
         assessmentVersions: {
           orderBy: { id: 'asc' },
           include: {

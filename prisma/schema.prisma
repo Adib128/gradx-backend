@@ -396,6 +396,8 @@ model Assessment {
   includeStudentInfoHeader                Boolean                   @default(false)
   studentIdLabel                          AssessmentStudentIdLabel  @default(STUDENT_ID)
   numberOfStudentIdDigits                 Int                       @default(9)
+  /// Corner for the student ID bubble grid on generated answer sheets
+  studentIdPosition                       String                    @default("TOP_LEFT")
   includeAssessmentInstructionsSection    Boolean                   @default(false)
   assessmentInstructions                  String?
   printCloCodeNextToEachQuestion          Boolean                   @default(false)
@@ -535,6 +537,8 @@ model CourseAnswerSheet {
   includeStudentInfoHeader Boolean              @default(true)
   studentInfoLabel         String?
   numberOfStudentIdDigits  Int                  @default(9)
+  /// Corner for the student ID bubble grid: TOP_LEFT | TOP_RIGHT | BOTTOM_LEFT | BOTTOM_RIGHT
+  studentIdPosition        String               @default("TOP_LEFT")
   includeKeyVersionSection Boolean              @default(true)
   numberOfKeyVersions      Int                  @default(3)
   keyVersionLetters        String               @default("ABCD")
