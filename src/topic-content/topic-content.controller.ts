@@ -37,6 +37,7 @@ export class TopicContentController {
   @Post(':topicId/generate')
   generate(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Param('topicId', ParseIntPipe) topicId: number,
     @Body() generateContentDto: GenerateContentDto,
   ) {
@@ -44,6 +45,7 @@ export class TopicContentController {
       tenantId,
       topicId,
       generateContentDto,
+      userId,
     );
   }
 

@@ -58,6 +58,15 @@ enum Language {
 enum UserRole {
   USER
   ADMIN
+  SUPER_ADMIN
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  EXPIRED
 }
 
 enum DifficultyDistribution {
@@ -106,17 +115,20 @@ enum CourseAnswerSheetAnswerType {
 }
 
 model Tenant {
-  id            Int            @id @default(autoincrement())
-  createdAt     DateTime       @default(now())
-  users         User[]
-  departements  Departement[]
-  classes       Class[]
-  courses       Course[]
-  topicContents TopicContent[]
-  questions     Question[]
-  assessments   Assessment[]
-  gradingScans  GradingScan[]
+  id             Int            @id @default(autoincrement())
+  createdAt      DateTime       @default(now())
+  users          User[]
+  departements   Departement[]
+  classes        Class[]
+  courses        Course[]
+  topicContents  TopicContent[]
+  questions      Question[]
+  assessments    Assessment[]
+  gradingScans   GradingScan[]
   courseAnswerSheets CourseAnswerSheet[]
+  subscriptions  Subscription[]
+  loginLogs      LoginLog[]
+  aiUsageLogs    AiUsageLog[]
 
   @@map("tenants")
 }
@@ -144,9 +156,13 @@ model User {
   lastLogin                 DateTime?
   tenant                    Tenant    @relation(fields: [tenantId], references: [id])
   gradingScans              GradingScan[]
+  loginLogs                 LoginLog[]
+  aiUsageLogs               AiUsageLog[]
+  subscriptions             Subscription[]
 
   @@index([email])
   @@index([googleId])
+  @@index([role])
   @@map("users")
 }
 
@@ -630,4 +646,102 @@ model University {
 
   @@index([sortOrder])
   @@map("universities")
+}
+
+/// Platform subscription plans (admin-managed).
+model Plan {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  nameEn          String
+  nameAr          String
+  descriptionEn   String?
+  descriptionAr   String?
+  priceMonthly    Decimal  @db.Decimal(10, 2)
+  currency        String   @default("SAR")
+  maxCourses      Int?
+  maxAssessments  Int?
+  maxAiRequests   Int?
+  features        Json     @default("[]")
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  subscriptions   Subscription[]
+
+  @@index([sortOrder])
+  @@index([isActive])
+  @@map("plans")
+}
+
+model Subscription {
+  id          Int                @id @default(autoincrement())
+  tenantId    Int
+  userId      Int?
+  planId      Int
+  status      SubscriptionStatus @default(ACTIVE)
+  startsAt    DateTime           @default(now())
+  endsAt      DateTime?
+  canceledAt  DateTime?
+  notes       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  plan        Plan               @relation(fields: [planId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([planId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model LoginLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  tenantId  Int?
+  email     String
+  ip        String?
+  userAgent String?
+  success   Boolean  @default(true)
+  reason    String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([tenantId, createdAt])
+  @@index([email])
+  @@index([createdAt])
+  @@map("login_logs")
+}
+
+/// Captures OpenRouter / LLM request & response metadata for admin audit.
+model AiUsageLog {
+  id               Int       @id @default(autoincrement())
+  userId           Int?
+  tenantId         Int?
+  purpose          String    @default("other")
+  model            String?
+  requestPreview   String?   @db.Text
+  responsePreview  String?   @db.Text
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  success          Boolean   @default(true)
+  errorMessage     String?   @db.Text
+  durationMs       Int?
+  /// When the LLM request was sent.
+  startedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  user             User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  tenant           Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([tenantId, createdAt])
+  @@index([purpose])
+  @@index([createdAt])
+  @@index([success])
+  @@index([startedAt])
+  @@map("ai_usage_logs")
 }

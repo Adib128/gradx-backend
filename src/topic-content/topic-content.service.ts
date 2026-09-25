@@ -219,11 +219,13 @@ export class TopicContentService {
     tenantId: number,
     topicId: number,
     generationContentDto: GenerateContentDto,
+    userId?: number,
   ) {
     const contentGeneration = await this.buildGenerationJob(
       tenantId,
       topicId,
       generationContentDto,
+      userId,
     );
 
     const job = await this.contentQueue.add(
@@ -257,6 +259,7 @@ export class TopicContentService {
     tenantId: number,
     topicId: number,
     generationContentDto: GenerateContentDto,
+    userId?: number,
   ): Promise<ContentGenerationJob> {
     const topic = await this.prisma.topic.findFirst({
       where: { id: topicId, course: { tenantId } },
@@ -363,6 +366,7 @@ export class TopicContentService {
     return {
       ...(generationContentDto as unknown as ContentGenerationJob),
       tenantId,
+      userId,
       topicId: topic.id,
       topicNumber: topic.topicNumber,
       contentId: topic.id,

@@ -163,6 +163,7 @@ export class AssessmentService {
     courseId: number,
     assessmentId: number,
     dto: GenerateAssessmentDto,
+    userId?: number,
   ) {
     const targetAssessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId, tenantId, courseId },
@@ -176,6 +177,7 @@ export class AssessmentService {
       tenantId,
       courseId,
       assessmentId,
+      userId,
       dto,
     };
 
@@ -781,17 +783,21 @@ export class AssessmentService {
    */
   private async callAiModel(promptPayload: any): Promise<string> {
     try {
-      const response = await createChatCompletion(this.client, {
-        model: this.model,
-        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-        messages: [
-          {
-            role: 'user',
-            content: GENERATE_COURSE_PROMPT(promptPayload),
-          },
-        ],
-        response_format: { type: 'json_object' },
-      });
+      const response = await createChatCompletion(
+        this.client,
+        {
+          model: this.model,
+          max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: GENERATE_COURSE_PROMPT(promptPayload),
+            },
+          ],
+          response_format: { type: 'json_object' },
+        },
+        { purpose: 'assessment_generate_batch' },
+      );
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
@@ -816,17 +822,21 @@ export class AssessmentService {
     existingQuestionTexts: string[];
   }): Promise<string> {
     try {
-      const response = await createChatCompletion(this.client, {
-        model: this.model,
-        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-        messages: [
-          {
-            role: 'user',
-            content: GENERATE_SINGLE_QUESTION_PROMPT(payload),
-          },
-        ],
-        response_format: { type: 'json_object' },
-      });
+      const response = await createChatCompletion(
+        this.client,
+        {
+          model: this.model,
+          max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: GENERATE_SINGLE_QUESTION_PROMPT(payload),
+            },
+          ],
+          response_format: { type: 'json_object' },
+        },
+        { purpose: 'assessment_generate_question' },
+      );
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {

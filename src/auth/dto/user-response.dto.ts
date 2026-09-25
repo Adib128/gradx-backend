@@ -8,6 +8,9 @@ export const UserResponseSchema = z.object({
   lastName: z.string().nullable(),
   phone: z.string().nullable(),
   tenantId: z.number(),
+  role: z.enum(['USER', 'ADMIN', 'SUPER_ADMIN']),
+  isActive: z.boolean().optional(),
+  lastLogin: z.coerce.date().nullable().optional(),
 });
 
 export class UserResponseDto extends createZodDto(UserResponseSchema) {}

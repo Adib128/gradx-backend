@@ -4,6 +4,7 @@ import { Job } from 'bullmq';
 import { ContentGenerationJob } from '../interfaces/content-generation-job.interface';
 import { TopicContentService } from '../topic-content.service';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 
 @Processor('topic-content-generation', {
   lockDuration: 15 * 60 * 1000,
@@ -23,122 +24,137 @@ export class ContentGeneratonProcessor extends WorkerHost {
   }
 
   async process(job: Job<ContentGenerationJob>) {
-    try {
-      this.assertNotCancelled(job);
+    const purposeByType: Record<string, string> = {
+      LECTURE: 'topic_lecture',
+      SLIDES: 'topic_slides',
+      LAB: 'topic_lab',
+      QUIZ: 'topic_quiz',
+    };
 
-      if (job.data.type === 'LECTURE') {
-        const result =
-          await this.topicContentAiService.generateLectureStreaming(
-            job.data,
-            async (progress) => {
-              this.assertNotCancelled(job);
-              await job.updateProgress(progress);
-              await this.topicContentService.savePartialContent(
-                job.data.topicId,
-                job.data.courseId,
-                job.data.tenantId,
-                job.data.type,
-                progress.partial,
+    return runWithAiContext(
+      {
+        userId: job.data.userId,
+        tenantId: job.data.tenantId,
+        purpose: purposeByType[job.data.type] || 'topic_content',
+      },
+      async () => {
+        try {
+          this.assertNotCancelled(job);
+
+          if (job.data.type === 'LECTURE') {
+            const result =
+              await this.topicContentAiService.generateLectureStreaming(
+                job.data,
+                async (progress) => {
+                  this.assertNotCancelled(job);
+                  await job.updateProgress(progress);
+                  await this.topicContentService.savePartialContent(
+                    job.data.topicId,
+                    job.data.courseId,
+                    job.data.tenantId,
+                    job.data.type,
+                    progress.partial,
+                  );
+                },
               );
-            },
-          );
 
-        this.assertNotCancelled(job);
-        await this.topicContentService.saveContent(
-          job.data.topicId,
-          job.data.courseId,
-          job.data.tenantId,
-          job.data.type,
-          result,
-        );
-        return result;
-      }
-
-      if (job.data.type === 'SLIDES') {
-        // In-system AI slides (lecture → deck JSON → pagination). No external PPT API.
-        const result = await this.topicContentAiService.generateSlides(
-          job.data,
-          async (progress) => {
             this.assertNotCancelled(job);
-            await job.updateProgress({
-              stage: progress.stage,
-              percent: progress.percent,
-              message: progress.message,
-              partial: progress.partial,
-            });
-            await this.topicContentService.savePartialContent(
+            await this.topicContentService.saveContent(
+              job.data.topicId,
+              job.data.courseId,
+              job.data.tenantId,
+              job.data.type,
+              result,
+            );
+            return result;
+          }
+
+          if (job.data.type === 'SLIDES') {
+            const result = await this.topicContentAiService.generateSlides(
+              job.data,
+              async (progress) => {
+                this.assertNotCancelled(job);
+                await job.updateProgress({
+                  stage: progress.stage,
+                  percent: progress.percent,
+                  message: progress.message,
+                  partial: progress.partial,
+                });
+                await this.topicContentService.savePartialContent(
+                  job.data.topicId,
+                  job.data.courseId,
+                  job.data.tenantId,
+                  'SLIDES',
+                  progress.partial,
+                );
+              },
+            );
+
+            this.assertNotCancelled(job);
+            await this.topicContentService.saveContent(
               job.data.topicId,
               job.data.courseId,
               job.data.tenantId,
               'SLIDES',
-              progress.partial,
+              result,
             );
-          },
-        );
+            return result;
+          }
 
-        this.assertNotCancelled(job);
-        await this.topicContentService.saveContent(
-          job.data.topicId,
-          job.data.courseId,
-          job.data.tenantId,
-          'SLIDES',
-          result,
-        );
-        return result;
-      }
+          if (job.data.type === 'LAB') {
+            const result = await this.topicContentAiService.generateLabStreaming(
+              job.data,
+              async (progress) => {
+                this.assertNotCancelled(job);
+                await job.updateProgress(progress);
+                await this.topicContentService.savePartialContent(
+                  job.data.topicId,
+                  job.data.courseId,
+                  job.data.tenantId,
+                  'LAB',
+                  progress.partial,
+                );
+              },
+            );
 
-      if (job.data.type === 'LAB') {
-        const result = await this.topicContentAiService.generateLabStreaming(
-          job.data,
-          async (progress) => {
             this.assertNotCancelled(job);
-            await job.updateProgress(progress);
-            await this.topicContentService.savePartialContent(
+            await this.topicContentService.saveContent(
               job.data.topicId,
               job.data.courseId,
               job.data.tenantId,
               'LAB',
-              progress.partial,
+              result,
+              'ACCEPTED',
             );
-          },
-        );
+            return result;
+          }
 
-        this.assertNotCancelled(job);
-        await this.topicContentService.saveContent(
-          job.data.topicId,
-          job.data.courseId,
-          job.data.tenantId,
-          'LAB',
-          result,
-          'ACCEPTED',
-        );
-        return result;
-      }
-
-      this.assertNotCancelled(job);
-      const result = await this.topicContentAiService.generate(
-        job.data.type,
-        job.data,
-      );
-      this.assertNotCancelled(job);
-      await this.topicContentService.saveContent(
-        job.data.topicId,
-        job.data.courseId,
-        job.data.tenantId,
-        job.data.type,
-        result,
-      );
-      return result;
-    } catch (error) {
-      if (
-        this.topicContentService.isGenerationCancelled(job.id) ||
-        String((error as Error)?.message || '')
-          .toUpperCase()
-          .includes('CANCELLED')
-      ) {
-        throw new Error(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED);
-      }
-      throw error;
-    }
+          this.assertNotCancelled(job);
+          const result = await this.topicContentAiService.generate(
+            job.data.type,
+            job.data,
+          );
+          this.assertNotCancelled(job);
+          await this.topicContentService.saveContent(
+            job.data.topicId,
+            job.data.courseId,
+            job.data.tenantId,
+            job.data.type,
+            result,
+          );
+          return result;
+        } catch (error) {
+          if (
+            this.topicContentService.isGenerationCancelled(job.id) ||
+            String((error as Error)?.message || '')
+              .toUpperCase()
+              .includes('CANCELLED')
+          ) {
+            throw new Error(ErrorMessageKey.TOPIC_CONTENT_GENERATION_CANCELLED);
+          }
+          throw error;
+        }
+      },
+    );
   }
 }

@@ -15,5 +15,6 @@ export type AssessmentGenerationJob = {
   tenantId: number;
   courseId: number;
   assessmentId: number;
+  userId?: number;
   dto: GenerateAssessmentDto;
 };

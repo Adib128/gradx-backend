@@ -5,6 +5,7 @@ import {
   AssessmentGenerationJob,
   AssessmentGenerationProgress,
 } from '../interfaces/assessment-generation-job.interface';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 
 @Processor('assessment-generation', {
   lockDuration: 15 * 60 * 1000,
@@ -17,11 +18,19 @@ export class AssessmentGenerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<AssessmentGenerationJob>) {
-    return this.assessmentService.runGenerationJob(
-      job.data,
-      async (progress: AssessmentGenerationProgress) => {
-        await job.updateProgress(progress);
+    return runWithAiContext(
+      {
+        userId: job.data.userId,
+        tenantId: job.data.tenantId,
+        purpose: 'assessment_generate',
       },
+      () =>
+        this.assessmentService.runGenerationJob(
+          job.data,
+          async (progress: AssessmentGenerationProgress) => {
+            await job.updateProgress(progress);
+          },
+        ),
     );
   }
 }

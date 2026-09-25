@@ -107,7 +107,9 @@ export class CourseAIService {
         ? `${documentText.slice(0, MAX_COURSE_SPEC_TEXT_CHARS)}\n\n[…truncated…]`
         : documentText;
 
-    const response = await createChatCompletion(this.client, {
+    const response = await createChatCompletion(
+      this.client,
+      {
       model: this.model,
       max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
       messages: [
@@ -121,34 +123,40 @@ ${truncated}`,
         },
       ],
       response_format: { type: 'json_object' },
-    });
+    },
+      { purpose: 'course_extract_text' },
+    );
 
     const text = response.choices[0]?.message?.content ?? '';
     return this.parseResponse(text);
   }
 
   private async extractFromPdfVisionBase64(base64: string): Promise<any> {
-    const response = await createChatCompletion(this.client, {
-      model: this.model,
-      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:application/pdf;base64,${base64}`,
+    const response = await createChatCompletion(
+      this.client,
+      {
+        model: this.model,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:application/pdf;base64,${base64}`,
+                },
               },
-            },
-            {
-              type: 'text',
-              text: EXTRACT_COURSE_PROMPT,
-            },
-          ],
-        },
-      ],
-    });
+              {
+                type: 'text',
+                text: EXTRACT_COURSE_PROMPT,
+              },
+            ],
+          },
+        ],
+      },
+      { purpose: 'course_extract_vision' },
+    );
 
     const text = response.choices[0]?.message?.content ?? '';
     return this.parseResponse(text);
@@ -287,7 +295,9 @@ ${truncated}`,
     const fallback = this.buildCloAnalysisFallback(payload);
 
     try {
-      const response = await createChatCompletion(this.client, {
+      const response = await createChatCompletion(
+      this.client,
+      {
         model: this.model,
         max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
@@ -300,7 +310,9 @@ ${JSON.stringify(payload, null, 2)}`,
           },
         ],
         response_format: { type: 'json_object' },
-      });
+      },
+      { purpose: 'clo_analysis' },
+    );
 
       const text = response.choices[0]?.message?.content ?? '';
       const parsed = this.parseResponse(text) as {
@@ -353,7 +365,9 @@ ${JSON.stringify(payload, null, 2)}`,
     const fallback = this.buildAllCloAnalysisFallback(payload);
 
     try {
-      const response = await createChatCompletion(this.client, {
+      const response = await createChatCompletion(
+      this.client,
+      {
         model: this.model,
         max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
@@ -366,7 +380,9 @@ ${JSON.stringify(payload, null, 2)}`,
           },
         ],
         response_format: { type: 'json_object' },
-      });
+      },
+      { purpose: 'clo_analysis_all' },
+    );
 
       const text = response.choices[0]?.message?.content ?? '';
       const parsed = this.parseResponse(text) as {
@@ -611,7 +627,9 @@ ${JSON.stringify(payload, null, 2)}`,
         .slice(0, 12)
         .join('; ') || '(none provided)';
 
-    const response = await createChatCompletion(this.client, {
+    const response = await createChatCompletion(
+      this.client,
+      {
       model: this.model,
       max_tokens: 180,
       messages: [
@@ -638,7 +656,9 @@ Reply with JSON only: {"isRelevant": true|false, "reason": "brief reason when fa
         },
       ],
       response_format: { type: 'json_object' },
-    });
+    },
+      { purpose: 'reference_relevance' },
+    );
 
     const text = response.choices[0]?.message?.content ?? '';
     let parsed: { isRelevant?: boolean; reason?: string } = {};

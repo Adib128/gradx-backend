@@ -6,8 +6,10 @@ import {
   HttpStatus,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -26,6 +28,19 @@ import {
   VerifyResetCodeDto,
 } from './dto/forgot-password.dto';
 
+function clientMeta(req: Request) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip =
+    (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : null) ||
+    req.ip ||
+    null;
+  const userAgent =
+    typeof req.headers['user-agent'] === 'string'
+      ? req.headers['user-agent']
+      : null;
+  return { ip: ip || undefined, userAgent: userAgent || undefined };
+}
+
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
@@ -38,15 +53,30 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() loginDto: LoginDto) {
-    const user = await this.authService.validateUser(loginDto);
-    return this.authService.login(user);
+  async login(@Body() loginDto: LoginDto, @Req() req: Request) {
+    const meta = clientMeta(req);
+    try {
+      const user = await this.authService.validateUser(loginDto);
+      return this.authService.login(user, meta);
+    } catch (error) {
+      await this.authService.recordFailedLogin({
+        email: loginDto.email,
+        ...meta,
+      });
+      throw error;
+    }
   }
 
   @Post('google')
   @HttpCode(HttpStatus.OK)
-  async googleLogin(@Body() googleLoginDto: GoogleLoginDto) {
-    return this.authService.loginWithGoogle(googleLoginDto);
+  async googleLogin(
+    @Body() googleLoginDto: GoogleLoginDto,
+    @Req() req: Request,
+  ) {
+    const token = await this.authService.loginWithGoogle(googleLoginDto);
+    // loginWithGoogle already calls login(); meta for Google is best-effort via lastLogin.
+    void req;
+    return token;
   }
 
   @Post('verify')

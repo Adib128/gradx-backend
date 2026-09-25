@@ -40,6 +40,7 @@ export class AssessmentController {
   @Post(':courseId/generate/:assessmentId')
   async generate(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Param('courseId', ParseIntPipe) courseId: number,
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @Body() generateAssessmentDto: GenerateAssessmentDto,
@@ -49,6 +50,7 @@ export class AssessmentController {
       courseId,
       assessmentId,
       generateAssessmentDto,
+      userId,
     );
   }
 

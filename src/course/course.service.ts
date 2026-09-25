@@ -24,6 +24,7 @@ import {
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { CourseAIService } from './course-ai.service';
 import type { Response } from 'express';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { normalizeReferencesForStorage } from './utils/normalize-course-confirm.util';
 import {
   extractReferenceDocumentText,
@@ -388,7 +389,10 @@ export class CourseService {
     return paginate(courses, total, page, limit);
   }
 
-  async extractFromPdfFile(file: Express.Multer.File) {
+  async extractFromPdfFile(
+    file: Express.Multer.File,
+    meta?: { userId?: number; tenantId?: number },
+  ) {
     if (!file?.buffer) {
       throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_FILE_REQUIRED);
     }
@@ -402,6 +406,8 @@ export class CourseService {
           base64,
           mimeType: file.mimetype,
           filename: file.originalname,
+          userId: meta?.userId,
+          tenantId: meta?.tenantId,
         },
         {
           attempts: 3,
@@ -427,6 +433,7 @@ export class CourseService {
   async streamExtractFromPdfFile(
     file: Express.Multer.File,
     res: Response,
+    meta?: { userId?: number; tenantId?: number },
   ): Promise<void> {
     if (!file?.buffer) {
       throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_FILE_REQUIRED);
@@ -489,10 +496,18 @@ export class CourseService {
 
       let result: Record<string, unknown>;
       try {
-        result = (await this.courseAIService.extractFromBase64(
-          base64,
-          file.mimetype,
-          file.originalname,
+        result = (await runWithAiContext(
+          {
+            userId: meta?.userId,
+            tenantId: meta?.tenantId,
+            purpose: 'course_extract',
+          },
+          () =>
+            this.courseAIService.extractFromBase64(
+              base64,
+              file.mimetype,
+              file.originalname,
+            ),
         )) as Record<string, unknown>;
       } finally {
         clearInterval(heartbeat);
@@ -589,6 +604,7 @@ export class CourseService {
       courseCode?: string;
       courseDescription?: string;
       topicTitles?: string[];
+      userId?: number;
     },
   ) {
     if (!file?.buffer?.length) {
@@ -629,15 +645,23 @@ export class CourseService {
       String(extracted.extractedText || '').slice(0, 4000);
 
     if (excerpt.trim()) {
-      await this.courseAIService.validateReferenceDocumentRelevance({
-        courseTitle: courseTitle || '(not specified)',
-        courseCode: String(context?.courseCode || '').trim() || undefined,
-        courseDescription:
-          String(context?.courseDescription || '').trim() || undefined,
-        topicTitles: topicTitles.length ? topicTitles : undefined,
-        referenceTitle: extracted.fileName,
-        documentExcerpt: excerpt,
-      });
+      await runWithAiContext(
+        {
+          userId: context?.userId,
+          tenantId,
+          purpose: 'reference_relevance',
+        },
+        () =>
+          this.courseAIService.validateReferenceDocumentRelevance({
+            courseTitle: courseTitle || '(not specified)',
+            courseCode: String(context?.courseCode || '').trim() || undefined,
+            courseDescription:
+              String(context?.courseDescription || '').trim() || undefined,
+            topicTitles: topicTitles.length ? topicTitles : undefined,
+            referenceTitle: extracted.fileName,
+            documentExcerpt: excerpt,
+          }),
+      );
     }
 
     const safeTenant = requireTenantId(tenantId);
@@ -690,6 +714,7 @@ export class CourseService {
       courseCode?: string;
       courseDescription?: string;
       topicTitles?: string[];
+      userId?: number;
     },
   ): Promise<void> {
     res.status(200);
@@ -774,15 +799,23 @@ export class CourseService {
         String(extracted.extractedText || '').slice(0, 4000);
 
       if (excerpt.trim()) {
-        await this.courseAIService.validateReferenceDocumentRelevance({
-          courseTitle: courseTitle || '(not specified)',
-          courseCode: String(context?.courseCode || '').trim() || undefined,
-          courseDescription:
-            String(context?.courseDescription || '').trim() || undefined,
-          topicTitles: topicTitles.length ? topicTitles : undefined,
-          referenceTitle: extracted.fileName,
-          documentExcerpt: excerpt,
-        });
+        await runWithAiContext(
+          {
+            userId: context?.userId,
+            tenantId,
+            purpose: 'reference_relevance',
+          },
+          () =>
+            this.courseAIService.validateReferenceDocumentRelevance({
+              courseTitle: courseTitle || '(not specified)',
+              courseCode: String(context?.courseCode || '').trim() || undefined,
+              courseDescription:
+                String(context?.courseDescription || '').trim() || undefined,
+              topicTitles: topicTitles.length ? topicTitles : undefined,
+              referenceTitle: extracted.fileName,
+              documentExcerpt: excerpt,
+            }),
+        );
       }
 
       if (closed) return;

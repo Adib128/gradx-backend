@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { CourseAIService } from './course-ai.service';
 import { Prisma } from 'generated/prisma/client';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 
 const DEFAULT_PASS_RATE_PERCENT = 70;
 
@@ -72,7 +73,7 @@ export class CourseReportsService {
   async getOrGenerateAllCloAnalysis(
     tenantId: number,
     courseId: number,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; userId?: number } = {},
   ) {
     const report = await this.getCloAchievementReport(tenantId, courseId);
     if (!report.rows.length) {
@@ -142,10 +143,18 @@ export class CourseReportsService {
       };
     }
 
-    const generated = await this.courseAIService.analyzeAllCloAchievements({
-      passRatePercent: report.thresholdPercent,
-      clos: closPayload,
-    });
+    const generated = await runWithAiContext(
+      {
+        userId: options.userId,
+        tenantId,
+        purpose: 'clo_analysis_all',
+      },
+      () =>
+        this.courseAIService.analyzeAllCloAchievements({
+          passRatePercent: report.thresholdPercent,
+          clos: closPayload,
+        }),
+    );
 
     const result = {
       fingerprint,

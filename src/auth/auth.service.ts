@@ -176,15 +176,64 @@ export class AuthService {
     };
   }
 
-  async login(user: User) {
+  async login(
+    user: User,
+    meta?: { ip?: string; userAgent?: string; success?: boolean; reason?: string },
+  ) {
     const payload = {
       sub: user.id,
       email: user.email,
       tid: user.tenantId,
+      role: user.role,
     };
+
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { lastLogin: now },
+      }),
+      this.prisma.loginLog.create({
+        data: {
+          userId: user.id,
+          tenantId: user.tenantId,
+          email: user.email,
+          ip: meta?.ip || null,
+          userAgent: meta?.userAgent || null,
+          success: meta?.success ?? true,
+          reason: meta?.reason || null,
+        },
+      }),
+    ]);
+
     return {
       access_token: await this.jwtService.signAsync(payload),
     };
+  }
+
+  async recordFailedLogin(input: {
+    email: string;
+    ip?: string;
+    userAgent?: string;
+    reason?: string;
+    userId?: number;
+    tenantId?: number;
+  }) {
+    try {
+      await this.prisma.loginLog.create({
+        data: {
+          email: input.email,
+          userId: input.userId ?? null,
+          tenantId: input.tenantId ?? null,
+          ip: input.ip || null,
+          userAgent: input.userAgent || null,
+          success: false,
+          reason: input.reason || 'INVALID_CREDENTIALS',
+        },
+      });
+    } catch {
+      // Never block auth on log write failures.
+    }
   }
 
   async validateUser(loginDto: LoginDto): Promise<User> {

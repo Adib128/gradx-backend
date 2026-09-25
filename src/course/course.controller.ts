@@ -30,6 +30,7 @@ import { CreateTopicDto } from './dto/create-topic.dto';
 import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 
 @UseGuards(JwtAuthGuard)
 @Controller('courses')
@@ -167,6 +168,7 @@ export class CourseController {
   @Post(':id/reports/clo-analysis')
   async analyzeCloAchievement(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { cloId: number },
   ) {
@@ -180,44 +182,52 @@ export class CourseController {
       row.assessmentSources ?? [],
     );
 
-    return this.courseAIService.analyzeCloAchievement({
-      code: row.code,
-      description: row.description,
-      achievementRate: row.achievementRate,
-      thresholdScore: row.thresholdScore,
-      maxScore: row.maxScore,
-      studentsMet: row.studentsMet,
-      totalStudents: row.totalStudents,
-      avgScore: row.avgScore,
-      avgScoreLabel: row.avgScoreLabel,
-      achieved: row.achieved,
-      statusLabel: row.statusLabel,
-      passRatePercent: report.thresholdPercent,
-      hasGradingData: row.hasGradingData,
-      assessmentSources: row.assessmentSources ?? [],
-      assessmentSourcesSummary,
-    });
+    return runWithAiContext(
+      { userId, tenantId, purpose: 'clo_analysis' },
+      () =>
+        this.courseAIService.analyzeCloAchievement({
+          code: row.code,
+          description: row.description,
+          achievementRate: row.achievementRate,
+          thresholdScore: row.thresholdScore,
+          maxScore: row.maxScore,
+          studentsMet: row.studentsMet,
+          totalStudents: row.totalStudents,
+          avgScore: row.avgScore,
+          avgScoreLabel: row.avgScoreLabel,
+          achieved: row.achieved,
+          statusLabel: row.statusLabel,
+          passRatePercent: report.thresholdPercent,
+          hasGradingData: row.hasGradingData,
+          assessmentSources: row.assessmentSources ?? [],
+          assessmentSourcesSummary,
+        }),
+    );
   }
 
   @Get(':id/reports/clo-analysis-all')
   getAllCloAchievements(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('force') force?: string,
   ) {
     return this.courseReportsService.getOrGenerateAllCloAnalysis(tenantId, id, {
       force: force === '1' || force === 'true',
+      userId,
     });
   }
 
   @Post(':id/reports/clo-analysis-all')
   analyzeAllCloAchievements(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('force') force?: string,
   ) {
     return this.courseReportsService.getOrGenerateAllCloAnalysis(tenantId, id, {
       force: force === '1' || force === 'true',
+      userId,
     });
   }
 
@@ -301,15 +311,24 @@ export class CourseController {
   streamExtractFromPdf(
     @UploadedFile() file: Express.Multer.File,
     @Res() res: Response,
+    @GetUser('userId') userId?: number,
+    @GetUser('tenantId') tenantId?: number,
   ) {
-    return this.courseService.streamExtractFromPdfFile(file, res);
+    return this.courseService.streamExtractFromPdfFile(file, res, {
+      userId,
+      tenantId,
+    });
   }
 
   @Post('extract')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
-  extractFromPdf(@UploadedFile() file: Express.Multer.File) {
-    return this.courseService.extractFromPdfFile(file);
+  extractFromPdf(
+    @UploadedFile() file: Express.Multer.File,
+    @GetUser('userId') userId?: number,
+    @GetUser('tenantId') tenantId?: number,
+  ) {
+    return this.courseService.extractFromPdfFile(file, { userId, tenantId });
     // → { jobId: "1", status: "processing" }
   }
 
@@ -324,6 +343,7 @@ export class CourseController {
   @UseInterceptors(FileInterceptor('file'))
   extractReferenceDocument(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @UploadedFile() file: Express.Multer.File,
     @Body('courseTitle') courseTitle?: string,
     @Body('courseCode') courseCode?: string,
@@ -352,6 +372,7 @@ export class CourseController {
       courseCode,
       courseDescription,
       topicTitles: parsedTopicTitles,
+      userId,
     });
   }
 
@@ -360,6 +381,7 @@ export class CourseController {
   @UseInterceptors(FileInterceptor('file'))
   streamExtractReferenceDocument(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @UploadedFile() file: Express.Multer.File,
     @Res() res: Response,
     @Body('courseTitle') courseTitle?: string,
@@ -393,6 +415,7 @@ export class CourseController {
         courseCode,
         courseDescription,
         topicTitles: parsedTopicTitles,
+        userId,
       },
     );
   }

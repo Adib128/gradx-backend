@@ -96,6 +96,7 @@ export type HumanReviewCheck =
 
 export interface ContentGenerationJob {
   tenantId: number;
+  userId?: number;
   topicId: number;
   contentId: number;
   type: GeneratedContentType;

@@ -1132,15 +1132,19 @@ export class TopicContentAiService {
           ] as OpenAI.Chat.Completions.ChatCompletionContentPart[])
         : `${prompt}${figureNotes}`;
 
-    const response = await createChatCompletion(this.client, {
-      model: this.model,
-      temperature: 0.35,
-      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userContent },
-      ],
-    });
+    const response = await createChatCompletion(
+      this.client,
+      {
+        model: this.model,
+        temperature: 0.35,
+        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userContent },
+        ],
+      },
+      { purpose: 'topic_content' },
+    );
 
     const text = response.choices[0]?.message?.content ?? '';
     return this.parseResponse(text);
