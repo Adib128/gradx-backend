@@ -255,31 +255,40 @@ def preprocess(cv2, np, image):
     return binary
 
 
+def ink_darkness_map(cv2, np, image):
+    """
+    Per-pixel ink darkness in [0, 1] relative to the surrounding paper.
+
+    Uses the darkest colour channel so coloured ink (red, pink, blue pen)
+    counts like pencil, and divides by a local paper estimate so shadows and
+    screen glare do not read as marks. A global binary threshold cannot do
+    this: mid-tone ink (pink, light pencil) falls on the "paper" side of Otsu.
+    """
+    darkest = image.min(axis=2) if image.ndim == 3 else image
+    darkest = darkest.astype(np.float32)
+    k = max(15, int(image.shape[1] * 0.06)) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+    paper = cv2.morphologyEx(darkest, cv2.MORPH_CLOSE, kernel)
+    paper = cv2.GaussianBlur(paper, (k, k), 0)
+    return np.clip((paper - darkest) / np.maximum(paper, 1.0), 0.0, 1.0)
+
+
+def mean_in_disc(values, np, cx, cy, radius_px):
+    """Mean of `values` inside a disc (0 when the disc is off the image)."""
+    h, w = values.shape[:2]
+    x0, y0 = max(0, cx - radius_px), max(0, cy - radius_px)
+    x1, y1 = min(w, cx + radius_px + 1), min(h, cy + radius_px + 1)
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    disc = (xx - cx) ** 2 + (yy - cy) ** 2 <= radius_px ** 2
+    patch = values[y0:y1, x0:x1][disc]
+    return float(patch.mean()) if patch.size else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Bubble analysis
 # ---------------------------------------------------------------------------
-
-def sample_bubble(binary, np, bx, by, radius_px):
-    """Return fill ratio (dark pixels / total) for a circular bubble ROI."""
-    h, w = binary.shape
-    x0 = max(0, bx - radius_px)
-    y0 = max(0, by - radius_px)
-    x1 = min(w, bx + radius_px + 1)
-    y1 = min(h, by + radius_px + 1)
-
-    r2 = radius_px ** 2
-    dark = 0
-    total = 0
-    for py in range(y0, y1):
-        dy2 = (py - by) ** 2
-        for px in range(x0, x1):
-            if (px - bx) ** 2 + dy2 <= r2:
-                total += 1
-                if binary[py, px] > 0:
-                    dark += 1
-
-    return dark / max(1, total)
-
 
 def sample_square(binary, x, y, half):
     """Return fill ratio (dark pixels / total) for a square ROI."""
@@ -351,21 +360,31 @@ def decode_version_code(binary, config):
     return (value if value > 0 else None), debug
 
 
-def analyze_answer_grid(binary, np, config):
-    h, w = binary.shape
+# Darkness above the empty-bubble baseline that counts as a fully filled
+# bubble (pencil or pen on paper typically reaches 0.4-0.6).
+FULL_INK_DARKNESS = 0.4
+
+
+def analyze_answer_grid(darkness, np, config):
+    """
+    Read every answer row from the ink-darkness map.
+
+    A bubble's fill is how much darker its interior is than an unmarked
+    bubble on the same sheet (the printed letter inside every bubble sets
+    that baseline), scaled so FULL_INK_DARKNESS reads as 1.0.
+    """
+    h, w = darkness.shape
     grid = config.get("answerGrid", DEFAULT_CONFIG["answerGrid"])
     options = grid.get("options", ["A", "B", "C", "D", "E"])
     x_step = grid.get("bubbleXStep", 0.03254)
     y_step = grid.get("rowYStep", 0.03676)
     b_radius_norm = grid.get("bubbleRadius", 0.01302)
-    fill_thresh = grid.get("fillThreshold", 0.18)
+    fill_thresh = grid.get("fillThreshold", 0.3)
     diff_factor = grid.get("darknessDifferential", 1.6)
 
     radius_px = max(4, int(b_radius_norm * w))
 
-    answers = {}
-    details = []
-
+    rows = []
     for col in grid.get("columns", []):
         start_q = col["startQuestion"]
         count = col["count"]
@@ -383,47 +402,65 @@ def analyze_answer_grid(binary, np, config):
             row_y_px = int((row_y_start + row_i * col_y_step) * h)
             row_options = row_labels[row_i] if row_i < len(row_labels) and row_labels[row_i] else col_options
 
-            fills = []
-            for opt_i in range(len(row_options)):
-                bx = int((bubble_ax + opt_i * col_x_step) * w)
-                by = row_y_px
-                fill = sample_bubble(binary, np, bx, by, radius_px)
-                fills.append(fill)
-
-            max_fill = max(fills) if fills else 0.0
-
-            if max_fill < fill_thresh:
-                answers[str(q_num)] = ""
-                details.append({
-                    "question": q_num,
-                    "detected": None,
-                    "status": "blank",
-                    "fills": {opt: round(fills[i], 3) for i, opt in enumerate(row_options)},
-                })
-                continue
-
-            best_idx = fills.index(max_fill)
-
-            # Multiple-answer check: any other bubble within (max/diff_factor)
-            heavy = [
-                i for i, f in enumerate(fills)
-                if i != best_idx
-                and f >= fill_thresh
-                and f >= max_fill / diff_factor
+            raw = [
+                mean_in_disc(
+                    darkness, np,
+                    int((bubble_ax + opt_i * col_x_step) * w), row_y_px, radius_px,
+                )
+                for opt_i in range(len(row_options))
             ]
+            rows.append((q_num, row_options, raw))
 
-            detected = row_options[best_idx]
-            status = "multiple" if heavy else "answered"
+    # Unmarked bubbles dominate the lower quartile (each row has at most one
+    # intended mark and at least two options).
+    all_raw = sorted(v for _, _, raw in rows for v in raw)
+    baseline = all_raw[len(all_raw) // 4] if all_raw else 0.0
 
-            answers[str(q_num)] = detected
+    answers = {}
+    details = []
+    for q_num, row_options, raw in rows:
+        fills = [
+            min(1.0, max(0.0, (v - baseline) / FULL_INK_DARKNESS)) for v in raw
+        ]
+        max_fill = max(fills) if fills else 0.0
+        # List keeps the printed option order (JSON objects may be re-sorted).
+        fill_info = {
+            "fills": {opt: round(fills[i], 3) for i, opt in enumerate(row_options)},
+            "options": list(row_options),
+        }
+
+        if max_fill < fill_thresh:
+            answers[str(q_num)] = ""
             details.append({
                 "question": q_num,
-                "detected": detected,
-                "status": status,
-                "fills": {opt: round(fills[i], 3) for i, opt in enumerate(row_options)},
+                "detected": None,
+                "status": "blank",
+                **fill_info,
             })
+            continue
 
-    return answers, details
+        best_idx = fills.index(max_fill)
+
+        # Multiple-answer check: any other bubble within (max/diff_factor)
+        heavy = [
+            i for i, f in enumerate(fills)
+            if i != best_idx
+            and f >= fill_thresh
+            and f >= max_fill / diff_factor
+        ]
+
+        detected = row_options[best_idx]
+        status = "multiple" if heavy else "answered"
+
+        answers[str(q_num)] = detected
+        details.append({
+            "question": q_num,
+            "detected": detected,
+            "status": status,
+            **fill_info,
+        })
+
+    return answers, details, {"baseline": round(baseline, 3)}
 
 
 # ---------------------------------------------------------------------------
@@ -690,14 +727,16 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
 
     # Phase 2: Preprocessing
     binary = preprocess(cv2, np, warped)
+    darkness = ink_darkness_map(cv2, np, warped)
 
     # Phase 3: Bubble analysis
-    answers, details = analyze_answer_grid(binary, np, config)
+    answers, details, answer_debug = analyze_answer_grid(darkness, np, config)
 
-    # Phase 4: Student ID detection (uses grayscale for relative-darkness approach)
-    gray_warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY) if len(warped.shape) == 3 else warped
+    # Phase 4: Student ID detection. Paper-normalised ink image (paper = 255)
+    # so coloured ink and uneven lighting read like pencil on white.
+    ink_gray = ((1.0 - darkness) * 255.0).astype(np.uint8)
     num_digits = int(config.get("numIdDigits", 5))
-    raw_student_id, sid_debug = detect_student_id(gray_warped, np, config, num_digits)
+    raw_student_id, sid_debug = detect_student_id(ink_gray, np, config, num_digits)
     # Return null only when every digit is blank; partial IDs are still useful
     detected_student_id = None if re.fullmatch(r'_+', raw_student_id) else (raw_student_id or None)
 
@@ -727,6 +766,7 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
             "anchors": anchor_debug,
             "studentIdDebug": sid_debug,
             "versionCode": version_debug,
+            "answerGrid": answer_debug,
         },
     }
 

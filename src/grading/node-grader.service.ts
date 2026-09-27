@@ -21,7 +21,11 @@ interface BubbleResult {
   detected: string | null;
   status: 'answered' | 'blank' | 'multiple';
   fills: Record<string, number>;
+  /** Printed option order; `fills` key order is lost once stored as jsonb. */
+  options: string[];
 }
+
+const FULL_INK_DARKNESS = 0.4;
 
 type AnswerColumn = {
   startQuestion: number;
@@ -86,14 +90,23 @@ export class NodeGraderService {
     // -----------------------------------------------------------------------
     // Load, resize to standard A4 dimensions, convert to grayscale
     // -----------------------------------------------------------------------
-    const { data: grayBuf, info } = await sharp(imagePath)
+    const { data: rgbBuf, info } = await sharp(imagePath)
       .resize(WARP_WIDTH, WARP_HEIGHT, { fit: 'fill' })
-      .grayscale()
+      .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
     const w: number = info.width;
     const h: number = info.height;
+    const channels: number = info.channels;
+    // Darkest channel: coloured ink (pink, red, blue pen) reads like pencil,
+    // whereas plain luminance puts mid-tone ink close to the paper.
+    const grayBuf = Buffer.alloc(w * h);
+    for (let i = 0, p = 0; i < grayBuf.length; i++, p += channels) {
+      let v = rgbBuf[p];
+      for (let c = 1; c < channels; c++) v = Math.min(v, rgbBuf[p + c]);
+      grayBuf[i] = v;
+    }
 
     // Compute global mean intensity for normalising fill ratios
     let globalSum = 0;
@@ -109,60 +122,66 @@ export class NodeGraderService {
     const answers: Record<string, string> = {};
     const details: BubbleResult[] = [];
 
+    const rows: { qNum: number; opts: readonly string[]; darkness: number[] }[] = [];
     for (const col of cfg.columns) {
       const xStep = col.bubbleXStep ?? cfg.bubbleXStep ?? 0;
       const yStep = col.rowYStep ?? cfg.rowYStep ?? 0;
       for (let rowIdx = 0; rowIdx < col.count; rowIdx++) {
-        const qNum = col.startQuestion + rowIdx;
         const rowY = Math.round((col.rowYStart + rowIdx * yStep) * h);
         const opts =
           col.rowLabels?.[rowIdx] ?? col.options ?? cfg.options ?? ['A', 'B', 'C', 'D', 'E'];
-
-        // Sample mean intensity for each option bubble
-        const means: number[] = [];
-        for (let optIdx = 0; optIdx < opts.length; optIdx++) {
+        const darkness = opts.map((_, optIdx) => {
           const bx = Math.round((col.bubbleAX + optIdx * xStep) * w);
-          means.push(this.sampleMean(grayBuf as Buffer, w, h, bx, rowY, radiusPx));
-        }
+          const mean = this.sampleMean(grayBuf, w, h, bx, rowY, radiusPx);
+          return Math.max(0, (globalMean - mean) / globalMean);
+        });
+        rows.push({ qNum: col.startQuestion + rowIdx, opts, darkness });
+      }
+    }
 
-        // Convert mean intensities to fill ratios:
-        //   A dark (filled) bubble has a low mean → high fill ratio.
-        //   fill = (globalMean - bubbleMean) / globalMean  clamped to [0, 1]
-        const fills = means.map((m) => Math.max(0, Math.min(1, (globalMean - m) / globalMean)));
+    // Same scale as the OpenCV grader: darkness above an unmarked bubble
+    // (printed ring + letter), where FULL_INK_DARKNESS reads as fully filled.
+    const sorted = rows.flatMap((r) => r.darkness).sort((a, b) => a - b);
+    const baseline = sorted.length ? sorted[Math.floor(sorted.length / 4)] : 0;
 
-        const maxFill = Math.max(...fills);
+    for (const { qNum, opts, darkness } of rows) {
+      const fills = darkness.map((d) =>
+        Math.max(0, Math.min(1, (d - baseline) / FULL_INK_DARKNESS)),
+      );
+      const maxFill = Math.max(...fills);
 
-        if (maxFill < cfg.fillThreshold) {
-          answers[String(qNum)] = '';
-          details.push({
-            question: qNum,
-            detected: null,
-            status: 'blank',
-            fills: this.zipFills(opts, fills),
-          });
-          continue;
-        }
-
-        const bestIdx = fills.indexOf(maxFill);
-
-        // Check for multiple heavily-filled bubbles
-        const heavy = fills.filter(
-          (f, i) =>
-            i !== bestIdx &&
-            f >= cfg.fillThreshold &&
-            f >= maxFill / cfg.darknessDifferential,
-        );
-
-        const detected = opts[bestIdx];
-        const status = heavy.length > 0 ? 'multiple' : 'answered';
-        answers[String(qNum)] = detected;
+      if (maxFill < cfg.fillThreshold) {
+        answers[String(qNum)] = '';
         details.push({
           question: qNum,
-          detected,
-          status,
+          detected: null,
+          status: 'blank',
           fills: this.zipFills(opts, fills),
+          options: [...opts],
         });
+        continue;
       }
+
+      const bestIdx = fills.indexOf(maxFill);
+
+      // Check for multiple heavily-filled bubbles
+      const heavy = fills.filter(
+        (f, i) =>
+          i !== bestIdx &&
+          f >= cfg.fillThreshold &&
+          f >= maxFill / cfg.darknessDifferential,
+      );
+
+      const detected = opts[bestIdx];
+      const status = heavy.length > 0 ? 'multiple' : 'answered';
+      answers[String(qNum)] = detected;
+      details.push({
+        question: qNum,
+        detected,
+        status,
+        fills: this.zipFills(opts, fills),
+        options: [...opts],
+      });
     }
 
     const answeredCount = details.filter((d) => d.status === 'answered').length;

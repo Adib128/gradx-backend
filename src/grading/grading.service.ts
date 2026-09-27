@@ -234,8 +234,14 @@ export class GradingService {
       );
     }
 
+    // A row with more than one mark earns no credit, even if the darkest
+    // mark is the key.
+    const scoredAnswers = { ...processResult!.answers };
+    for (const detail of (processResult!.questionDetails as Array<Record<string, unknown>>) ?? []) {
+      if (detail['status'] === 'multiple') scoredAnswers[String(detail['question'])] = '';
+    }
     const { score, maxScore, questionResults } = this.gradeAnswers(
-      processResult!.answers,
+      scoredAnswers,
       orderedQuestions,
     );
 
@@ -857,7 +863,8 @@ export class GradingService {
       v.trim().toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
 
     const prefixRe = /^(?:OPTION\s*)?([A-E])(?:[\).\-:\s]|$)/i;
-    const letterRe = /\b([A-E])\b/i;
+    // Case-sensitive so the article "a" in a text answer is not read as option A.
+    const letterRe = /\b([A-E])\b/;
 
     const getAccepted = (q: {
       correctAnswer: string | null;
@@ -884,8 +891,12 @@ export class GradingService {
       const pm = raw.match(prefixRe);
       if (pm?.[1]) accepted.add(pm[1].toUpperCase());
 
-      const lm = raw.match(letterRe);
-      if (lm?.[1]) accepted.add(lm[1].toUpperCase());
+      // Options flagged isCorrect are authoritative; only fall back to a
+      // loose letter search when the key exists solely as text.
+      if (!opts.some((opt) => opt.isCorrect)) {
+        const lm = raw.match(letterRe);
+        if (lm?.[1]) accepted.add(lm[1]);
+      }
 
       // Cross-reference: if correctAnswer text matches an option text, accept that letter
       opts.forEach((opt, idx) => {
