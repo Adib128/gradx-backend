@@ -111,14 +111,14 @@ export const SHEET_CONFIG = {
    *   startX=40, digitStartX=41.2, gridTopY=59
    *   bubble centre x = 43.2 + digitIndex * 4.8  mm
    *   bubble centre y = 59   + rowIndex   * 6.2  mm
-   *   rowLabels = ['1','2','3','4','5','6','7','8','9','0']
+   *   rowLabels = ['0','1','2','3','4','5','6','7','8','9']
    *   bubbleRadius = 2.0mm
    */
   studentIdGrid: {
     /** Normalised x of bubble centre for digit column 0 (43.2/210). */
     digitStartX: 43.2 / 210,
 
-    /** Normalised y of bubble centre for row 0  (digit '1') (59/297). */
+    /** Normalised y of bubble centre for row 0  (digit '0') (59/297). */
     gridTopY: 59 / 297,
 
     /** Normalised x step between consecutive digit columns (4.8/210). */
@@ -130,8 +130,8 @@ export const SHEET_CONFIG = {
     /** Normalised bubble radius, inflated 20 % for robustness. */
     bubbleRadius: (2.0 / 210) * 1.2,
 
-    /** Digit value for each row index 0-9. */
-    rowDigits: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as string[],
+    /** Digit value for each row index 0-9 (`0` is the first / top row). */
+    rowDigits: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as string[],
 
     /**
      * Minimum fill ratio to accept a digit as marked.

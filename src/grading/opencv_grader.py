@@ -457,7 +457,7 @@ def detect_student_id(gray_img, np, config, num_digits):
     row_gap       = sid_cfg.get("rowGap",      6.2  / 297)
     b_radius_norm = sid_cfg.get("bubbleRadius", (2.0 / 210) * 1.2)
     fill_thresh   = sid_cfg.get("fillThreshold", 0.15)
-    row_digits    = sid_cfg.get("rowDigits", ["1","2","3","4","5","6","7","8","9","0"])
+    row_digits    = sid_cfg.get("rowDigits", ["0","1","2","3","4","5","6","7","8","9"])
 
     h, w = gray_img.shape[:2]
     radius_px = max(4, int(b_radius_norm * w))
