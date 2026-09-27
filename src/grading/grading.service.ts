@@ -11,12 +11,51 @@ import { PrismaService } from 'prisma/prisma.service';
 import { OpenCvGradingService } from './opencv-grading.service';
 import { NodeGraderService } from './node-grader.service';
 import { SHEET_CONFIG } from './sheet-config';
+import {
+  buildGraderSheetConfigForQuestions,
+  isTrueFalseQuestion,
+  orderQuestionsForSheet,
+  resolvePrintedIdDigits,
+} from './answer-sheet-layout';
 import * as XLSX from 'xlsx';
 
 type RequestUser = {
   userId: number;
   tenantId: number;
 };
+
+const ANCHOR_NAMES = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const;
+type AnchorHints = Record<(typeof ANCHOR_NAMES)[number], { x: number; y: number }>;
+
+/**
+ * Registration-mark centres the mobile camera already located, normalised to
+ * the uploaded image (0..1). Invalid input is ignored and the grader searches
+ * the image corners on its own.
+ */
+function parseAnchorHints(raw: unknown): AnchorHints | null {
+  let value = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object') return null;
+  const hints = {} as AnchorHints;
+  for (const name of ANCHOR_NAMES) {
+    const point = (value as Record<string, unknown>)[name] as
+      | { x?: unknown; y?: unknown }
+      | undefined;
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 1 || y < 0 || y > 1) {
+      return null;
+    }
+    hints[name] = { x, y };
+  }
+  return hints;
+}
 
 @Injectable()
 export class GradingService {
@@ -32,6 +71,7 @@ export class GradingService {
     user: RequestUser,
     assessmentId: number,
     file: Express.Multer.File,
+    anchorHintsRaw?: unknown,
   ) {
     if (!file) {
       throw new InternalServerErrorException('Scan image is required.');
@@ -84,7 +124,21 @@ export class GradingService {
     //  1. Try Python/OpenCV (best quality)
     //  2. Fall back to Node.js/sharp (always available)
     // -----------------------------------------------------------------------
-    const numIdDigits = assessment.numberOfStudentIdDigits ?? 5;
+    const numIdDigits = resolvePrintedIdDigits(assessment.numberOfStudentIdDigits);
+
+    // Every version shares one printed layout (versions only reorder questions
+    // within the MCQ / True-False bands), so any version defines the geometry.
+    const layoutVersion = assessment.assessmentVersions.find(
+      (version) => version.versionQuestions.length > 0,
+    );
+    const sheetLayout = buildGraderSheetConfigForQuestions({
+      questions: layoutVersion
+        ? layoutVersion.versionQuestions.map((vq) => vq.question)
+        : assessment.questions,
+      numberOfStudentIdDigits: assessment.numberOfStudentIdDigits,
+      studentIdPosition: assessment.studentIdPosition,
+    });
+    const anchorHints = parseAnchorHints(anchorHintsRaw);
 
     let processResult: {
       answers: Record<string, string>;
@@ -95,14 +149,18 @@ export class GradingService {
     } | null = null;
     let processError: string | null = null;
 
-    // Build config with numIdDigits so Python grader knows how many columns to scan
-    const sheetConfigWithDigits = { ...SHEET_CONFIG, numIdDigits };
+    const graderConfig = {
+      ...SHEET_CONFIG,
+      ...(sheetLayout ?? {}),
+      numIdDigits,
+      ...(anchorHints ? { anchorHints } : {}),
+    };
 
     // Try Python OpenCV first
     try {
       const pyResult = await this.openCvService.processAnswerSheet(
         imagePath,
-        JSON.stringify(sheetConfigWithDigits),
+        JSON.stringify(graderConfig),
       );
       if (pyResult && !pyResult.error) {
         processResult = pyResult;
@@ -123,7 +181,10 @@ export class GradingService {
     // Fallback: Node.js sharp grader
     if (!processResult || (processResult.confidence ?? 0) < 0.2) {
       try {
-        const nodeResult = await this.nodeGrader.gradeSheet(imagePath, numIdDigits);
+        const nodeResult = await this.nodeGrader.gradeSheet(imagePath, numIdDigits, {
+          answerGrid: sheetLayout?.answerGrid,
+          studentIdGrid: sheetLayout?.studentIdGrid,
+        });
         processResult = nodeResult;
         this.logger.log(`Node grader used (conf=${nodeResult.confidence}, studentId=${nodeResult.detectedStudentId})`);
       } catch (err) {
@@ -147,10 +208,21 @@ export class GradingService {
         : undefined;
     const scoringVersion =
       detectedVersion ?? assessment.assessmentVersions[0];
-    const orderedQuestions =
+    // Printed number N is the N-th question of the sheet order (MCQ band, then
+    // True/False band) of the version the student received.
+    const orderedQuestions = orderQuestionsForSheet(
       scoringVersion?.versionQuestions?.length
         ? scoringVersion.versionQuestions.map((vq) => vq.question)
-        : assessment.questions;
+        : assessment.questions,
+    );
+    const masterNumberById = new Map(
+      orderQuestionsForSheet(assessment.questions).map(
+        (question, index) => [question.id, index + 1] as const,
+      ),
+    );
+    const scoringVersionNumber = scoringVersion
+      ? assessment.assessmentVersions.indexOf(scoringVersion) + 1
+      : null;
 
     if (
       processResult!.decodedFormId != null &&
@@ -171,11 +243,16 @@ export class GradingService {
     const enrichedDetails = (
       (processResult!.questionDetails as Array<Record<string, unknown>>) ?? []
     ).map((qd) => {
-      const qr = questionResults.find((r) => r.question === (qd['question'] as number));
+      const printedNumber = qd['question'] as number;
+      const qr = questionResults.find((r) => r.question === printedNumber);
+      const question = orderedQuestions[printedNumber - 1];
       return {
         ...qd,
         isCorrect: qr?.isCorrect ?? false,
         correctAnswer: qr?.correctAnswer ?? null,
+        questionId: question?.id ?? null,
+        masterNumber: question ? (masterNumberById.get(question.id) ?? null) : null,
+        versionNumber: scoringVersionNumber,
       };
     });
 
@@ -770,6 +847,7 @@ export class GradingService {
   private gradeAnswers(
     detectedAnswers: Record<string, string>,
     questions: Array<{
+      type?: string | null;
       correctAnswer: string | null;
       questionOptions: Array<{ text: string; isCorrect: boolean; order?: number | null }>;
       points: number;
@@ -828,6 +906,25 @@ export class GradingService {
       return accepted;
     };
 
+    // True/False sheets print T/F bubbles regardless of option order.
+    const trueWords = new Set(['T', 'TRUE', 'VRAI', 'YES', 'صح', 'صحيح']);
+    const falseWords = new Set(['F', 'FALSE', 'FAUX', 'NO', 'خطأ', 'خطا']);
+    const trueFalseKey = (q: {
+      correctAnswer: string | null;
+      questionOptions: Array<{ text: string; isCorrect: boolean; order?: number | null }>;
+    }): 'T' | 'F' | null => {
+      const candidates = [
+        ...q.questionOptions.filter((opt) => opt.isCorrect).map((opt) => opt.text),
+        q.correctAnswer ?? '',
+      ];
+      for (const candidate of candidates) {
+        const value = String(candidate || '').trim().toUpperCase();
+        if (trueWords.has(value)) return 'T';
+        if (falseWords.has(value)) return 'F';
+      }
+      return null;
+    };
+
     let score = 0;
     let maxScore = 0;
     const questionResults: Array<{
@@ -841,12 +938,15 @@ export class GradingService {
       const points = q.points || 1;
       maxScore += points;
       const answer = norm(detectedAnswers[String(qNum)] ?? '');
+      const tfKey = isTrueFalseQuestion(q) ? trueFalseKey(q) : null;
       const accepted = getAccepted(q);
-      const isCorrect = Boolean(answer && accepted.has(answer));
+      const isCorrect = tfKey
+        ? answer === tfKey
+        : Boolean(answer && accepted.has(answer));
       if (isCorrect) score += points;
-      // Resolve the primary correct letter (A-E) from the accepted set
+      // Resolve the primary correct letter (A-E, or T/F) from the accepted set
       const correctLetter =
-        ['A', 'B', 'C', 'D', 'E'].find((l) => accepted.has(l)) ?? null;
+        tfKey ?? ['A', 'B', 'C', 'D', 'E', 'F'].find((l) => accepted.has(l)) ?? null;
       questionResults.push({ question: qNum, isCorrect, correctAnswer: correctLetter });
     });
 

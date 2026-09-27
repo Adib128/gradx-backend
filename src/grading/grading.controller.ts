@@ -32,8 +32,9 @@ export class GradingController {
     @GetUser() user: JwtUser,
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @UploadedFile() file: Express.Multer.File,
+    @Body('anchors') anchors?: string,
   ) {
-    return this.gradingService.createScan(user, assessmentId, file);
+    return this.gradingService.createScan(user, assessmentId, file, anchors);
   }
 
   @Get('assessments/:assessmentId/scans')

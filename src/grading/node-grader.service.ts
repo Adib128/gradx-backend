@@ -23,6 +23,43 @@ interface BubbleResult {
   fills: Record<string, number>;
 }
 
+type AnswerColumn = {
+  startQuestion: number;
+  count: number;
+  bubbleAX: number;
+  rowYStart: number;
+  bubbleXStep?: number;
+  rowYStep?: number;
+  options?: readonly string[];
+  rowLabels?: readonly (readonly string[])[];
+};
+
+type AnswerGridConfig = {
+  columns: readonly AnswerColumn[];
+  options?: readonly string[];
+  bubbleXStep?: number;
+  rowYStep?: number;
+  bubbleRadius: number;
+  fillThreshold: number;
+  darknessDifferential: number;
+};
+
+type StudentIdGridConfig = {
+  digitStartX: number;
+  gridTopY: number;
+  digitGap: number;
+  rowGap: number;
+  bubbleRadius: number;
+  rowDigits: readonly string[];
+  roi?: { x0: number; y0: number; x1: number; y1: number };
+};
+
+/** Per-assessment layout (ZipGrade grid); falls back to the legacy sheet. */
+export type NodeGraderLayout = {
+  answerGrid?: AnswerGridConfig;
+  studentIdGrid?: StudentIdGridConfig;
+};
+
 interface GradeResult {
   answers: Record<string, string>;
   confidence: number;
@@ -36,10 +73,15 @@ interface GradeResult {
 export class NodeGraderService {
   private readonly logger = new Logger(NodeGraderService.name);
 
-  async gradeSheet(imagePath: string, numIdDigits = 5): Promise<GradeResult> {
+  async gradeSheet(
+    imagePath: string,
+    numIdDigits = 5,
+    layout: NodeGraderLayout = {},
+  ): Promise<GradeResult> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sharp = require('sharp');
-    const cfg = SHEET_CONFIG.answerGrid;
+    const cfg: AnswerGridConfig = layout.answerGrid ?? SHEET_CONFIG.answerGrid;
+    const idCfg: StudentIdGridConfig = layout.studentIdGrid ?? SHEET_CONFIG.studentIdGrid;
 
     // -----------------------------------------------------------------------
     // Load, resize to standard A4 dimensions, convert to grayscale
@@ -68,14 +110,18 @@ export class NodeGraderService {
     const details: BubbleResult[] = [];
 
     for (const col of cfg.columns) {
+      const xStep = col.bubbleXStep ?? cfg.bubbleXStep ?? 0;
+      const yStep = col.rowYStep ?? cfg.rowYStep ?? 0;
       for (let rowIdx = 0; rowIdx < col.count; rowIdx++) {
         const qNum = col.startQuestion + rowIdx;
-        const rowY = Math.round((col.rowYStart + rowIdx * cfg.rowYStep) * h);
+        const rowY = Math.round((col.rowYStart + rowIdx * yStep) * h);
+        const opts =
+          col.rowLabels?.[rowIdx] ?? col.options ?? cfg.options ?? ['A', 'B', 'C', 'D', 'E'];
 
         // Sample mean intensity for each option bubble
         const means: number[] = [];
-        for (let optIdx = 0; optIdx < cfg.options.length; optIdx++) {
-          const bx = Math.round((col.bubbleAX + optIdx * cfg.bubbleXStep) * w);
+        for (let optIdx = 0; optIdx < opts.length; optIdx++) {
+          const bx = Math.round((col.bubbleAX + optIdx * xStep) * w);
           means.push(this.sampleMean(grayBuf as Buffer, w, h, bx, rowY, radiusPx));
         }
 
@@ -85,7 +131,6 @@ export class NodeGraderService {
         const fills = means.map((m) => Math.max(0, Math.min(1, (globalMean - m) / globalMean)));
 
         const maxFill = Math.max(...fills);
-        const opts = cfg.options;
 
         if (maxFill < cfg.fillThreshold) {
           answers[String(qNum)] = '';
@@ -131,6 +176,7 @@ export class NodeGraderService {
       h,
       Math.max(1, Math.min(12, numIdDigits)),
       globalMean,
+      idCfg,
     );
 
     const version = this.decodeVersionCode(grayBuf as Buffer, w, h, globalMean);
@@ -240,13 +286,14 @@ export class NodeGraderService {
     w: number,
     h: number,
     globalMean: number,
+    roi?: StudentIdGridConfig['roi'],
   ): Array<{ x: number; y: number; area: number }> {
-    // Left edge starts right of the version-code strip (ends at 0.143 w) so its
-    // solid squares are never mistaken for filled ID bubbles.
-    const x0 = Math.floor(0.17 * w);
-    const x1 = Math.floor(0.32 * w);
-    const y0 = Math.floor(0.08 * h);
-    const y1 = Math.floor(0.36 * h);
+    // Legacy sheets: left edge starts right of the version-code strip (ends at
+    // 0.143 w) so its solid squares are never mistaken for filled ID bubbles.
+    const x0 = Math.max(0, Math.floor((roi?.x0 ?? 0.17) * w));
+    const x1 = Math.min(w, Math.floor((roi?.x1 ?? 0.32) * w));
+    const y0 = Math.max(0, Math.floor((roi?.y0 ?? 0.08) * h));
+    const y1 = Math.min(h, Math.floor((roi?.y1 ?? 0.36) * h));
     const thresh = globalMean * 0.72;
     const visited = new Uint8Array(w * h);
     const blobs: Array<{ x: number; y: number; area: number }> = [];
@@ -313,8 +360,8 @@ export class NodeGraderService {
     h: number,
     numDigits: number,
     globalMean: number,
+    cfg: StudentIdGridConfig,
   ): string {
-    const cfg = SHEET_CONFIG.studentIdGrid;
     const R = Math.max(4, Math.round(cfg.bubbleRadius * w));
     const numRows = cfg.rowDigits.length;
     const cols = Math.max(1, Math.min(12, numDigits));
@@ -388,7 +435,7 @@ export class NodeGraderService {
     const nomYs = cfg.gridTopY * h;
 
     // Method 1: blob-calibrated grid
-    const blobs = this.findStudentIdBlobs(gray, w, h, globalMean);
+    const blobs = this.findStudentIdBlobs(gray, w, h, globalMean, cfg.roi);
     if (blobs.length >= 2) {
       const dxs: number[] = [];
       const dys: number[] = [];

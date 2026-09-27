@@ -171,11 +171,26 @@ def perspective_warp(cv2, np, image, config):
         "bottomRight": (int(0.78*w), int(0.60*h), w,           h          ),
     }
 
+    # The mobile scanner sends the mark centres it tracked live; search a
+    # tight window there first (answer bubbles now reach the corner boxes).
+    hints = config.get("anchorHints") or {}
+    hint_half = int(0.035 * max(w, h))
+
     anchor_debug = {}
     for name in corner_names:
         x0, y0, x1, y1 = corner_search_boxes[name]
 
         fx, fy, conf = find_corner_anchor(gray, np, x0, y0, x1, y1)
+        hint = hints.get(name)
+        if hint:
+            hx, hy = int(hint["x"] * w), int(hint["y"] * h)
+            hfx, hfy, hconf = find_corner_anchor(
+                gray, np,
+                max(0, hx - hint_half), max(0, hy - hint_half),
+                min(w, hx + hint_half), min(h, hy + hint_half),
+            )
+            if hconf >= 0.5 or hconf >= conf:
+                fx, fy, conf = hfx, hfy, hconf
         found_src.append([fx, fy])
 
         # Destination: expected position in output (full-page coords)
@@ -356,14 +371,21 @@ def analyze_answer_grid(binary, np, config):
         count = col["count"]
         bubble_ax = col["bubbleAX"]
         row_y_start = col["rowYStart"]
+        # ZipGrade-grid sheets carry per-block pitch and per-row labels
+        # (MCQ A-E vs True/False T-F); legacy sheets use the grid defaults.
+        col_x_step = col.get("bubbleXStep", x_step)
+        col_y_step = col.get("rowYStep", y_step)
+        col_options = col.get("options") or options
+        row_labels = col.get("rowLabels") or []
 
         for row_i in range(count):
             q_num = start_q + row_i
-            row_y_px = int((row_y_start + row_i * y_step) * h)
+            row_y_px = int((row_y_start + row_i * col_y_step) * h)
+            row_options = row_labels[row_i] if row_i < len(row_labels) and row_labels[row_i] else col_options
 
             fills = []
-            for opt_i in range(len(options)):
-                bx = int((bubble_ax + opt_i * x_step) * w)
+            for opt_i in range(len(row_options)):
+                bx = int((bubble_ax + opt_i * col_x_step) * w)
                 by = row_y_px
                 fill = sample_bubble(binary, np, bx, by, radius_px)
                 fills.append(fill)
@@ -376,7 +398,7 @@ def analyze_answer_grid(binary, np, config):
                     "question": q_num,
                     "detected": None,
                     "status": "blank",
-                    "fills": {opt: round(fills[i], 3) for i, opt in enumerate(options)},
+                    "fills": {opt: round(fills[i], 3) for i, opt in enumerate(row_options)},
                 })
                 continue
 
@@ -390,7 +412,7 @@ def analyze_answer_grid(binary, np, config):
                 and f >= max_fill / diff_factor
             ]
 
-            detected = options[best_idx]
+            detected = row_options[best_idx]
             status = "multiple" if heavy else "answered"
 
             answers[str(q_num)] = detected
@@ -398,7 +420,7 @@ def analyze_answer_grid(binary, np, config):
                 "question": q_num,
                 "detected": detected,
                 "status": status,
-                "fills": {opt: round(fills[i], 3) for i, opt in enumerate(options)},
+                "fills": {opt: round(fills[i], 3) for i, opt in enumerate(row_options)},
             })
 
     return answers, details
@@ -468,8 +490,11 @@ def detect_student_id(gray_img, np, config, num_digits):
 
     col_pitch_px = max(1, int(digit_gap * w))
     row_pitch_px = max(1, int(row_gap   * h))
-    half_x = max(2, int(col_pitch_px * 0.5))
-    half_y = max(2, int(row_pitch_px * 0.5))
+    # Exact layouts only need to absorb small warp error; half a pitch would
+    # reach the filled bubble of the neighbouring column.
+    search_frac = 0.25 if sid_cfg.get("exact") else 0.5
+    half_x = max(2, int(col_pitch_px * search_frac))
+    half_y = max(2, int(row_pitch_px * search_frac))
     step   = max(2, radius_px // 2)
 
     def sample_fill_at(cx, cy):
@@ -539,6 +564,22 @@ def detect_student_id(gray_img, np, config, num_digits):
 
     candidates = []
     blob_count = 0
+
+    # ZipGrade-grid sheets: the layout is recomputed from the assessment, so
+    # the nominal grid is exact after the warp. read_grid already searches
+    # half a pitch around each bubble; shifting by whole pitches would read
+    # neighbouring digits instead.
+    if sid_cfg.get("exact"):
+        sid, blanks, total, col_dbg = read_grid(
+            digit_start_x * w, grid_top_y * h, col_pitch_px, row_pitch_px,
+        )
+        return sid, {
+            "method": "exact",
+            "blanks": blanks,
+            "fillThresh": fill_thresh,
+            "globalMean": round(global_mean, 1),
+            "cols": col_dbg,
+        }
 
     # --- Method 1: blob-calibrated grid ---
     try:
