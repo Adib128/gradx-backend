@@ -1,6 +1,12 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import Redis from 'ioredis';
 import { EXTRACT_COURSE_PROMPT } from './prompts/extract-course.prompt';
 import { CLO_ANALYSIS_PROMPT } from './prompts/clo-analysis.prompt';
 import { CLO_ANALYSIS_ALL_PROMPT } from './prompts/clo-analysis-all.prompt';
@@ -10,6 +16,9 @@ import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
 import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
 import { extractPdfText } from 'src/topic-content/utils/extract-pdf-text.util';
+import { extractTextFromWordXml } from './utils/word-document-text.util';
+import { applyCourseSpecDocumentFallbacks } from './utils/course-spec-document.util';
+import { extractPdfLayoutText } from './utils/pdf-layout-text.util';
 
 /** Keep course-spec text prompts within a safe model context budget. */
 const MAX_COURSE_SPEC_TEXT_CHARS = 100_000;
@@ -17,17 +26,95 @@ const MAX_COURSE_SPEC_TEXT_CHARS = 100_000;
 /** Prefer local text extract when the PDF has at least this many characters. */
 const MIN_PDF_TEXT_CHARS_FOR_TEXT_PATH = 200;
 
+/** Greedy decoding with a fixed seed so a document gets the same answer on every run. */
+const EXTRACTION_SAMPLING = { temperature: 0, top_p: 1, seed: 42 } as const;
+
+/**
+ * Cached AI answers are keyed by document content + prompt + model; bump this
+ * to discard them after a change the key cannot see.
+ */
+const EXTRACTION_CACHE_VERSION = 1;
+const EXTRACTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365;
+const EXTRACTION_PROMPT_HASH = createHash('sha256')
+  .update(EXTRACT_COURSE_PROMPT)
+  .digest('hex');
+
 @Injectable()
-export class CourseAIService {
+export class CourseAIService implements OnModuleDestroy {
   private readonly logger = new Logger(CourseAIService.name);
   private readonly client: OpenAI;
   private readonly model: string;
+  private cache: Redis | null = null;
+  private cacheErrorLogged = false;
+
   constructor(private readonly config: ConfigService) {
     this.client = new OpenAI({
       apiKey: this.config.get<string>('OPENROUTER_API_KEY'),
       baseURL: this.config.get<string>('OPENROUTER_BASE_URL'),
     });
     this.model = this.config.get<string>('OPENROUTER_MODEL')!;
+  }
+
+  async onModuleDestroy() {
+    await this.cache?.quit().catch(() => undefined);
+  }
+
+  private getCache(): Redis {
+    if (!this.cache) {
+      this.cache = new Redis({
+        host: this.config.get<string>('REDIS_HOST') ?? 'localhost',
+        port: Number(this.config.get<number>('REDIS_PORT') ?? 6379),
+        maxRetriesPerRequest: 1,
+        commandTimeout: 2000,
+      });
+      this.cache.on('error', (error: Error) => {
+        if (this.cacheErrorLogged) return;
+        this.cacheErrorLogged = true;
+        this.logger.warn(`Extraction cache unavailable: ${error.message}`);
+      });
+      this.cache.on('ready', () => {
+        this.cacheErrorLogged = false;
+      });
+    }
+    return this.cache;
+  }
+
+  /**
+   * Returns the parsed AI answer for `content`, reusing the cached answer for
+   * identical content so re-uploading a document always yields the same data.
+   * Cache failures fall through to a live call; invalid answers are never cached.
+   */
+  private async cachedAiExtraction(
+    kind: string,
+    content: string,
+    request: () => Promise<string>,
+  ): Promise<unknown> {
+    const key = `course-extract:v${EXTRACTION_CACHE_VERSION}:${createHash('sha256')
+      .update(JSON.stringify([this.model, EXTRACTION_PROMPT_HASH, kind, content]))
+      .digest('hex')}`;
+
+    try {
+      const cached = await this.getCache().get(key);
+      if (cached) {
+        this.logger.log(`Course extraction cache hit (${kind})`);
+        return JSON.parse(cached) as unknown;
+      }
+    } catch {
+      // cache unavailable → live call
+    }
+
+    const parsed: unknown = this.parseResponse(await request());
+    try {
+      await this.getCache().set(
+        key,
+        JSON.stringify(parsed),
+        'EX',
+        EXTRACTION_CACHE_TTL_SECONDS,
+      );
+    } catch {
+      // cache unavailable → answer still returned
+    }
+    return parsed;
   }
 
   async extractFromBase64(
@@ -63,21 +150,37 @@ export class CourseAIService {
 
   /**
    * Course specs are typically text-layer PDFs. Prefer local text → JSON
-   * (same path as DOCX). Fall back to vision/file upload when text is thin.
+   * (same path as DOCX). Image-only PDFs (scans, screenshots) go to vision:
+   * the model reads multi-column pages far more reliably than OCR text,
+   * which runs neighbouring columns together.
    */
   private async extractFromPdfBuffer(
     buffer: Buffer,
     base64: string,
   ): Promise<any> {
     let pdfText = '';
+    let layoutFailed = false;
     try {
-      pdfText = (await extractPdfText(buffer)).trim();
+      pdfText = (await extractPdfLayoutText(buffer)).trim();
     } catch (error) {
+      layoutFailed = true;
       this.logger.warn(
-        `PDF text extraction failed; falling back to vision: ${
+        `PDF layout text extraction failed; trying plain text/OCR: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+
+    if (layoutFailed) {
+      try {
+        pdfText = (await extractPdfText(buffer)).trim();
+      } catch (error) {
+        this.logger.warn(
+          `PDF text extraction failed; falling back to vision: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     if (pdfText.length >= MIN_PDF_TEXT_CHARS_FOR_TEXT_PATH) {
@@ -95,7 +198,7 @@ export class CourseAIService {
       }
     }
 
-    return this.extractFromPdfVisionBase64(base64);
+    return this.extractFromPdfVisionBase64(base64, pdfText);
   }
 
   private async extractFromCourseSpecText(
@@ -107,64 +210,97 @@ export class CourseAIService {
         ? `${documentText.slice(0, MAX_COURSE_SPEC_TEXT_CHARS)}\n\n[…truncated…]`
         : documentText;
 
-    const response = await createChatCompletion(
-      this.client,
-      {
-      model: this.model,
-      max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-      messages: [
-        {
-          role: 'user',
-          content: `${EXTRACT_COURSE_PROMPT}
+    const parsed = await this.cachedAiExtraction(
+      `text:${sourceLabel}`,
+      truncated,
+      async () => {
+        const response = await createChatCompletion(
+          this.client,
+          {
+            model: this.model,
+            max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+            ...EXTRACTION_SAMPLING,
+            messages: [
+              {
+                role: 'user',
+                content: `${EXTRACT_COURSE_PROMPT}
 
 Extract the course specification from the following ${sourceLabel} text content:
 
 ${truncated}`,
-        },
-      ],
-      response_format: { type: 'json_object' },
-    },
-      { purpose: 'course_extract_text' },
-    );
-
-    const text = response.choices[0]?.message?.content ?? '';
-    return this.parseResponse(text);
-  }
-
-  private async extractFromPdfVisionBase64(base64: string): Promise<any> {
-    const response = await createChatCompletion(
-      this.client,
-      {
-        model: this.model,
-        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:application/pdf;base64,${base64}`,
-                },
-              },
-              {
-                type: 'text',
-                text: EXTRACT_COURSE_PROMPT,
               },
             ],
+            response_format: { type: 'json_object' },
           },
-        ],
+          { purpose: 'course_extract_text' },
+        );
+        return response.choices[0]?.message?.content ?? '';
       },
-      { purpose: 'course_extract_vision' },
     );
 
-    const text = response.choices[0]?.message?.content ?? '';
-    return this.parseResponse(text);
+    return this.finalizeCourseExtraction(
+      parsed,
+      documentText,
+      sourceLabel === 'DOCX' ? 'docx' : 'pdf',
+    );
+  }
+
+  private finalizeCourseExtraction(
+    result: unknown,
+    documentText: string,
+    source: 'docx' | 'pdf',
+  ) {
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      return result;
+    }
+    return applyCourseSpecDocumentFallbacks(
+      result as Record<string, unknown>,
+      documentText,
+      { source },
+    );
+  }
+
+  private async extractFromPdfVisionBase64(
+    base64: string,
+    documentText = '',
+  ): Promise<any> {
+    const fileHash = createHash('sha256').update(base64).digest('hex');
+    const parsed = await this.cachedAiExtraction('vision:PDF', fileHash, async () => {
+      const response = await createChatCompletion(
+        this.client,
+        {
+          model: this.model,
+          max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+          ...EXTRACTION_SAMPLING,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:application/pdf;base64,${base64}`,
+                  },
+                },
+                {
+                  type: 'text',
+                  text: EXTRACT_COURSE_PROMPT,
+                },
+              ],
+            },
+          ],
+        },
+        { purpose: 'course_extract_vision' },
+      );
+      return response.choices[0]?.message?.content ?? '';
+    });
+
+    return this.finalizeCourseExtraction(parsed, documentText, 'pdf');
   }
 
   private async extractFromDocxBuffer(buffer: Buffer): Promise<any> {
     const documentXml = this.readZipTextFile(buffer, 'word/document.xml');
-    const documentText = this.extractTextFromWordXml(documentXml);
+    const documentText = extractTextFromWordXml(documentXml);
 
     if (!documentText.trim()) {
       throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_EMPTY_DOCX);
@@ -254,21 +390,6 @@ ${truncated}`,
     }
 
     throw new BadRequestException(ErrorMessageKey.COURSE_EXTRACT_INVALID_DOCX);
-  }
-
-  private extractTextFromWordXml(xml: string): string {
-    return xml
-      .replace(/<w:tab\/>/g, '\t')
-      .replace(/<w:br\/>/g, '\n')
-      .replace(/<\/w:p>/g, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
   }
 
   async analyzeCloAchievement(payload: {

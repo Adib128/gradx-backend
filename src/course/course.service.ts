@@ -36,6 +36,12 @@ import {
 } from './utils/reference-document-storage.util';
 import { extractReferenceFigureAssets } from './utils/extract-reference-figures.util';
 import { basename } from 'node:path';
+import {
+  mergeAssessmentPlanTiming,
+  normalizeFacilityRows,
+  pickCourseSpecFields,
+  type CourseSpecFields,
+} from './utils/course-spec-fields.util';
 
 type ExtractStreamSection = {
   id: string;
@@ -53,14 +59,27 @@ const EXTRACT_STREAM_SECTIONS: ExtractStreamSection[] = [
       title: result.title ?? null,
       code: result.code ?? null,
       program: result.program ?? null,
+      department: result.department ?? null,
+      college: result.college ?? null,
+      institution: result.institution ?? null,
+      version: result.version ?? null,
+      lastRevisionDate: result.lastRevisionDate ?? null,
       description: result.description ?? null,
       creditHours: result.creditHours ?? null,
+      creditHoursDetail: result.creditHoursDetail ?? null,
+      courseTypeScope: result.courseTypeScope ?? null,
+      courseTypeOther: result.courseTypeOther ?? null,
+      courseRequirement: result.courseRequirement ?? null,
       level: result.level ?? null,
       passRate: result.passRate ?? null,
       teachingMode: result.teachingMode ?? null,
       totalContactHours: result.totalContactHours ?? null,
       lectureHours: result.lectureHours ?? null,
       labHours: result.labHours ?? null,
+      fieldHours: result.fieldHours ?? null,
+      tutorialHours: result.tutorialHours ?? null,
+      otherContactHours: result.otherContactHours ?? null,
+      otherContactHoursLabel: result.otherContactHoursLabel ?? null,
     }),
   },
   {
@@ -79,17 +98,23 @@ const EXTRACT_STREAM_SECTIONS: ExtractStreamSection[] = [
     id: 'topics',
     percent: 82,
     message: 'Topics prepared',
-    pick: (result) => ({ topics: result.topics ?? [] }),
+    pick: (result) => ({
+      topics: result.topics ?? [],
+      topicsTotalHours: result.topicsTotalHours ?? null,
+    }),
   },
   {
     id: 'assessments',
     percent: 90,
     message: 'Assessments prepared',
-    pick: (result) => ({ assessments: result.assessments ?? [] }),
+    pick: (result) => ({
+      assessments: result.assessments ?? [],
+      assessmentsTotalPercentage: result.assessmentsTotalPercentage ?? null,
+    }),
   },
   {
     id: 'resources',
-    percent: 96,
+    percent: 94,
     message: 'Resources & references prepared',
     pick: (result) => ({
       prerequisites: result.prerequisites ?? [],
@@ -98,6 +123,17 @@ const EXTRACT_STREAM_SECTIONS: ExtractStreamSection[] = [
       requiredFacilitiesAndEquipment:
         result.requiredFacilitiesAndEquipment ?? [],
       references: result.references ?? [],
+    }),
+  },
+  {
+    id: 'quality',
+    percent: 97,
+    message: 'Course quality & approval prepared',
+    pick: (result) => ({
+      courseQualityAssessment: result.courseQualityAssessment ?? [],
+      approvalCouncil: result.approvalCouncil ?? null,
+      approvalReferenceNo: result.approvalReferenceNo ?? null,
+      approvalDate: result.approvalDate ?? null,
     }),
   },
 ];
@@ -165,6 +201,7 @@ export class CourseService {
           .map((assessment) => ({
             title: String(assessment.title ?? '').trim() || null,
             type: assessment.type,
+            timing: assessment.timing ?? null,
             percentage:
               assessment.percentage != null &&
               Number.isFinite(Number(assessment.percentage))
@@ -193,6 +230,7 @@ export class CourseService {
           academicYear: academicYear ?? null,
           semester: semester ?? null,
           mainObjective: mainObjective ?? null,
+          ...pickCourseSpecFields(createCourseDto),
           tenantId,
           prerequisites: prerequisites ?? [],
           coRequisites: coRequisites ?? [],
@@ -1088,8 +1126,10 @@ export class CourseService {
       };
     }
 
-    const course = await this.prisma.extended.course.findFirst({
-      where: { id, tenantId: tid },
+    // Base client + explicit soft-delete filter: the extended client's include
+    // type is too deep for tsc to compare against Prisma.CourseInclude.
+    const course = await this.prisma.course.findFirst({
+      where: { id, tenantId: tid, deletedAt: null },
       include,
     });
 
@@ -1141,6 +1181,7 @@ export class CourseService {
           requiredFacilitiesAndEquipment: requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
         }),
         ...(references !== undefined && { references: references as unknown as Prisma.InputJsonValue }),
+        ...pickCourseSpecFields(updateCourseDto),
       },
     });
   }
@@ -1250,11 +1291,9 @@ export class CourseService {
             : []) as Prisma.InputJsonValue,
         }),
         ...(body.requiredFacilitiesAndEquipment !== undefined && {
-          requiredFacilitiesAndEquipment: (Array.isArray(
+          requiredFacilitiesAndEquipment: normalizeFacilityRows(
             body.requiredFacilitiesAndEquipment,
-          )
-            ? body.requiredFacilitiesAndEquipment
-            : []) as Prisma.InputJsonValue,
+          ) as Prisma.InputJsonValue,
         }),
         ...(body.references !== undefined && {
           references: normalizeReferencesForStorage(
@@ -1262,10 +1301,12 @@ export class CourseService {
           ) as Prisma.InputJsonValue,
         }),
         ...(body.assessmentPlan !== undefined && {
-          assessmentPlan: (Array.isArray(body.assessmentPlan)
-            ? body.assessmentPlan
-            : []) as Prisma.InputJsonValue,
+          assessmentPlan: mergeAssessmentPlanTiming(
+            Array.isArray(body.assessmentPlan) ? body.assessmentPlan : [],
+            course.assessmentPlan,
+          ) as Prisma.InputJsonValue,
         }),
+        ...pickCourseSpecFields(body),
       },
     });
   }
@@ -1292,7 +1333,8 @@ export class CourseService {
       mainObjective?: string | null;
       teachingModes?: Array<{ modeOfInstruction: string; contactHours?: number | null; percentage?: number | null }>;
       requiredFacilitiesAndEquipment?: Array<{ item: string; resources?: string | null }>;
-    },
+      references?: unknown;
+    } & CourseSpecFields,
   ) {
     await this.findCourse(tenantId, id);
     const passRate =
@@ -1337,8 +1379,16 @@ export class CourseService {
           teachingModes: body.teachingModes as unknown as Prisma.InputJsonValue,
         }),
         ...(body.requiredFacilitiesAndEquipment !== undefined && {
-          requiredFacilitiesAndEquipment: body.requiredFacilitiesAndEquipment as unknown as Prisma.InputJsonValue,
+          requiredFacilitiesAndEquipment: normalizeFacilityRows(
+            body.requiredFacilitiesAndEquipment,
+          ) as Prisma.InputJsonValue,
         }),
+        ...(body.references !== undefined && {
+          references: normalizeReferencesForStorage(
+            body.references,
+          ) as Prisma.InputJsonValue,
+        }),
+        ...pickCourseSpecFields(body),
       },
     });
   }

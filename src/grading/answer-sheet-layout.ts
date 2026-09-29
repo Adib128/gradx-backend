@@ -723,6 +723,8 @@ const GRID_MIN_ROW_PITCH = 3.4;
 const GRID_MIN_OPTION_GAP = 3.6;
 /** Below this, the Student ID spans two cells (ZipGrade 100-question sheet). */
 const GRID_MIN_DIGIT_GAP = 4.2;
+/** Max drop of the Student ID grid below the band's first answer row. */
+const ID_TOP_SHIFT_MAX = 4;
 
 type AnswerChunk = {
   start: number;
@@ -925,11 +927,16 @@ function tryZipGradeLayout(
   const isIdCell = (col: number, band: number) =>
     band === idBand && col >= idFirstCol && col < idFirstCol + idSpan;
 
-  // Student ID rows share the band's row pitch so they line up with answers.
+  // Student ID rows are a little tighter than the answer rows on roomy
+  // sheets; dense sheets keep the band pitch. Mirrors the frontend PDF.
   const idBubbleRadius = Math.min(bubbleRadius, digitGap * 0.42, rowPitch * 0.4);
+  const idRowGap = Math.min(rowPitch, Math.max(2 * idBubbleRadius + 2.4, rowPitch * 0.8));
+  // Tighter rows free space at the bottom of the band; spend it above the
+  // grid on the write-in boxes, a full-size label and air under the header.
+  const idTopShift = Math.min(ID_TOP_SHIFT_MAX, 9 * (rowPitch - idRowGap));
   const idStartX = cellX(idFirstCol) + NUMBER_COL_W;
-  const gridTopY = bandY(idBand) + headerPad;
-  const idGridHeight = 9 * rowPitch + 2 * (idBubbleRadius + 1.2);
+  const gridTopY = bandY(idBand) + headerPad + idTopShift;
+  const idGridHeight = 9 * idRowGap + 2 * (idBubbleRadius + 1.2);
   const idGridWidth = digits * digitGap + 3.2;
   const id: ReturnType<typeof placeIdBlock> = {
     idStartX,
@@ -940,7 +947,7 @@ function tryZipGradeLayout(
     idBottom: gridTopY - idBubbleRadius - 1.2 + idGridHeight,
     digitGap,
     digitBoxSize: digitGap * 0.75,
-    rowGap: rowPitch,
+    rowGap: idRowGap,
     gridHeight: idGridHeight,
     idBubbleRadius,
     idLabelFontSize: Math.max(6, Math.min(8, headerPad + 1.2)),

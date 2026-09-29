@@ -1,0 +1,14 @@
+-- AlterTable
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "department" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "college" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "institution" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "version" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "lastRevisionDate" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "creditHoursDetail" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "courseTypeScope" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "courseTypeOther" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "courseRequirement" TEXT;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "fieldHours" INTEGER;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "tutorialHours" INTEGER;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "otherContactHours" INTEGER;
+ALTER TABLE "courses" ADD COLUMN IF NOT EXISTS "otherContactHoursLabel" TEXT;

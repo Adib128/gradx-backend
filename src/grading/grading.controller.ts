@@ -53,6 +53,14 @@ export class GradingController {
     return this.gradingService.getScan(user, scanId);
   }
 
+  @Get('scans/:scanId/clo-breakdown')
+  getScanCloBreakdown(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+  ) {
+    return this.gradingService.getScanCloBreakdown(user, scanId);
+  }
+
   /** Confirm a completed grading scan (verifies it is saved and returns it). */
   @Patch('scans/:scanId/confirm')
   confirmScan(

@@ -223,8 +223,22 @@ model Course {
   title             String
   code              String?
   program           String?
+  department        String?
+  college           String?
+  institution       String?
+  /// Course specification version (free text, as printed on the spec)
+  version           String?
+  /// Course specification "Last Revision Date", kept verbatim (e.g. "9-10-2023")
+  lastRevisionDate  String?
   description       String?
   creditHours       Int?
+  /// Credit hours as printed in Course Identification, e.g. "3(2,2,1)"
+  creditHoursDetail String?
+  /// Course type (a): UNIVERSITY | COLLEGE | DEPARTMENT | TRACK | OTHERS
+  courseTypeScope   String?
+  courseTypeOther   String?
+  /// Course type (b): REQUIRED | ELECTIVE
+  courseRequirement String?
   level             String?
   academicYear      String?
   semester          String?
@@ -233,7 +247,13 @@ model Course {
   teachingModes     Json?
   totalContactHours Int?
   lectureHours      Int?
+  /// Contact Hours table: Laboratory/Studio
   labHours          Int?
+  fieldHours        Int?
+  tutorialHours     Int?
+  otherContactHours Int?
+  /// Contact Hours table: "Others (specify)" label
+  otherContactHoursLabel String?
   prerequisites     String[]
   coRequisites      String[] @default([])
   /// Main purpose / objectives of the course (NCAAA-style free text)
@@ -246,6 +266,12 @@ model Course {
   cloAnalysisCache  Json?
   /// Syllabus assessment plan (type/percentage) — not real Assessment rows
   assessmentPlan    Json?
+  /// "Assessment of Course Quality" rows: [{ area, assessor, methods }]
+  courseQualityAssessment Json?
+  /// "Specification Approval Data" (council/committee, reference no., date as printed)
+  approvalCouncil     String?
+  approvalReferenceNo String?
+  approvalDate        String?
   /// Syllabus builder extras + snapshots. Merged on save; never recreates CLOs/topics.
   syllabusData      Json?
 

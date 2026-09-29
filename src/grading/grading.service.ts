@@ -368,6 +368,198 @@ export class GradingService {
     return { success: true, scan: confirmed };
   }
 
+  /**
+   * Student score vs. maximum score per CLO for one scan. Uses the course
+   * reports' weighting: each question is worth its share of the assessment's
+   * total marks, split evenly across its CLOs (question CLO links, otherwise
+   * its topic's CLOs), and a correct answer earns the full share.
+   */
+  async getScanCloBreakdown(user: RequestUser, scanId: number) {
+    const scan = await this.prisma.gradingScan.findFirst({
+      where: { id: scanId, tenantId: user.tenantId },
+      select: {
+        id: true,
+        score: true,
+        decodedFormId: true,
+        questionDetails: true,
+        assessment: {
+          select: {
+            id: true,
+            totalMarks: true,
+            course: {
+              select: {
+                clos: {
+                  orderBy: { id: 'asc' },
+                  select: { id: true, code: true, description: true },
+                },
+                topics: {
+                  select: { id: true, topicClos: { select: { cloId: true } } },
+                },
+              },
+            },
+            questions: {
+              orderBy: { id: 'asc' },
+              select: {
+                id: true,
+                type: true,
+                points: true,
+                topicId: true,
+                questionClos: { select: { cloId: true } },
+              },
+            },
+            assessmentVersions: {
+              orderBy: { id: 'asc' },
+              select: {
+                versionQuestions: {
+                  orderBy: { order: 'asc' },
+                  select: {
+                    question: {
+                      select: {
+                        id: true,
+                        type: true,
+                        points: true,
+                        topicId: true,
+                        questionClos: { select: { cloId: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!scan) throw new NotFoundException('Grading scan not found.');
+
+    const assessment = scan.assessment;
+    const details = Array.isArray(scan.questionDetails)
+      ? (scan.questionDetails as Array<Record<string, unknown>>)
+      : [];
+
+    const versions = assessment.assessmentVersions;
+    const versionNumber = Number(details[0]?.versionNumber);
+    const version =
+      (Number.isInteger(versionNumber) && versionNumber > 0
+        ? versions[versionNumber - 1]
+        : undefined) ??
+      (scan.decodedFormId != null ? versions[scan.decodedFormId - 1] : undefined) ??
+      versions[0];
+    const orderedQuestions = orderQuestionsForSheet(
+      version?.versionQuestions?.length
+        ? version.versionQuestions.map((vq) => vq.question)
+        : assessment.questions,
+    );
+
+    const topicCloMap = new Map<number, number[]>(
+      (assessment.course?.topics ?? []).map((topic) => [
+        topic.id,
+        topic.topicClos.map((link) => link.cloId),
+      ]),
+    );
+    const courseClos = assessment.course?.clos ?? [];
+    const courseCloIds = new Set(courseClos.map((clo) => clo.id));
+    const resolveCloIds = (question: (typeof orderedQuestions)[number]) => {
+      const linked = question.questionClos.map((link) => link.cloId);
+      const ids = linked.length > 0
+        ? linked
+        : question.topicId != null
+          ? (topicCloMap.get(question.topicId) ?? [])
+          : [];
+      return Array.from(new Set(ids)).filter((id) => courseCloIds.has(id));
+    };
+
+    const weights = orderedQuestions.map((question) =>
+      question.points > 0 ? question.points : 1,
+    );
+    const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+    const examTotal =
+      assessment.totalMarks && assessment.totalMarks > 0
+        ? assessment.totalMarks
+        : weightSum;
+
+    const hasDetails = details.length > 0;
+    const detailByQuestion = new Map<number, Record<string, unknown>>();
+    for (const detail of details) {
+      const number = Number(detail.question);
+      if (Number.isFinite(number)) detailByQuestion.set(number, detail);
+    }
+
+    type Column = {
+      cloId: number | null;
+      code: string | null;
+      description: string | null;
+      questionNumbers: number[];
+      maxScore: number;
+      studentScore: number;
+    };
+    const columns = new Map<number | 'none', Column>();
+    const columnFor = (cloId: number | null) => {
+      const key = cloId ?? 'none';
+      let column = columns.get(key);
+      if (!column) {
+        const clo = cloId != null ? courseClos.find((item) => item.id === cloId) : null;
+        column = {
+          cloId,
+          code: clo?.code ?? null,
+          description: clo?.description ?? null,
+          questionNumbers: [],
+          maxScore: 0,
+          studentScore: 0,
+        };
+        columns.set(key, column);
+      }
+      return column;
+    };
+
+    orderedQuestions.forEach((question, index) => {
+      const questionNumber = index + 1;
+      const weightedPoints =
+        weightSum > 0 ? (weights[index] / weightSum) * examTotal : 0;
+      const detail = detailByQuestion.get(questionNumber);
+      const earned = detail?.isCorrect === true ? weightedPoints : 0;
+      const cloIds = resolveCloIds(question);
+      const targets = cloIds.length > 0 ? cloIds : [null];
+      for (const cloId of targets) {
+        const column = columnFor(cloId);
+        column.questionNumbers.push(questionNumber);
+        column.maxScore += weightedPoints / targets.length;
+        column.studentScore += earned / targets.length;
+      }
+    });
+
+    const round = (value: number) => Math.round(value * 100) / 100;
+    const cloOrder = new Map(courseClos.map((clo, index) => [clo.id, index]));
+    const rows = Array.from(columns.values())
+      .sort(
+        (a, b) =>
+          (a.cloId == null ? Infinity : (cloOrder.get(a.cloId) ?? 0)) -
+          (b.cloId == null ? Infinity : (cloOrder.get(b.cloId) ?? 0)),
+      )
+      .map((column) => ({
+        ...column,
+        maxScore: round(column.maxScore),
+        studentScore: hasDetails ? round(column.studentScore) : null,
+      }));
+
+    return {
+      scanId: scan.id,
+      hasQuestionDetails: hasDetails,
+      columns: rows,
+      total: {
+        maxScore: round(examTotal),
+        studentScore: hasDetails
+          ? round(
+              Array.from(columns.values()).reduce(
+                (sum, column) => sum + column.studentScore,
+                0,
+              ),
+            )
+          : scan.score,
+      },
+    };
+  }
+
   async deleteScan(user: RequestUser, scanId: number) {
     const scan = await this.prisma.gradingScan.findFirst({
       where: { id: scanId, tenantId: user.tenantId },

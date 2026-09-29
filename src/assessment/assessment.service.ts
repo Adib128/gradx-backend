@@ -1637,8 +1637,57 @@ export class AssessmentService {
     ];
   }
 
+  /**
+   * Per-question points for a version, rescaled so they sum exactly to the
+   * assessment's total marks (ratios kept, hundredths go to the largest
+   * remainders). Falls back to the stored points when no total is set.
+   */
+  private versionQuestionPoints(assessment: any, version: any): number[] {
+    const questions: any[] = (version?.versionQuestions ?? []).map(
+      (versionQuestion: any) => versionQuestion.question,
+    );
+    const weights = questions.map((question) => {
+      const value = Number(question?.points);
+      return Number.isFinite(value) && value > 0 ? value : 1;
+    });
+    const total = [
+      assessment?.totalMarks,
+      assessment?.headerConfig?.totalMarks,
+    ]
+      .map((value) => (value === '' || value == null ? NaN : Number(value)))
+      .find((value) => Number.isFinite(value) && value > 0);
+    if (!total || weights.length === 0) return weights;
+
+    const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+    const totalCents = Math.round(total * 100);
+    const exact = weights.map((weight) => (weight / weightSum) * totalCents);
+    const cents = exact.map((value) => Math.floor(value));
+    let leftover = totalCents - cents.reduce((sum, value) => sum + value, 0);
+    const byRemainder = exact
+      .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+      .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+    for (const { index } of byRemainder) {
+      if (leftover <= 0) break;
+      cents[index] += 1;
+      leftover -= 1;
+    }
+    return cents.map((value) => value / 100);
+  }
+
+  /** The header's exam-name line always shows the assessment's own name. */
+  private headerWithAssessmentName(assessment: any): unknown {
+    const headerConfig = assessment?.headerConfig;
+    const title = this.pickHeaderText(assessment?.title);
+    if (!headerConfig || typeof headerConfig !== 'object' || !title) {
+      return headerConfig;
+    }
+    return { ...(headerConfig as Record<string, unknown>), examName: title };
+  }
+
   private buildVersionDocumentLines(assessment: any, version: any): string[] {
-    const headerLines = this.buildAssessmentHeaderLines(assessment.headerConfig);
+    const headerLines = this.buildAssessmentHeaderLines(
+      this.headerWithAssessmentName(assessment),
+    );
     const fallbackMeta = headerLines.length
       ? []
       : [
@@ -1657,11 +1706,10 @@ export class AssessmentService {
       return index === 0 || all[index - 1] !== '';
     });
 
+    const points = this.versionQuestionPoints(assessment, version);
     version.versionQuestions.forEach((versionQuestion: any, index: number) => {
       const question = versionQuestion.question;
-      lines.push(
-        `${index + 1}. [${question.points ?? 1} pts] ${question.text}`,
-      );
+      lines.push(`${index + 1}. [${points[index]} pts] ${question.text}`);
 
       question.questionOptions?.forEach((option: any) => {
         lines.push(`   ${option.order}. ${option.text}`);
@@ -1851,7 +1899,9 @@ export class AssessmentService {
   }
 
   private createExamDocBuffer(assessment: any, version: any): Buffer {
-    const headerHtml = this.buildAssessmentHeaderHtml(assessment.headerConfig);
+    const headerHtml = this.buildAssessmentHeaderHtml(
+      this.headerWithAssessmentName(assessment),
+    );
     const footerText = this.pickHeaderText(assessment.headerConfig?.footerText);
     const questionLines: string[] = [];
 
@@ -1869,10 +1919,11 @@ export class AssessmentService {
       questionLines.push('');
     }
 
+    const points = this.versionQuestionPoints(assessment, version);
     version.versionQuestions.forEach((versionQuestion: any, index: number) => {
       const question = versionQuestion.question;
       questionLines.push(
-        `${index + 1}. [${question.points ?? 1} pts] ${question.text}`,
+        `${index + 1}. [${points[index]} pts] ${question.text}`,
       );
       question.questionOptions?.forEach((option: any) => {
         questionLines.push(`   ${option.order}. ${option.text}`);

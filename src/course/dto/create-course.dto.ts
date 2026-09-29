@@ -6,6 +6,16 @@ import { normalizeReferencesForStorage } from '../utils/normalize-course-confirm
 import { AssessmentObjectSchema } from 'src/assessment/schema/assessment.schema';
 import { CloSchema } from 'src/clo/schemas/clo.schema';
 import { ValidationMessageKey as V } from 'src/common/constants/validation-message';
+import {
+  COURSE_REQUIREMENTS,
+  COURSE_TYPE_SCOPES,
+  normalizeCourseQualityAssessment,
+  normalizeFacilityRows,
+  normalizeCourseRequirement,
+  normalizeCourseTypeScope,
+  normalizeOptionalHours,
+  normalizeOptionalText,
+} from '../utils/course-spec-fields.util';
 
 const normalizeCourseAssessment = (value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -64,7 +74,10 @@ const normalizeCourseAssessment = (value: unknown) => {
 
 const CourseAssessmentSchema = z.preprocess(
   normalizeCourseAssessment,
-  AssessmentObjectSchema,
+  AssessmentObjectSchema.extend({
+    /** "Assessment timing (in week no)" as printed, e.g. "4, 6 and 10th" or "1-15 week". */
+    timing: z.preprocess(normalizeOptionalText, z.string().nullable().optional()),
+  }),
 );
 
 const emptyStringToUndefined = (value: unknown) =>
@@ -132,13 +145,38 @@ const normalizeCourseSemester = (value: unknown) => {
   return undefined;
 };
 
+const optionalSpecText = z.preprocess(
+  normalizeOptionalText,
+  z.string().nullable().optional(),
+);
+
+const optionalSpecHours = z.preprocess(
+  normalizeOptionalHours,
+  z.number().int().nonnegative().nullable().optional(),
+);
+
 export const CreateCourseSchema = z.object({
   title: z.string().min(1, V.TITLE_REQUIRED),
   code: z.string().nullable().optional(),
   program: z.string().nullable().optional(),
+  department: optionalSpecText,
+  college: optionalSpecText,
+  institution: optionalSpecText,
+  version: optionalSpecText,
+  lastRevisionDate: optionalSpecText,
   description: z.string().nullable().optional(),
 
   creditHours: nullablePositiveInt,
+  creditHoursDetail: optionalSpecText,
+  courseTypeScope: z.preprocess(
+    normalizeCourseTypeScope,
+    z.enum(COURSE_TYPE_SCOPES).nullable().optional(),
+  ),
+  courseTypeOther: optionalSpecText,
+  courseRequirement: z.preprocess(
+    normalizeCourseRequirement,
+    z.enum(COURSE_REQUIREMENTS).nullable().optional(),
+  ),
   level: z.string().nullable().optional(),
   academicYear: z.preprocess((value) => {
     const cleaned = emptyStringToUndefined(value);
@@ -213,6 +251,10 @@ export const CreateCourseSchema = z.object({
   totalContactHours: nullablePositiveInt,
   lectureHours: nullablePositiveInt,
   labHours: nullablePositiveInt,
+  fieldHours: optionalSpecHours,
+  tutorialHours: optionalSpecHours,
+  otherContactHours: optionalSpecHours,
+  otherContactHoursLabel: optionalSpecText,
 
   prerequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
   coRequisites: z.preprocess(normalizeStringList, z.array(z.string()).default([])),
@@ -226,16 +268,28 @@ export const CreateCourseSchema = z.object({
   ),
   requiredFacilitiesAndEquipment: z
     .preprocess(
-      (value) => (Array.isArray(value) ? value : []),
+      (value) => normalizeFacilityRows(value),
       z.array(RequiredFacilitiesAndEquipmentRowSchema),
-    )
-    .transform((rows) =>
-      rows.filter((row) => row.item.trim() || String(row.resources ?? '').trim()),
     )
     .default([]),
   references: z
     .preprocess(normalizeReferencesForStorage, z.array(ReferenceSchema))
     .default([]),
+  courseQualityAssessment: z
+    .preprocess(
+      (value) => normalizeCourseQualityAssessment(value),
+      z.array(
+        z.object({
+          area: z.string(),
+          assessor: z.string().nullable(),
+          methods: z.string().nullable(),
+        }),
+      ),
+    )
+    .optional(),
+  approvalCouncil: optionalSpecText,
+  approvalReferenceNo: optionalSpecText,
+  approvalDate: optionalSpecText,
 
   clos: z.array(CloSchema).default([]),
   topics: z.array(TopicSchema).default([]),
