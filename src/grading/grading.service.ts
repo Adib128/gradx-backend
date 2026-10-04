@@ -571,8 +571,8 @@ export class GradingService {
   }
 
   /** Full grading history for the tenant (all confirmed scans with student + assessment details). */
-  getGradingHistory(user: RequestUser) {
-    return this.prisma.gradingScan.findMany({
+  async getGradingHistory(user: RequestUser) {
+    const scans = await this.prisma.gradingScan.findMany({
       where: {
         tenantId: user.tenantId,
         status: 'COMPLETED',
@@ -614,6 +614,32 @@ export class GradingService {
       },
       orderBy: { createdAt: 'desc' },
       take: 500,
+    });
+
+    // Scans are often not linked to a student row; resolve them by printed code.
+    const unlinkedCodes = Array.from(
+      new Set(
+        scans
+          .filter((scan) => !scan.student)
+          .map((scan) => (scan.matchedStudentCode ?? scan.detectedStudentId ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+    if (unlinkedCodes.length === 0) return scans;
+
+    const students = await this.prisma.student.findMany({
+      where: {
+        studentId: { in: unlinkedCodes },
+        course: { tenantId: user.tenantId },
+      },
+      select: { id: true, name: true, studentId: true, section: true },
+    });
+    const byCode = new Map(students.map((student) => [student.studentId, student]));
+
+    return scans.map((scan) => {
+      if (scan.student) return scan;
+      const code = (scan.matchedStudentCode ?? scan.detectedStudentId ?? '').trim();
+      return { ...scan, student: byCode.get(code) ?? null };
     });
   }
 

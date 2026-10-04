@@ -442,10 +442,15 @@ model Assessment {
   studentIdPosition                       String                    @default("TOP_LEFT")
   includeAssessmentInstructionsSection    Boolean                   @default(false)
   assessmentInstructions                  String?
+  /// Closing section printed after the last question
+  includeAssessmentEndSection             Boolean                   @default(false)
+  assessmentEndSection                    String?
   printCloCodeNextToEachQuestion          Boolean                   @default(false)
   printDifficultyLabelNextToEachQuestion  Boolean                   @default(false)
   /// Institutional exam header (country, ministry, university, faculty, academic year, etc.)
   headerConfig                            Json?
+  /// Per-section typography for the printed paper (font, size, color, bold, italic, underline, align)
+  paperStyles                             Json?
   generationConfig                        Json?
 
   /// Academic year for this assessment (e.g. 1446-1447)

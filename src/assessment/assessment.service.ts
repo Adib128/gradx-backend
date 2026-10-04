@@ -101,12 +101,15 @@ export class AssessmentService {
           includeAssessmentInstructionsSection:
             dto.includeAssessmentInstructionsSection,
           assessmentInstructions: dto.assessmentInstructions,
+          includeAssessmentEndSection: dto.includeAssessmentEndSection,
+          assessmentEndSection: dto.assessmentEndSection,
           printCloCodeNextToEachQuestion: dto.printCloCodeNextToEachQuestion,
           printDifficultyLabelNextToEachQuestion:
             dto.printDifficultyLabelNextToEachQuestion,
           academicYear: dto.academicYear ?? null,
           semester: dto.semester ?? null,
           headerConfig: toPrismaJson(dto.headerConfig),
+          paperStyles: toPrismaJson(dto.paperStyles),
           language: dto.language,
           difficulty: dto.difficulty,
           tenantId: tid,
@@ -1062,6 +1065,7 @@ export class AssessmentService {
       questions,
       numberOfVersions,
       headerConfig,
+      paperStyles,
       ...assessmentFields
     } = dto;
 
@@ -1075,6 +1079,9 @@ export class AssessmentService {
           numberOfVersions,
           ...(headerConfig !== undefined
             ? { headerConfig: toPrismaJson(headerConfig) }
+            : {}),
+          ...(paperStyles !== undefined
+            ? { paperStyles: toPrismaJson(paperStyles) }
             : {}),
         },
       });
