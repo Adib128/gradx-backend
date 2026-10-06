@@ -19,6 +19,16 @@ import { extractPdfText } from 'src/topic-content/utils/extract-pdf-text.util';
 import { extractTextFromWordXml } from './utils/word-document-text.util';
 import { applyCourseSpecDocumentFallbacks } from './utils/course-spec-document.util';
 import { extractPdfLayoutText } from './utils/pdf-layout-text.util';
+import {
+  buildCloCodeResolver,
+  ensureCloCoverage,
+  lexicalMatchClosToTopics,
+  readAiCloTopicMappings,
+  type MatchableClo,
+  type MatchableTopic,
+} from './utils/clo-topic-matching.util';
+import { buildMatchCloTopicsMessage } from './prompts/match-clo-topics.prompt';
+import { primitiveText } from './utils/course-spec-fields.util';
 
 /** Keep course-spec text prompts within a safe model context budget. */
 const MAX_COURSE_SPEC_TEXT_CHARS = 100_000;
@@ -38,6 +48,31 @@ const EXTRACTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365;
 const EXTRACTION_PROMPT_HASH = createHash('sha256')
   .update(EXTRACT_COURSE_PROMPT)
   .digest('hex');
+
+const CLO_TOPIC_MATCH_CACHE_VERSION = 1;
+const CLO_TOPIC_MATCH_ATTEMPTS = 2;
+
+const toMatchableClos = (value: unknown): MatchableClo[] => {
+  const seen = new Set<string>();
+  const clos: MatchableClo[] = [];
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as Record<string, unknown>;
+    const code = primitiveText(row.code).trim();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    clos.push({
+      code,
+      description: (primitiveText(row.description) || primitiveText(row.outcome)).trim(),
+      category: primitiveText(row.category).trim(),
+      programCLOCode: primitiveText(row.programCLOCode).trim(),
+    });
+  }
+  return clos;
+};
+
+const topicTitleOf = (topic: Record<string, unknown>) =>
+  (primitiveText(topic.title) || primitiveText(topic.topic)).trim();
 
 @Injectable()
 export class CourseAIService implements OnModuleDestroy {
@@ -245,7 +280,7 @@ ${truncated}`,
     );
   }
 
-  private finalizeCourseExtraction(
+  private async finalizeCourseExtraction(
     result: unknown,
     documentText: string,
     source: 'docx' | 'pdf',
@@ -253,11 +288,155 @@ ${truncated}`,
     if (!result || typeof result !== 'object' || Array.isArray(result)) {
       return result;
     }
-    return applyCourseSpecDocumentFallbacks(
-      result as Record<string, unknown>,
-      documentText,
-      { source },
+    return this.ensureTopicCloMapping(
+      applyCourseSpecDocumentFallbacks(
+        result as Record<string, unknown>,
+        documentText,
+        { source },
+      ),
     );
+  }
+
+  /**
+   * The CLO–Topic matrix is required: topics the document did not map get
+   * their CLOs from the AI matcher. `cloTopicMappingSource` tells the UI
+   * whether the matrix came from the document, the matcher, or both.
+   */
+  async ensureTopicCloMapping(
+    result: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const clos = toMatchableClos(result.clos);
+    const topics = (Array.isArray(result.topics) ? result.topics : []).filter(
+      (topic): topic is Record<string, unknown> =>
+        Boolean(topic) && typeof topic === 'object',
+    );
+    if (clos.length === 0 || topics.length === 0) return result;
+
+    const resolve = buildCloCodeResolver(clos);
+    const existing = topics.map((topic) =>
+      [
+        ...new Set(
+          (Array.isArray(topic.mappedClos) ? topic.mappedClos : [])
+            .map((item: unknown) =>
+              resolve(
+                item && typeof item === 'object'
+                  ? (item as Record<string, unknown>).code
+                  : item,
+              ),
+            )
+            .filter((code): code is string => Boolean(code)),
+        ),
+      ],
+    );
+    const emptyCount = existing.filter((codes) => codes.length === 0).length;
+    if (emptyCount === 0) {
+      return {
+        ...result,
+        topics: topics.map((topic, i) => ({ ...topic, mappedClos: existing[i] })),
+        cloTopicMappingSource: 'document',
+      };
+    }
+
+    const { mappings, source } = await this.matchClosToTopics(
+      clos,
+      topics.map((topic) => ({ title: topicTitleOf(topic) })),
+    );
+    return {
+      ...result,
+      topics: topics.map((topic, i) => ({
+        ...topic,
+        mappedClos: existing[i].length > 0 ? existing[i] : mappings[i],
+      })),
+      cloTopicMappingSource:
+        emptyCount < topics.length ? 'mixed' : source,
+    };
+  }
+
+  /**
+   * One CLO code list per topic (same order). Always non-empty per topic:
+   * the AI answer is validated against the CLO list and gaps are filled by
+   * deterministic vocabulary matching, which also serves as the fallback.
+   */
+  async matchClosToTopics(
+    rawClos: MatchableClo[],
+    topics: MatchableTopic[],
+  ): Promise<{ mappings: string[][]; source: 'ai' | 'fallback' }> {
+    const clos = toMatchableClos(rawClos);
+    if (clos.length === 0 || topics.length === 0) {
+      return { mappings: topics.map(() => []), source: 'fallback' };
+    }
+
+    const fallback = lexicalMatchClosToTopics(clos, topics);
+    const message = buildMatchCloTopicsMessage(clos, topics);
+    const key = `course-clo-topics:v${CLO_TOPIC_MATCH_CACHE_VERSION}:${createHash('sha256')
+      .update(JSON.stringify([this.model, message]))
+      .digest('hex')}`;
+
+    const complete = (aiMappings: string[][]) =>
+      ensureCloCoverage(
+        aiMappings.map((codes, i) => (codes.length > 0 ? codes : fallback[i])),
+        clos,
+        topics,
+      );
+
+    try {
+      const cached = await this.getCache().get(key);
+      if (cached) {
+        return {
+          mappings: complete(readAiCloTopicMappings(JSON.parse(cached), clos, topics.length)),
+          source: 'ai',
+        };
+      }
+    } catch {
+      // cache unavailable → live call
+    }
+
+    for (let attempt = 1; attempt <= CLO_TOPIC_MATCH_ATTEMPTS; attempt++) {
+      try {
+        const response = await createChatCompletion(
+          this.client,
+          {
+            model: this.model,
+            max_tokens: 4000,
+            ...EXTRACTION_SAMPLING,
+            messages: [{ role: 'user', content: message }],
+            response_format: { type: 'json_object' },
+          },
+          { purpose: 'course_clo_topic_matching' },
+        );
+        const parsed: unknown = this.parseResponse(
+          response.choices[0]?.message?.content ?? '',
+        );
+        const aiMappings = readAiCloTopicMappings(parsed, clos, topics.length);
+        const answered = aiMappings.filter((codes) => codes.length > 0).length;
+        if (answered < Math.ceil(topics.length / 2)) {
+          this.logger.warn(
+            `CLO–topic matching attempt ${attempt}: AI mapped only ${answered}/${topics.length} topics`,
+          );
+          continue;
+        }
+        try {
+          await this.getCache().set(
+            key,
+            JSON.stringify(parsed),
+            'EX',
+            EXTRACTION_CACHE_TTL_SECONDS,
+          );
+        } catch {
+          // cache unavailable → answer still returned
+        }
+        return { mappings: complete(aiMappings), source: 'ai' };
+      } catch (error) {
+        this.logger.warn(
+          `CLO–topic matching attempt ${attempt} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    this.logger.warn('CLO–topic matching fell back to vocabulary matching.');
+    return { mappings: fallback, source: 'fallback' };
   }
 
   private async extractFromPdfVisionBase64(

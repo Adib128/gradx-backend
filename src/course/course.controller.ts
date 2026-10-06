@@ -423,9 +423,48 @@ export class CourseController {
   @Post('confirm')
   confirmAndSave(
     @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
     @Body() createCourseDto: CreateCourseDto, // ← typed now
   ) {
-    return this.courseService.confirmAndSave(tenantId, createCourseDto);
+    return runWithAiContext(
+      { userId, tenantId, purpose: 'course_clo_topic_matching' },
+      () => this.courseService.confirmAndSave(tenantId, createCourseDto),
+    );
+  }
+
+  @Post('clo-topic-matching')
+  async matchClosToTopics(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Body()
+    body: {
+      clos?: Array<{ code?: string; description?: string; category?: string; programCLOCode?: string }>;
+      topics?: Array<{ title?: string }>;
+    },
+  ) {
+    const clos = (Array.isArray(body?.clos) ? body.clos : [])
+      .map((clo) => ({
+        code: String(clo?.code ?? '').trim(),
+        description: String(clo?.description ?? '').trim(),
+        category: String(clo?.category ?? '').trim(),
+        programCLOCode: String(clo?.programCLOCode ?? '').trim(),
+      }))
+      .filter((clo) => clo.code);
+    const topics = (Array.isArray(body?.topics) ? body.topics : []).map(
+      (topic, index) => ({
+        title: String(topic?.title ?? '').trim() || `Topic ${index + 1}`,
+      }),
+    );
+    if (clos.length === 0 || topics.length === 0) {
+      throw new BadRequestException(
+        'At least one CLO with a code and one topic are required.',
+      );
+    }
+
+    return runWithAiContext(
+      { userId, tenantId, purpose: 'course_clo_topic_matching' },
+      () => this.courseAIService.matchClosToTopics(clos, topics),
+    );
   }
 
   @Post(':id/topics')

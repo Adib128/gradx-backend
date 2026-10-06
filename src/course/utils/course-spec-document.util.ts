@@ -6,6 +6,7 @@ import {
   type CourseRequirement,
   type CourseTypeScope,
 } from './course-spec-fields.util';
+import { buildCloCodeResolver } from './clo-topic-matching.util';
 
 /**
  * Deterministic helpers that read course-specification values straight from the
@@ -774,24 +775,46 @@ const mappedCodesOf = (value: unknown): string[] =>
     .map((code) => code.trim())
     .filter(Boolean);
 
+/** Known CLO codes only; program codes such as "K1" resolve to their CLO code. */
+const resolveMappedCodes = (
+  value: unknown,
+  resolve: (code: unknown) => string | null,
+  keepUnknown: boolean,
+) =>
+  [
+    ...new Set(
+      mappedCodesOf(value)
+        .map((code) => resolve(code) ?? (keepUnknown ? code : null))
+        .filter((code): code is string => Boolean(code)),
+    ),
+  ].sort(cloCodeOrder);
+
 /**
  * Document topics win; CLO mappings come from the AI topic with the same
- * title (or same position when the counts match), limited to known CLO codes.
+ * title, a title containing the other, or the same position when the counts
+ * match. Topics left unmapped are filled later by the CLO–topic matcher.
  */
-function mergeTopics(documentTopics: DocumentTopic[], aiTopics: unknown, cloCodes: Set<string>) {
+function mergeTopics(
+  documentTopics: DocumentTopic[],
+  aiTopics: unknown,
+  resolve: (code: unknown) => string | null,
+  keepUnknown: boolean,
+) {
   const ai = (Array.isArray(aiTopics) ? aiTopics : []).filter(
     (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object',
   );
+  const aiKeys = ai.map((item) => normalizeTitle(item.title ?? item.topic));
   const sameCount = ai.length === documentTopics.length;
   return documentTopics.map((topic, index) => {
     const key = normalizeTitle(topic.title);
-    const match =
-      ai.find((item) => normalizeTitle(item.title ?? item.topic) === key) ??
-      (sameCount ? ai[index] : undefined);
-    const mapped = [...new Set(mappedCodesOf(match?.mappedClos))]
-      .filter((code) => cloCodes.size === 0 || cloCodes.has(code))
-      .sort(cloCodeOrder);
-    return { ...topic, mappedClos: mapped };
+    let matchIndex = aiKeys.indexOf(key);
+    if (matchIndex < 0 && key.length >= 4) {
+      matchIndex = aiKeys.findIndex(
+        (aiKey) => aiKey.length >= 4 && (aiKey.includes(key) || key.includes(aiKey)),
+      );
+    }
+    const match = matchIndex >= 0 ? ai[matchIndex] : sameCount ? ai[index] : undefined;
+    return { ...topic, mappedClos: resolveMappedCodes(match?.mappedClos, resolve, keepUnknown) };
   });
 }
 
@@ -958,19 +981,23 @@ export function applyCourseSpecDocumentFallbacks(
             assessmentMethods: normalizeStrategyList(row.assessmentMethods),
           }));
   next.clos = clos;
-  const cloCodes = new Set(clos.map((clo) => primitiveText(clo.code).trim()).filter(Boolean));
+  const resolveCloCode = buildCloCodeResolver(
+    clos.map((clo) => ({
+      code: primitiveText(clo.code).trim(),
+      programCLOCode: primitiveText(clo.programCLOCode).trim(),
+    })),
+  );
+  const keepUnknownCodes = clos.length === 0;
 
   const documentTopics = exact ? findCourseTopics(text) : [];
   next.topics =
     documentTopics.length > 0
-      ? mergeTopics(documentTopics, result.topics, cloCodes)
+      ? mergeTopics(documentTopics, result.topics, resolveCloCode, keepUnknownCodes)
       : (Array.isArray(result.topics) ? result.topics : [])
           .filter((topic): topic is Record<string, unknown> => Boolean(topic) && typeof topic === 'object')
           .map((topic) => ({
             ...topic,
-            mappedClos: [...new Set(mappedCodesOf(topic.mappedClos))]
-              .filter((code) => cloCodes.size === 0 || cloCodes.has(code))
-              .sort(cloCodeOrder),
+            mappedClos: resolveMappedCodes(topic.mappedClos, resolveCloCode, keepUnknownCodes),
           }));
 
   return next;

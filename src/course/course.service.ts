@@ -195,6 +195,8 @@ export class CourseService {
       seenTopicNumbers.add(nextNumber);
     }
 
+    await this.fillUnmappedTopicClos(clos, topics);
+
     try {
       return await this.prisma.$transaction(async (tx) => {
         const assessmentPlan = (assessments ?? [])
@@ -1397,6 +1399,35 @@ export class CourseService {
     await this.findCourse(tenantId, id);
     return await this.prisma.extended.course.delete({
       where: { id },
+    });
+  }
+
+  /**
+   * Every topic must be linked to at least one CLO: topics saved without a
+   * valid mapping get the CLOs chosen by the AI matcher.
+   */
+  private async fillUnmappedTopicClos(
+    clos: Array<{ code: string; description?: string | null; category?: string | null }>,
+    topics: Array<{ title: string; mappedClos: string[] }>,
+  ) {
+    const cloCodes = new Set(clos.map((clo) => clo.code).filter(Boolean));
+    if (cloCodes.size === 0 || topics.length === 0) return;
+
+    for (const topic of topics) {
+      topic.mappedClos = [...new Set(topic.mappedClos.filter((code) => cloCodes.has(code)))];
+    }
+    if (topics.every((topic) => topic.mappedClos.length > 0)) return;
+
+    const { mappings } = await this.courseAIService.matchClosToTopics(
+      clos.map((clo) => ({
+        code: clo.code,
+        description: clo.description,
+        category: clo.category,
+      })),
+      topics.map((topic) => ({ title: topic.title })),
+    );
+    topics.forEach((topic, index) => {
+      if (topic.mappedClos.length === 0) topic.mappedClos = mappings[index] ?? [];
     });
   }
 
