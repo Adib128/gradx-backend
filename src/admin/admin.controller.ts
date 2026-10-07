@@ -136,37 +136,6 @@ export class AdminController {
     return this.adminService.deleteFaculty(id, facultyId);
   }
 
-  @Get('plans')
-  listPlans(
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('search') search?: string,
-  ) {
-    return this.adminService.listPlans({
-      page: Number(page),
-      limit: Number(limit),
-      search,
-    });
-  }
-
-  @Post('plans')
-  createPlan(@Body() body: Record<string, unknown>) {
-    return this.adminService.createPlan(body as any);
-  }
-
-  @Patch('plans/:id')
-  updatePlan(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: Record<string, unknown>,
-  ) {
-    return this.adminService.updatePlan(id, body);
-  }
-
-  @Delete('plans/:id')
-  deletePlan(@Param('id', ParseIntPipe) id: number) {
-    return this.adminService.deletePlan(id);
-  }
-
   @Get('subscriptions')
   listSubscriptions(
     @Query('page') page?: string,

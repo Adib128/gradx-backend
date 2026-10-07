@@ -1,13 +1,15 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { AdminPackagesController } from './admin-packages.controller';
+import { AdminPackagesService } from './admin-packages.service';
 import { PrismaService } from 'prisma/prisma.service';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
 import { setAiUsageLogger } from 'src/common/helpers/openrouter-chat.helper';
 
 @Module({
-  controllers: [AdminController],
-  providers: [AdminService, RolesGuard],
+  controllers: [AdminController, AdminPackagesController],
+  providers: [AdminService, AdminPackagesService, RolesGuard],
   exports: [AdminService],
 })
 export class AdminModule implements OnModuleInit {

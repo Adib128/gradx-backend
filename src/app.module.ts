@@ -16,6 +16,7 @@ import { GradingModule } from './grading/grading.module';
 import { CourseAnswerSheetModule } from './course-answer-sheet/course-answer-sheet.module';
 import { UniversityModule } from './university/university.module';
 import { AdminModule } from './admin/admin.module';
+import { PackageModule } from './package/package.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { AdminModule } from './admin/admin.module';
     CourseAnswerSheetModule,
     UniversityModule,
     AdminModule,
+    PackageModule,
   ],
   providers: [
     {

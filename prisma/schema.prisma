@@ -679,7 +679,7 @@ model University {
   @@map("universities")
 }
 
-/// Platform subscription plans (admin-managed).
+/// Platform subscription packages (admin-managed).
 model Plan {
   id              Int      @id @default(autoincrement())
   code            String   @unique
@@ -687,8 +687,10 @@ model Plan {
   nameAr          String
   descriptionEn   String?
   descriptionAr   String?
-  priceMonthly    Decimal  @db.Decimal(10, 2)
+  /// Mirrors the price of the MONTHLY billing period (0 when the package has none).
+  priceMonthly    Decimal  @default(0) @db.Decimal(10, 2)
   currency        String   @default("SAR")
+  /// Mirror the MAX_COURSES / MAX_ASSESSMENTS / MAX_AI_REQUESTS feature values.
   maxCourses      Int?
   maxAssessments  Int?
   maxAiRequests   Int?
@@ -698,10 +700,92 @@ model Plan {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   subscriptions   Subscription[]
+  featureValues   PlanFeatureValue[]
+  prices          PlanPrice[]
 
   @@index([sortOrder])
   @@index([isActive])
   @@map("plans")
+}
+
+enum PlanFeatureType {
+  /// Countable quota, e.g. number of assessments (null value = unlimited)
+  LIMIT
+  /// Capability that is included or not, e.g. custom branding
+  BOOLEAN
+}
+
+/// Catalogue of features a package can grant (admin-managed).
+model PlanFeature {
+  id        Int                @id @default(autoincrement())
+  key       String             @unique
+  nameEn    String
+  nameAr    String
+  type      PlanFeatureType    @default(LIMIT)
+  unitEn    String?
+  unitAr    String?
+  isActive  Boolean            @default(true)
+  sortOrder Int                @default(0)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  values    PlanFeatureValue[]
+
+  @@index([sortOrder])
+  @@map("plan_features")
+}
+
+/// Value of one feature inside one package.
+model PlanFeatureValue {
+  id         Int         @id @default(autoincrement())
+  planId     Int
+  featureId  Int
+  enabled    Boolean     @default(true)
+  /// LIMIT features only: null = unlimited
+  limitValue Int?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  plan       Plan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature    PlanFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureId])
+  @@index([featureId])
+  @@map("plan_feature_values")
+}
+
+/// Billing periods a package can be sold for (admin-managed), e.g. Monthly, Annual.
+model BillingPeriod {
+  id             Int         @id @default(autoincrement())
+  code           String      @unique
+  nameEn         String
+  nameAr         String
+  durationMonths Int
+  isActive       Boolean     @default(true)
+  sortOrder      Int         @default(0)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  prices         PlanPrice[]
+
+  @@index([sortOrder])
+  @@map("billing_periods")
+}
+
+/// Price of one package for one billing period.
+model PlanPrice {
+  id             Int           @id @default(autoincrement())
+  planId         Int
+  periodId       Int
+  price          Decimal       @db.Decimal(10, 2)
+  /// Optional crossed-out price displayed as the pre-discount amount
+  compareAtPrice Decimal?      @db.Decimal(10, 2)
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  plan           Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  period         BillingPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, periodId])
+  @@index([periodId])
+  @@map("plan_prices")
 }
 
 model Subscription {
