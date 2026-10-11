@@ -41,6 +41,12 @@ enum DifficultyLevel {
   HARD
 }
 
+enum AssessmentQuestionSource {
+  SLIDES
+  REFERENCE
+  COURSE_SPECIFICATION
+}
+
 enum AssessmentType {
   QUIZ
   FINAL_EXAM
@@ -289,9 +295,65 @@ model Course {
   clos          Clo[]
   students      Student[]
   courseAnswerSheets CourseAnswerSheet[]
+  referenceDocuments ReferenceDocument[]
 
   @@index([tenantId])
   @@map("courses")
+}
+
+enum ReferenceEmbeddingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+/// Vector index of one `Course.references` entry. The original file stays on disk
+/// and in the JSON; this mirrors its chapter text as embedded chunks (pgvector).
+model ReferenceDocument {
+  id             Int                      @id @default(autoincrement())
+  courseId       Int
+  course         Course                   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tenantId       Int
+  /// Stable identity across reorders: the stored `filePath`, else `index:{n}`.
+  documentKey    String
+  referenceIndex Int
+  title          String?
+  fileName       String?
+  filePath       String?
+  /// sha256 of chapters + embedding model; unchanged hash means no re-embedding.
+  contentHash    String
+  embeddingModel String
+  status         ReferenceEmbeddingStatus @default(PENDING)
+  chunkCount     Int                      @default(0)
+  error          String?                  @db.Text
+  indexedAt      DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  chunks         ReferenceChunk[]
+
+  @@unique([courseId, documentKey])
+  @@index([tenantId])
+  @@map("reference_documents")
+}
+
+model ReferenceChunk {
+  id           Int                          @id @default(autoincrement())
+  documentId   Int
+  document     ReferenceDocument            @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  courseId     Int
+  tenantId     Int
+  chapterIndex Int
+  chapterName  String?
+  chunkIndex   Int
+  content      String                       @db.Text
+  tokenCount   Int?
+  embedding    Unsupported("vector(1536)")?
+  createdAt    DateTime                     @default(now())
+
+  @@index([documentId, chapterIndex])
+  @@index([courseId])
+  @@map("reference_chunks")
 }
 
 model Topic {
@@ -324,8 +386,9 @@ model Clo {
 
   courseId     Int?
   course       Course?       @relation(fields: [courseId], references: [id])
-  questionClos QuestionClo[]
-  topicClos    TopicClo[]
+  questionClos   QuestionClo[]
+  topicClos      TopicClo[]
+  assessmentClos AssessmentClo[]
 
   @@index([courseId])
   @@map("clos")
@@ -468,6 +531,7 @@ model Assessment {
   updatedAt          DateTime            @updatedAt
   questions          Question[]
   assessmentTopics   AssessmentTopic[]
+  assessmentClos     AssessmentClo[]
   assessmentVersions AssessmentVersion[]
   gradingScans       GradingScan[]
 
@@ -554,8 +618,28 @@ model AssessmentTopic {
   topicId Int
   topic   Topic @relation(fields: [topicId], references: [id])
 
+  /// Material the AI grounds this topic's questions in
+  sourceType        AssessmentQuestionSource @default(COURSE_SPECIFICATION)
+  /// REFERENCE source: [{ referenceIndex, chapterIndices }] into Course.references
+  referenceChapters Json?
+  mcqCount          Int                      @default(0)
+  trueFalseCount    Int                      @default(0)
+
   @@id([assessmentId, topicId])
   @@map("assessment_topic")
+}
+
+/// CLOs the teacher selected when generating the assessment
+model AssessmentClo {
+  assessmentId Int
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  cloId Int
+  clo   Clo @relation(fields: [cloId], references: [id], onDelete: Cascade)
+
+  @@id([assessmentId, cloId])
+  @@index([cloId])
+  @@map("assessment_clos")
 }
 
 model TopicClo {
@@ -859,4 +943,22 @@ model AiUsageLog {
   @@index([success])
   @@index([startedAt])
   @@map("ai_usage_logs")
+}
+
+/// Institution-owned slide template (uploaded PowerPoint master or brand kit).
+/// `theme` holds the render spec the frontend understands: colors, design, brand frames.
+model SlideTemplate {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  createdById Int?
+  name        String
+  description String?
+  /// "pptx" when imported from a PowerPoint template, else "custom".
+  source      String   @default("custom")
+  theme       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("slide_templates")
 }

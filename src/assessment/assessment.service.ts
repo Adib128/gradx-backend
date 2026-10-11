@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -6,7 +7,12 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Job, Queue } from 'bullmq';
 import { PrismaService } from 'prisma/prisma.service';
-import { GenerateAssessmentDto } from './dto/generate-assessment.dto';
+import {
+  GenerateAssessmentDto,
+  ReferenceChapterSelection,
+  TopicSource,
+} from './dto/generate-assessment.dto';
+import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 import { GENERATE_COURSE_PROMPT, GENERATE_SINGLE_QUESTION_PROMPT } from './prompts/generate-assessment.prompt';
@@ -24,6 +30,24 @@ import {
   AssessmentGenerationJob,
   AssessmentGenerationProgress,
 } from './interfaces/assessment-generation-job.interface';
+import {
+  chunkSourceText,
+  courseSpecificationText,
+  referenceChaptersText,
+  topicSlidesText,
+} from './utils/assessment-source.util';
+
+type TopicSourceMaterial = {
+  type: 'SLIDES' | 'REFERENCE' | 'COURSE_SPECIFICATION';
+  label: string;
+  chunks: string[];
+};
+
+/** Jobs queued before per-topic sources existed carry no `source`. */
+const topicSourceOf = (
+  tg: GenerateAssessmentDto['topicGenerations'][number],
+): TopicSource =>
+  tg.source ?? { type: 'COURSE_SPECIFICATION', references: [] };
 
 const toPrismaJson = (
   value: unknown,
@@ -58,6 +82,7 @@ export class AssessmentService {
     private readonly prisma: PrismaService,
     @InjectQueue('assessment-generation')
     private readonly assessmentQueue: Queue,
+    private readonly referenceVectorService: ReferenceVectorService,
   ) {
     this.client = new OpenAI({
       apiKey: this.config.get<string>('OPENROUTER_API_KEY'),
@@ -176,6 +201,8 @@ export class AssessmentService {
       throw new NotFoundException(ErrorMessageKey.ASSESSMENT_SHELL_NOT_FOUND);
     }
 
+    await this.resolveTopicSources(tenantId, courseId, dto);
+
     const jobPayload: AssessmentGenerationJob = {
       tenantId,
       courseId,
@@ -244,7 +271,11 @@ export class AssessmentService {
       savedQuestionCount: 0,
     });
 
-    const promptPayload = await this.preparePromptPayload(data.dto);
+    const promptPayload = await this.preparePromptPayload(
+      data.dto,
+      data.tenantId,
+      data.courseId,
+    );
     const assessmentMeta = await this.resetAssessmentShell(
       data.tenantId,
       data.courseId,
@@ -326,12 +357,26 @@ export class AssessmentService {
 
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
+          const sourceMaterial = unit.topicGeneration.sourceMaterial as
+            | TopicSourceMaterial
+            | undefined;
+          const sourceChunks = sourceMaterial?.chunks ?? [];
           const aiRawResponse = await this.callAiModelForSingleQuestion({
             assessment: promptPayload.assessment,
             topicGeneration: unit.topicGeneration,
             questionType: unit.questionType,
             questionIndex: questionNumber,
             totalQuestions: totalUnits,
+            source: sourceMaterial
+              ? {
+                  type: sourceMaterial.type,
+                  label: sourceMaterial.label,
+                  excerpt:
+                    sourceChunks.length > 0
+                      ? sourceChunks[unit.topicUnitIndex % sourceChunks.length]
+                      : '',
+                }
+              : null,
             existingQuestionTexts: [
               ...existingQuestionTexts,
               ...accumulatedQuestions
@@ -497,16 +542,19 @@ export class AssessmentService {
     const units: Array<{
       topicId: number;
       questionType: string;
+      topicUnitIndex: number;
       topicGeneration: (typeof topicGenerations)[number];
     }> = [];
 
     for (const topicGeneration of topicGenerations) {
+      let topicUnitIndex = 0;
       for (const questionType of topicGeneration.questionTypes || []) {
         const count = Math.max(0, Number(questionType.questionTypeNumber) || 0);
         for (let i = 0; i < count; i++) {
           units.push({
             topicId: topicGeneration.topicId,
             questionType: questionType.questionType,
+            topicUnitIndex: topicUnitIndex++,
             topicGeneration,
           });
         }
@@ -531,10 +579,12 @@ export class AssessmentService {
         where: { question: { assessmentId } },
       });
       await this.prisma.assessmentTopic.deleteMany({ where: { assessmentId } });
+      await this.prisma.assessmentClo.deleteMany({ where: { assessmentId } });
       await this.prisma.question.deleteMany({ where: { assessmentId } });
     }
 
     const generationConfig = {
+      selectedCloIds: dto.selectedCloIds ?? [],
       topicGenerations: dto.topicGenerations,
       append: Boolean(append),
       updatedAt: new Date().toISOString(),
@@ -549,17 +599,204 @@ export class AssessmentService {
       select: { id: true, numberOfVersions: true },
     });
 
-    if (dto.topicGenerations.length) {
-      await this.prisma.assessmentTopic.createMany({
-        data: dto.topicGenerations.map((tg) => ({
-          assessmentId,
-          topicId: tg.topicId,
-        })),
+    for (const tg of dto.topicGenerations) {
+      const countOf = (type: string) =>
+        tg.questionTypes
+          .filter((config) => config.questionType === type)
+          .reduce((total, config) => total + config.questionTypeNumber, 0);
+      const source = topicSourceOf(tg);
+      const sourceFields = {
+        sourceType: source.type,
+        referenceChapters:
+          source.type === 'REFERENCE'
+            ? (source.references as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
+        mcqCount: countOf('MCQ'),
+        trueFalseCount: countOf('TRUE_FALSE'),
+      };
+      await this.prisma.assessmentTopic.upsert({
+        where: { assessmentId_topicId: { assessmentId, topicId: tg.topicId } },
+        create: { assessmentId, topicId: tg.topicId, ...sourceFields },
+        update: sourceFields,
+      });
+    }
+
+    const cloIds = Array.from(
+      new Set([
+        ...(dto.selectedCloIds ?? []),
+        ...dto.topicGenerations.flatMap((tg) => tg.cloIds),
+      ]),
+    ).filter((cloId) => Number.isInteger(cloId) && cloId > 0);
+    if (cloIds.length) {
+      const existingClos = await this.prisma.clo.findMany({
+        where: { id: { in: cloIds }, courseId },
+        select: { id: true },
+      });
+      await this.prisma.assessmentClo.createMany({
+        data: existingClos.map((clo) => ({ assessmentId, cloId: clo.id })),
         skipDuplicates: true,
       });
     }
 
     return updatedAssessment;
+  }
+
+  /**
+   * Resolve the material each topic's questions are grounded in. Throws before
+   * queueing when a chosen source is missing so the teacher sees it immediately.
+   */
+  private async resolveTopicSources(
+    tenantId: number,
+    courseId: number,
+    dto: GenerateAssessmentDto,
+    options: { retrieve?: boolean } = {},
+  ): Promise<Map<number, TopicSourceMaterial>> {
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId },
+      select: {
+        title: true,
+        code: true,
+        description: true,
+        mainObjective: true,
+        level: true,
+        references: true,
+        topics: {
+          select: { id: true, title: true, topicNumber: true },
+          orderBy: { topicNumber: 'asc' },
+        },
+        clos: { select: { id: true, code: true, description: true } },
+      },
+    });
+    if (!course) throw new NotFoundException(ErrorMessageKey.COURSE_NOT_FOUND);
+
+    const slideTopicIds = dto.topicGenerations
+      .filter((tg) => topicSourceOf(tg).type === 'SLIDES')
+      .map((tg) => tg.topicId);
+    const slideContents = slideTopicIds.length
+      ? await this.prisma.topicContent.findMany({
+          where: {
+            courseId,
+            topicId: { in: slideTopicIds },
+            type: 'SLIDES',
+            status: 'COMPLETED',
+          },
+          select: { topicId: true, content: true },
+        })
+      : [];
+
+    const materials = new Map<number, TopicSourceMaterial>();
+    for (const tg of dto.topicGenerations) {
+      const topic = course.topics.find((item) => item.id === tg.topicId);
+      if (!topic) {
+        throw new BadRequestException(ErrorMessageKey.ASSESSMENT_SOURCE_TOPIC_INVALID);
+      }
+      const source = topicSourceOf(tg);
+
+      if (source.type === 'SLIDES') {
+        const content = slideContents.find((item) => item.topicId === tg.topicId)?.content;
+        const slides = content ? await topicSlidesText(content) : [];
+        if (slides.length === 0) {
+          throw new BadRequestException(
+            ErrorMessageKey.ASSESSMENT_SOURCE_SLIDES_UNAVAILABLE,
+          );
+        }
+        materials.set(tg.topicId, {
+          type: 'SLIDES',
+          label: `Slides of topic "${topic.title}"`,
+          chunks: chunkSourceText(slides.map((text, index) => `Slide ${index + 1}:\n${text}`)),
+        });
+        continue;
+      }
+
+      if (source.type === 'REFERENCE') {
+        const { sections, labels } = referenceChaptersText(
+          course.references,
+          source.references,
+        );
+        if (sections.length === 0) {
+          throw new BadRequestException(
+            ErrorMessageKey.ASSESSMENT_SOURCE_REFERENCE_REQUIRED,
+          );
+        }
+        const retrieved = options.retrieve
+          ? await this.retrieveReferenceSections(tenantId, courseId, {
+              topicTitle: topic.title,
+              clos: course.clos.filter((clo) => tg.cloIds.includes(clo.id)),
+              selections: source.references,
+              questionCount: tg.questionTypes.reduce(
+                (sum, item) => sum + item.questionTypeNumber,
+                0,
+              ),
+            })
+          : null;
+        materials.set(tg.topicId, {
+          type: 'REFERENCE',
+          label: labels.join('; '),
+          chunks: chunkSourceText(retrieved ?? sections),
+        });
+        continue;
+      }
+
+      materials.set(tg.topicId, {
+        type: 'COURSE_SPECIFICATION',
+        label: 'Course specification',
+        chunks: [
+          courseSpecificationText({
+            course,
+            topicTitle: topic.title,
+            courseTopicTitles: course.topics.map((item) => item.title),
+          }),
+        ],
+      });
+    }
+
+    return materials;
+  }
+
+  /**
+   * Most relevant passages (pgvector cosine search) of the selected chapters,
+   * ordered best-first so each question draws on a different strong excerpt.
+   * Returns null to fall back to the chapters' full text when the references
+   * are not indexed yet (a sync is queued) or the search fails.
+   */
+  private async retrieveReferenceSections(
+    tenantId: number,
+    courseId: number,
+    input: {
+      topicTitle: string;
+      clos: { code: string; description: string }[];
+      selections: ReferenceChapterSelection[];
+      questionCount: number;
+    },
+  ): Promise<string[] | null> {
+    const query = [
+      `Topic: ${input.topicTitle}`,
+      ...input.clos.map((clo) => `${clo.code}: ${clo.description}`),
+    ].join('\n');
+    try {
+      const result = await this.referenceVectorService.searchReferenceChunks({
+        tenantId,
+        courseId,
+        query,
+        selections: input.selections,
+        limit: Math.min(60, Math.max(8, input.questionCount * 4)),
+      });
+      if (!result.ready) {
+        await this.referenceVectorService.enqueueCourseSync(courseId, { tenantId });
+        return null;
+      }
+      if (result.chunks.length === 0) return null;
+      return result.chunks.map(
+        (chunk) =>
+          `### ${chunk.referenceTitle || 'Reference'} — ${chunk.chapterName || `Chapter ${chunk.chapterIndex + 1}`}\n${chunk.content.trim()}`,
+      );
+    } catch (error) {
+      console.warn(
+        '[assessment] reference vector search failed, using chapter text',
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
   }
 
   private async saveGeneratedQuestion(
@@ -671,7 +908,14 @@ export class AssessmentService {
   /**
    * Concern 1: Context Preparation & Data Fetching
    */
-  private async preparePromptPayload(dto: GenerateAssessmentDto) {
+  private async preparePromptPayload(
+    dto: GenerateAssessmentDto,
+    tenantId: number,
+    courseId: number,
+  ) {
+    const sourceMaterials = await this.resolveTopicSources(tenantId, courseId, dto, {
+      retrieve: true,
+    });
     const enrichedTopics = await Promise.all(
       dto.topicGenerations.map(async (topicGen) => {
         const topic = await this.prisma.topic.findUnique({
@@ -771,6 +1015,7 @@ export class AssessmentService {
           topicTitle: topic?.title ?? 'Unknown Topic',
           topicNumber: topic?.topicNumber ?? 0,
           closDetails,
+          sourceMaterial: sourceMaterials.get(topicGen.topicId),
         };
       }),
     );
@@ -823,6 +1068,7 @@ export class AssessmentService {
     questionIndex: number;
     totalQuestions: number;
     existingQuestionTexts: string[];
+    source: { type: string; label: string; excerpt: string } | null;
   }): Promise<string> {
     try {
       const response = await createChatCompletion(
@@ -2445,6 +2691,11 @@ export class AssessmentService {
           },
           orderBy: { topicId: 'asc' },
         },
+        assessmentClos: {
+          include: {
+            clo: { select: { id: true, code: true, description: true } },
+          },
+        },
         questions: {
           include: {
             questionOptions: { orderBy: { order: 'asc' } },
@@ -2567,8 +2818,26 @@ export class AssessmentService {
     if (!assessment) {
       throw new NotFoundException('Assessment is not found');
     }
-    return await this.prisma.assessment.delete({
-      where: { id },
-    });
+    // questions, question_clos and assessment_topic reference assessments
+    // without ON DELETE CASCADE, so they must go first.
+    return await this.prisma.$transaction(
+      async (tx) => {
+        const questionIds = (
+          await tx.question.findMany({
+            where: { assessmentId: id },
+            select: { id: true },
+          })
+        ).map((question) => question.id);
+        if (questionIds.length > 0) {
+          await tx.questionClo.deleteMany({
+            where: { questionId: { in: questionIds } },
+          });
+          await tx.question.deleteMany({ where: { id: { in: questionIds } } });
+        }
+        await tx.assessmentTopic.deleteMany({ where: { assessmentId: id } });
+        return tx.assessment.delete({ where: { id } });
+      },
+      { maxWait: 15_000, timeout: 60_000 },
+    );
   }
 }

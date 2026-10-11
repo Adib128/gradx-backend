@@ -6,12 +6,14 @@ import { BullModule } from '@nestjs/bullmq';
 import { CourseProcessors } from './processors/course-extraction.processors';
 import { TopicService } from './topic.service';
 import { CourseReportsService } from './course-reports.service';
+import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.module';
 
 @Module({
   imports: [
     BullModule.registerQueue({
       name: 'course-extraction',
     }),
+    ReferenceVectorModule,
   ],
   controllers: [CourseController],
   providers: [

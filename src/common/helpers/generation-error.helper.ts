@@ -12,7 +12,8 @@ const MESSAGE_ALIASES: Array<{ pattern: RegExp; key: ErrorMessageKey }> = [
     key: ErrorMessageKey.GENERATION_JOB_NOT_FOUND,
   },
   {
-    pattern: /402|requires more credits|can only afford|insufficient.?credit|max_tokens/i,
+    pattern:
+      /402|requires more credits|can only afford|insufficient.?credit|max_tokens|key limit exceeded|openrouter_key_limit/i,
     key: ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
   },
   {

@@ -31,6 +31,7 @@ import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
 import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
+import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('courses')
@@ -40,6 +41,7 @@ export class CourseController {
     private readonly courseAIService: CourseAIService,
     private readonly topicService: TopicService,
     private readonly courseReportsService: CourseReportsService,
+    private readonly referenceVectorService: ReferenceVectorService,
   ) {}
 
   @Get()
@@ -80,6 +82,70 @@ export class CourseController {
           .filter(Boolean)
       : undefined;
     return this.courseService.findOne(tenantId, +id, includes);
+  }
+
+  /** pgvector index state of each reference document (aligned with `references`). */
+  @Get(':id/references/embeddings')
+  getReferenceEmbeddings(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.referenceVectorService.getCourseStatus(tenantId, id);
+  }
+
+  @Post(':id/references/embeddings/reindex')
+  reindexReferenceEmbeddings(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('force') force?: string,
+  ) {
+    return this.referenceVectorService.reindexCourse(tenantId, id, {
+      force: force === 'true' || force === '1',
+      userId,
+    });
+  }
+
+  /** Debug: stored chunks + vector previews (`referenceIndex`, `limit` ≤ 200, `offset`). */
+  @Get(':id/references/embeddings/debug')
+  debugReferenceEmbeddings(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('referenceIndex') referenceIndex?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const refIndex = referenceIndex === undefined || referenceIndex === '' ? undefined : Number(referenceIndex);
+    return this.referenceVectorService.debugCourse(tenantId, id, {
+      referenceIndex: Number.isInteger(refIndex) ? refIndex : undefined,
+      limit: Math.min(200, Math.max(1, Number(limit) || 20)),
+      offset: Math.max(0, Number(offset) || 0),
+    });
+  }
+
+  /** Debug: semantic search over the course's indexed references. */
+  @Post(':id/references/embeddings/debug/search')
+  debugSearchReferenceEmbeddings(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { query?: unknown; referenceIndex?: unknown; limit?: unknown },
+  ) {
+    const query = typeof body?.query === 'string' ? body.query.trim() : '';
+    if (!query) throw new BadRequestException('QUERY_REQUIRED');
+    const refIndex = Number(body.referenceIndex);
+    return runWithAiContext({ userId, tenantId }, () =>
+      this.referenceVectorService.debugSearch(tenantId, id, {
+        query: query.slice(0, 2000),
+        referenceIndex:
+          body.referenceIndex === undefined || body.referenceIndex === null || body.referenceIndex === ''
+            ? undefined
+            : Number.isInteger(refIndex)
+              ? refIndex
+              : undefined,
+        limit: Math.min(50, Math.max(1, Number(body.limit) || 10)),
+      }),
+    );
   }
 
   @Get(':id/references/:refIndex/file')

@@ -632,6 +632,49 @@ function readZipTextFile(buffer: Buffer, filename: string): string {
   throw new Error('INVALID_DOCX');
 }
 
+/** Text of every zip entry whose name passes `filter` (e.g. PPTX slide XML). */
+export function readZipTextEntries(
+  buffer: Buffer,
+  filter: (entryName: string) => boolean,
+): Array<{ name: string; text: string }> {
+  const endOfCentralDirectoryOffset = findEndOfCentralDirectory(buffer);
+  if (endOfCentralDirectoryOffset < 0) return [];
+
+  const totalEntries = buffer.readUInt16LE(endOfCentralDirectoryOffset + 10);
+  let cursor = buffer.readUInt32LE(endOfCentralDirectoryOffset + 16);
+  const entries: Array<{ name: string; text: string }> = [];
+
+  for (let index = 0; index < totalEntries; index++) {
+    if (buffer.readUInt32LE(cursor) !== 0x02014b50) break;
+
+    const compressionMethod = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const fileNameLength = buffer.readUInt16LE(cursor + 28);
+    const extraFieldLength = buffer.readUInt16LE(cursor + 30);
+    const fileCommentLength = buffer.readUInt16LE(cursor + 32);
+    const localHeaderOffset = buffer.readUInt32LE(cursor + 42);
+    const entryName = buffer
+      .subarray(cursor + 46, cursor + 46 + fileNameLength)
+      .toString('utf8');
+
+    if (filter(entryName)) {
+      entries.push({
+        name: entryName,
+        text: readZipEntryData(
+          buffer,
+          localHeaderOffset,
+          compressedSize,
+          compressionMethod,
+        ).toString('utf8'),
+      });
+    }
+
+    cursor += 46 + fileNameLength + extraFieldLength + fileCommentLength;
+  }
+
+  return entries;
+}
+
 export async function extractDocxPlainText(buffer: Buffer): Promise<string> {
   const documentXml = readZipTextFile(buffer, 'word/document.xml');
   return extractTextFromWordXml(documentXml);

@@ -36,6 +36,11 @@ export function setAiUsageLogger(logger: AiUsageLogger | null) {
   aiUsageLogger = logger;
 }
 
+export async function recordAiUsage(entry: AiUsageLogEntry) {
+  if (!aiUsageLogger) return;
+  await aiUsageLogger(entry);
+}
+
 export type ChatCompletionContext = {
   userId?: number | null;
   tenantId?: number | null;
@@ -167,6 +172,120 @@ export async function createChatCompletion(
   } catch (error) {
     await log({
       success: false,
+      errorMessage:
+        error instanceof Error ? error.message : String(error ?? 'AI_ERROR'),
+    });
+    throw error;
+  }
+}
+
+export type ChatStreamOptions = {
+  context?: ChatCompletionContext;
+  signal?: AbortSignal;
+  /** Called for every content delta with the text accumulated so far. */
+  onDelta?: (delta: string, text: string) => void;
+};
+
+export type ChatStreamResult = {
+  text: string;
+  finishReason: string | null;
+};
+
+/**
+ * Streaming counterpart of {@link createChatCompletion}: same credit retry
+ * (only possible before the first token) and the same usage logging, taken
+ * from the final `include_usage` chunk.
+ */
+export async function streamChatCompletion(
+  client: OpenAI,
+  params: Omit<ChatParams, 'stream' | 'max_tokens' | 'stream_options'> & {
+    max_tokens?: number;
+  },
+  options: ChatStreamOptions = {},
+): Promise<ChatStreamResult> {
+  const requested = params.max_tokens ?? OPENROUTER_MAX_OUTPUT_TOKENS;
+  const startedAt = new Date();
+  const started = startedAt.getTime();
+  const model =
+    typeof (params as { model?: string }).model === 'string'
+      ? (params as { model?: string }).model
+      : null;
+  const stored = aiContextStorage.getStore();
+  const merged: ChatCompletionContext = {
+    ...stored,
+    ...options.context,
+    purpose: options.context?.purpose || stored?.purpose || 'other',
+  };
+
+  const log = async (
+    partial: Partial<AiUsageLogEntry> & { success: boolean },
+  ) => {
+    if (!aiUsageLogger) return;
+    await aiUsageLogger({
+      userId: merged.userId ?? null,
+      tenantId: merged.tenantId ?? null,
+      purpose: merged.purpose || 'other',
+      model,
+      requestPreview: previewText((params as { messages?: unknown }).messages),
+      startedAt,
+      durationMs: Date.now() - started,
+      ...partial,
+    });
+  };
+
+  const open = (maxTokens: number) =>
+    client.chat.completions.create(
+      {
+        ...params,
+        max_tokens: maxTokens,
+        stream: true,
+        stream_options: { include_usage: true },
+      } as ChatParams & { stream: true },
+      { signal: options.signal },
+    );
+
+  let text = '';
+  try {
+    let stream: Awaited<ReturnType<typeof open>>;
+    try {
+      stream = await open(requested);
+    } catch (error) {
+      const affordable = affordableTokensFromError(error);
+      if (affordable === null) throw error;
+      const retryTokens = Math.floor(
+        affordable * AFFORDABLE_TOKENS_SAFETY_RATIO,
+      );
+      if (retryTokens < MIN_USABLE_OUTPUT_TOKENS || retryTokens >= requested) {
+        throw error;
+      }
+      stream = await open(retryTokens);
+    }
+
+    let finishReason: string | null = null;
+    let usage: ChatCompletion['usage'] | undefined;
+    for await (const chunk of stream) {
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta?.content;
+      if (delta) {
+        text += delta;
+        options.onDelta?.(delta, text);
+      }
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      if (chunk.usage) usage = chunk.usage;
+    }
+
+    await log({
+      success: true,
+      responsePreview: previewText(text),
+      promptTokens: usage?.prompt_tokens ?? null,
+      completionTokens: usage?.completion_tokens ?? null,
+      totalTokens: usage?.total_tokens ?? null,
+    });
+    return { text, finishReason };
+  } catch (error) {
+    await log({
+      success: false,
+      responsePreview: previewText(text),
       errorMessage:
         error instanceof Error ? error.message : String(error ?? 'AI_ERROR'),
     });

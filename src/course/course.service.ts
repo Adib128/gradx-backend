@@ -26,6 +26,7 @@ import { CourseAIService } from './course-ai.service';
 import type { Response } from 'express';
 import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { normalizeReferencesForStorage } from './utils/normalize-course-confirm.util';
+import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
 import {
   extractReferenceDocumentText,
   MAX_REFERENCE_UPLOAD_BYTES,
@@ -144,6 +145,7 @@ export class CourseService {
     private readonly prisma: PrismaService,
     @InjectQueue('course-extraction') private readonly extractionQueue: Queue,
     private readonly courseAIService: CourseAIService,
+    private readonly referenceVectorService: ReferenceVectorService,
   ) {}
 
   async confirmAndSave(tenantId: number, createCourseDto: CreateCourseDto) {
@@ -198,7 +200,7 @@ export class CourseService {
     await this.fillUnmappedTopicClos(clos, topics);
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const saved = await this.prisma.$transaction(async (tx) => {
         const assessmentPlan = (assessments ?? [])
           .map((assessment) => ({
             title: String(assessment.title ?? '').trim() || null,
@@ -326,6 +328,8 @@ export class CourseService {
         maxWait: 15_000,
         timeout: 60_000,
       });
+      await this.referenceVectorService.enqueueCourseSync(saved.id, { tenantId });
+      return saved;
     } catch (error) {
       if (
         error instanceof BadRequestException ||
@@ -1155,7 +1159,7 @@ export class CourseService {
       await this.assertCourseCodeAvailable(tenantId, code, id);
     }
 
-    return this.prisma.course.update({
+    const updated = await this.prisma.course.update({
       where: { id },
       data: {
         ...(title !== undefined && { title }),
@@ -1186,6 +1190,10 @@ export class CourseService {
         ...pickCourseSpecFields(updateCourseDto),
       },
     });
+    if (references !== undefined) {
+      await this.referenceVectorService.enqueueCourseSync(id, { tenantId });
+    }
+    return updated;
   }
 
   /**
@@ -1246,7 +1254,7 @@ export class CourseService {
         ? body.title.trim()
         : undefined;
 
-    return this.prisma.course.update({
+    const updated = await this.prisma.course.update({
       where: { id },
       data: {
         syllabusData,
@@ -1311,6 +1319,10 @@ export class CourseService {
         ...pickCourseSpecFields(body),
       },
     });
+    if (body.references !== undefined) {
+      await this.referenceVectorService.enqueueCourseSync(id, { tenantId });
+    }
+    return updated;
   }
 
   /** Update only meta fields — safe shorthand used by the Course Details edit modal. */
@@ -1344,7 +1356,7 @@ export class CourseService {
         ? undefined
         : Math.min(100, Math.max(0, Math.round(Number(body.passRate))));
 
-    return this.prisma.course.update({
+    const updated = await this.prisma.course.update({
       where: { id },
       data: {
         ...(body.title !== undefined && { title: body.title }),
@@ -1393,6 +1405,10 @@ export class CourseService {
         ...pickCourseSpecFields(body),
       },
     });
+    if (body.references !== undefined) {
+      await this.referenceVectorService.enqueueCourseSync(id, { tenantId });
+    }
+    return updated;
   }
 
   async remove(tenantId: number, id: number) {

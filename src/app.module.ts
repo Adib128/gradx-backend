@@ -10,6 +10,7 @@ import { StudentModule } from './student/student.module';
 import { CourseModule } from './course/course.module';
 import { BullModule } from '@nestjs/bullmq';
 import { TopicContentModule } from './topic-content/topic-content.module';
+import { SlideStudioModule } from './slide-studio/slide-studio.module';
 import { AssessmentModule } from './assessment/assessment.module';
 import { CloModule } from './clo/clo.module';
 import { GradingModule } from './grading/grading.module';
@@ -36,6 +37,7 @@ import { PackageModule } from './package/package.module';
       }),
     }),
     TopicContentModule,
+    SlideStudioModule,
     AssessmentModule,
     CloModule,
     GradingModule,

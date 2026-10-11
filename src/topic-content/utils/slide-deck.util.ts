@@ -25,6 +25,7 @@ export type SlideDeckSlide = {
   callout?: { label?: string; text?: string } | null;
   formula?: { latex?: string; explanation?: string } | null;
   diagram?: { title?: string; mermaid?: string } | null;
+  code?: SlideCode | null;
   example?: {
     problem?: string;
     steps?: string[];
@@ -49,7 +50,89 @@ export type SlideDeck = {
   [key: string]: unknown;
 };
 
+export type SlideCode = {
+  language: string;
+  source: string;
+  /** 1-based line numbers to emphasise. */
+  highlight?: number[];
+  output?: string;
+  caption?: string;
+};
+
 const MAX_BULLETS = 5;
+/** Longer listings are cut; lint asks for ≤ 12 lines long before this. */
+const MAX_CODE_LINES = 24;
+const MAX_OUTPUT_LINES = 6;
+const CODE_LANGUAGE_ALIASES: Record<string, string> = {
+  py: 'python',
+  python3: 'python',
+  js: 'javascript',
+  node: 'javascript',
+  ts: 'typescript',
+  'c++': 'cpp',
+  cxx: 'cpp',
+  'c#': 'csharp',
+  cs: 'csharp',
+  sh: 'shell',
+  bash: 'shell',
+  zsh: 'shell',
+  console: 'shell',
+  terminal: 'shell',
+  psql: 'sql',
+  mysql: 'sql',
+  plsql: 'sql',
+  golang: 'go',
+  kt: 'kotlin',
+  rb: 'ruby',
+};
+
+function codeBlockLines(value: unknown, maxLines: number): string {
+  const raw = Array.isArray(value) ? value.join('\n') : typeof value === 'string' ? value : '';
+  const lines = raw
+    .replace(/^```[\w+#-]*[ \t]*\r?\n?|\n?```\s*$/g, '')
+    .replace(/\t/g, '    ')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/, ''));
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const indent = Math.min(
+    ...lines.filter((line) => line.trim()).map((line) => line.match(/^ */)?.[0].length ?? 0),
+  );
+  return lines
+    .slice(0, maxLines)
+    .map((line) => (Number.isFinite(indent) ? line.slice(indent) : line))
+    .join('\n');
+}
+
+/** Normalizes a model-written code block: fences, tabs, indentation, language aliases. */
+export function normalizeSlideCode(raw: unknown): SlideCode | null {
+  const value =
+    typeof raw === 'string' ? { source: raw } : raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  if (!value) return null;
+  const fence = asText(value.source).match(/^```([\w+#-]+)/);
+  // Models sometimes send `code: {code: "..."}` instead of `source`.
+  const source = codeBlockLines(value.source ?? value.code, MAX_CODE_LINES);
+  if (!source.trim()) return null;
+  const rawLanguage = asText(value.language || fence?.[1]).toLowerCase();
+  const lineCount = source.split('\n').length;
+  const highlight = [
+    ...new Set(
+      asArray<unknown>(value.highlight)
+        .map((line) => Math.round(Number(line)))
+        .filter((line) => line >= 1 && line <= lineCount),
+    ),
+  ]
+    .sort((a, b) => a - b)
+    .slice(0, 6);
+  const output = codeBlockLines(value.output, MAX_OUTPUT_LINES);
+  return {
+    language: CODE_LANGUAGE_ALIASES[rawLanguage] ?? (rawLanguage || 'text'),
+    source,
+    ...(highlight.length ? { highlight } : {}),
+    ...(output ? { output } : {}),
+    ...(asText(value.caption) ? { caption: asText(value.caption) } : {}),
+  };
+}
 const MAX_BULLET_WORDS = 18;
 const MAX_EXAMPLE_STEPS_PER_SLIDE = 4;
 const MAX_SPEAKER_NOTE_CHARS = 900;
@@ -194,6 +277,9 @@ function canonicalizeTypeAndLayout(
     FORMULA: 'FORMULA_FOCUS',
     EXAMPLE: 'EXAMPLE_STEPS',
     STEPS: 'EXAMPLE_STEPS',
+    CODE: 'BULLETS',
+    CODE_FOCUS: 'BULLETS',
+    CODE_BLOCK: 'BULLETS',
   };
   layout = layoutAliases[layout] || layout;
 
@@ -284,6 +370,7 @@ function splitBulletSlide(slide: SlideDeckSlide): SlideDeckSlide[] {
     part.bullets = chunk;
     part.leftColumn = null;
     part.rightColumn = null;
+    if (index > 0) part.code = null;
     part.layout = part.layout || 'BULLETS';
     return part;
   });
@@ -310,6 +397,7 @@ function slideHasBody(slide: SlideDeckSlide): boolean {
   }
   if (asArray((slide.table as any)?.headers).length > 0) return true;
   if (asText(slide.diagram?.mermaid)) return true;
+  if (asText(slide.code?.source)) return true;
   return false;
 }
 
@@ -408,7 +496,7 @@ function repairEmptySlideBody(slide: SlideDeckSlide): SlideDeckSlide {
   return slide;
 }
 
-function normalizeOneSlide(raw: unknown): SlideDeckSlide | null {
+export function normalizeOneSlide(raw: unknown): SlideDeckSlide | null {
   if (!raw || typeof raw !== 'object') return null;
   const slide = raw as SlideDeckSlide;
   const title = asText(slide.title || (slide as any).heading);
@@ -455,12 +543,13 @@ function normalizeOneSlide(raw: unknown): SlideDeckSlide | null {
   }
 
   // Promote bullets into typed bodies when the model used the wrong field.
-  if (!example && (type === 'EXAMPLE' || layout === 'EXAMPLE_STEPS') && bullets.length) {
+  if (!example && type === 'EXAMPLE' && bullets.length) {
     example = {
       problem: bullets[0],
       steps: bullets.slice(1),
       solution: '',
     };
+    bullets = [];
   }
   if (
     !callout &&
@@ -516,6 +605,7 @@ function normalizeOneSlide(raw: unknown): SlideDeckSlide | null {
           mermaid: asText(slide.diagram.mermaid),
         }
       : null,
+    code: normalizeSlideCode(slide.code),
     example,
     cloCode: asText(slide.cloCode) || null,
     bloomLevel: asText(slide.bloomLevel) || null,
@@ -649,6 +739,7 @@ function slideKeepPriority(slide: SlideDeckSlide, index: number): number {
   if (type === 'NEXT_STEPS') return 750;
   if (type === 'SECTION' || layout === 'SECTION_DIVIDER') return 700;
   if (type === 'EXAMPLE' || layout === 'EXAMPLE_STEPS') return 650;
+  if (type === 'CODE') return 630;
   if (type === 'DEFINITION' || layout === 'DEFINITION') return 620;
   if (type === 'FORMULA' || layout === 'FORMULA_FOCUS') return 610;
   if (type === 'CHECKPOINT' || type === 'ACTIVITY') return 580;

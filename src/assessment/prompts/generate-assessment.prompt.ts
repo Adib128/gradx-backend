@@ -78,6 +78,26 @@ ${outputContract}
 `.trim();
 };
 
+const sourceSection = (
+  source: { type: string; label: string; excerpt: string } | null | undefined,
+): string => {
+  if (!source || !source.excerpt.trim()) return '';
+  const instruction =
+    source.type === 'COURSE_SPECIFICATION'
+      ? 'No slides or reference document were provided for this topic. Use the course specification below together with your expert knowledge of the subject to write an accurate question that stays within the topic scope.'
+      : 'Base the question strictly on the excerpt below. The question, the correct answer, and the explanation must be supported by this text. Do not ask about content that is not in it.';
+  return `
+========================================================================
+SOURCE MATERIAL — ${source.label}
+========================================================================
+${instruction}
+
+<<<SOURCE
+${source.excerpt}
+SOURCE>>>
+`;
+};
+
 /** Focused prompt used for incremental (one-question-at-a-time) generation. */
 export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
   assessment: any;
@@ -86,6 +106,7 @@ export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
   questionIndex: number;
   totalQuestions: number;
   existingQuestionTexts: string[];
+  source?: { type: string; label: string; excerpt: string } | null;
 }): string => {
   const {
     assessment,
@@ -94,6 +115,7 @@ export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
     questionIndex,
     totalQuestions,
     existingQuestionTexts,
+    source,
   } = payload;
   const difficultyStrategy = getDifficultyRuleString(assessment.difficulty);
   const tg = topicGeneration;
@@ -130,6 +152,7 @@ ${(tg.closDetails || [])
   .join('\n')}
 
 Pick ONE CLO code from the list above for this question and include it as "cloCode" (example: "1.1").
+${sourceSection(source)}
 
 ========================================================================
 AVOID DUPLICATES

@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { join } from 'node:path';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreateCourseAnswerSheetDto } from './dto/create-course-answer-sheet.dto';
 import { UpdateCourseAnswerSheetDto } from './dto/update-course-answer-sheet.dto';
@@ -239,8 +239,12 @@ export class CourseAnswerSheetService {
   }
 
   async remove(courseId: number, id: number, tenantId: number) {
-    await this.findOne(courseId, id, tenantId);
-    return this.prisma.courseAnswerSheet.delete({ where: { id } });
+    const sheet = await this.findOne(courseId, id, tenantId);
+    const deleted = await this.prisma.courseAnswerSheet.delete({ where: { id } });
+    if (sheet.pdfPath) {
+      await unlink(sheet.pdfPath).catch(() => undefined);
+    }
+    return deleted;
   }
 
   async download(courseId: number, id: number, tenantId: number) {
