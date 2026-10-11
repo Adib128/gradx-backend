@@ -91,6 +91,94 @@ function affordableTokensFromError(error: unknown): number | null {
   return null;
 }
 
+/** Anthropic rejects thinking budgets below this, so smaller ones are dropped. */
+const MIN_REASONING_TOKENS = 1024;
+
+/**
+ * Caps the request at `maxTokens`. A reasoning budget shrinks in proportion,
+ * otherwise thinking could consume the whole reduced ceiling and leave no answer.
+ */
+function withTokenBudget<P extends object>(
+  params: P,
+  maxTokens: number,
+  requested: number,
+): P & { max_tokens: number } {
+  const { reasoning } = params as { reasoning?: { max_tokens?: unknown } };
+  if (
+    maxTokens >= requested ||
+    typeof reasoning?.max_tokens !== 'number' ||
+    !reasoning.max_tokens
+  ) {
+    return { ...params, max_tokens: maxTokens };
+  }
+  const budget = Math.floor((reasoning.max_tokens * maxTokens) / requested);
+  if (budget < MIN_REASONING_TOKENS) {
+    const rest = { ...params } as P & { reasoning?: unknown };
+    delete rest.reasoning;
+    return { ...rest, max_tokens: maxTokens };
+  }
+  return {
+    ...params,
+    max_tokens: maxTokens,
+    reasoning: { ...reasoning, max_tokens: budget },
+  };
+}
+
+/**
+ * OpenRouter only says which budget ran out (account credits vs. the key's own
+ * spending limit) in `error.metadata.limit_source`; copy it into the message so
+ * string-based error classification can tell them apart.
+ */
+function tagLimitSource(error: unknown): unknown {
+  const source = (
+    error as { error?: { metadata?: { limit_source?: unknown } } }
+  )?.error?.metadata?.limit_source;
+  if (
+    typeof source === 'string' &&
+    error instanceof Error &&
+    !error.message.includes('limit_source:')
+  ) {
+    error.message = `${error.message} [limit_source: ${source}]`;
+  }
+  return error;
+}
+
+export type OpenRouterBalance = {
+  /** USD left on the OpenRouter account. */
+  account: number | null;
+  /** USD left under the API key's spending limit; null when it has none. */
+  key: number | null;
+};
+
+export async function fetchOpenRouterBalance(
+  client: OpenAI,
+): Promise<OpenRouterBalance> {
+  const base = client.baseURL.replace(/\/+$/, '');
+  const get = async (path: string) => {
+    const response = await fetch(`${base}${path}`, {
+      headers: { Authorization: `Bearer ${client.apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return null;
+    return ((await response.json()) as { data?: Record<string, unknown> })
+      .data;
+  };
+  const [credits, key] = await Promise.all([
+    get('/credits').catch(() => null),
+    get('/key').catch(() => null),
+  ]);
+  const total = Number(credits?.total_credits);
+  const used = Number(credits?.total_usage);
+  const keyLeft = key?.limit_remaining;
+  return {
+    account:
+      credits && Number.isFinite(total) && Number.isFinite(used)
+        ? Math.max(0, total - used)
+        : null,
+    key: typeof keyLeft === 'number' ? Math.max(0, keyLeft) : null,
+  };
+}
+
 /**
  * Creates a chat completion, transparently retrying once with a smaller
  * `max_tokens` when the configured ceiling is more than the remaining
@@ -154,8 +242,7 @@ export async function createChatCompletion(
       }
 
       result = (await client.chat.completions.create({
-        ...params,
-        max_tokens: retryTokens,
+        ...withTokenBudget(params, retryTokens, requested),
         stream: false,
       } as ChatParams)) as ChatCompletion;
     }
@@ -170,6 +257,7 @@ export async function createChatCompletion(
     });
     return result;
   } catch (error) {
+    tagLimitSource(error);
     await log({
       success: false,
       errorMessage:
@@ -236,8 +324,7 @@ export async function streamChatCompletion(
   const open = (maxTokens: number) =>
     client.chat.completions.create(
       {
-        ...params,
-        max_tokens: maxTokens,
+        ...withTokenBudget(params, maxTokens, requested),
         stream: true,
         stream_options: { include_usage: true },
       } as ChatParams & { stream: true },
@@ -283,6 +370,7 @@ export async function streamChatCompletion(
     });
     return { text, finishReason };
   } catch (error) {
+    tagLimitSource(error);
     await log({
       success: false,
       responsePreview: previewText(text),

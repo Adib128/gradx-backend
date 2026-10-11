@@ -436,7 +436,12 @@ export class SlideStudioService implements OnModuleDestroy {
           (error as { response?: { message?: unknown } })?.response?.message ?? message,
           ErrorMessageKey.SLIDE_STUDIO_FAILED,
         );
-        send('error', { errorKey, message: errorKey });
+        const balance =
+          errorKey === ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED ||
+          errorKey === ErrorMessageKey.GENERATION_AI_KEY_LIMIT_EXCEEDED
+            ? await this.llm.balance().catch(() => null)
+            : null;
+        send('error', { errorKey, message: errorKey, ...(balance ? { balance } : {}) });
       }
     } finally {
       finished = true;
