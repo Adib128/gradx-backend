@@ -12,6 +12,10 @@ const MESSAGE_ALIASES: Array<{ pattern: RegExp; key: ErrorMessageKey }> = [
     key: ErrorMessageKey.GENERATION_JOB_NOT_FOUND,
   },
   {
+    pattern: /workspace (lifetime )?budget|limit_source: \w*workspace/i,
+    key: ErrorMessageKey.GENERATION_AI_WORKSPACE_BUDGET_EXCEEDED,
+  },
+  {
     pattern: /key limit exceeded|limit_source: \w*key/i,
     key: ErrorMessageKey.GENERATION_AI_KEY_LIMIT_EXCEEDED,
   },

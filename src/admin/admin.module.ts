@@ -1,43 +1,15 @@
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AdminPackagesController } from './admin-packages.controller';
 import { AdminPackagesService } from './admin-packages.service';
-import { PrismaService } from 'prisma/prisma.service';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
-import { setAiUsageLogger } from 'src/common/helpers/openrouter-chat.helper';
+import { PackageModule } from 'src/package/package.module';
 
 @Module({
+  imports: [PackageModule],
   controllers: [AdminController, AdminPackagesController],
   providers: [AdminService, AdminPackagesService, RolesGuard],
   exports: [AdminService],
 })
-export class AdminModule implements OnModuleInit {
-  constructor(private readonly prisma: PrismaService) {}
-
-  onModuleInit() {
-    setAiUsageLogger(async (entry) => {
-      try {
-        await this.prisma.aiUsageLog.create({
-          data: {
-            userId: entry.userId ?? null,
-            tenantId: entry.tenantId ?? null,
-            purpose: entry.purpose || 'other',
-            model: entry.model || null,
-            requestPreview: entry.requestPreview || null,
-            responsePreview: entry.responsePreview || null,
-            promptTokens: entry.promptTokens ?? null,
-            completionTokens: entry.completionTokens ?? null,
-            totalTokens: entry.totalTokens ?? null,
-            success: entry.success,
-            errorMessage: entry.errorMessage || null,
-            durationMs: entry.durationMs ?? null,
-            startedAt: entry.startedAt ?? null,
-          },
-        });
-      } catch {
-        // Never break AI generation if logging fails.
-      }
-    });
-  }
-}
+export class AdminModule {}

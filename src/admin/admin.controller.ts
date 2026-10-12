@@ -62,6 +62,7 @@ export class AdminController {
       firstName?: string;
       lastName?: string;
       phone?: string | null;
+      aiTokenLimit?: number | null;
     },
   ) {
     return this.adminService.updateUser(id, body);

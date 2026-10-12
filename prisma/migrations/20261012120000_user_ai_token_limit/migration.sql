@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN "aiTokenLimit" INTEGER DEFAULT 500000;

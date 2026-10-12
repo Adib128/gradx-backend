@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ForbiddenException,
+  HttpException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -394,6 +396,7 @@ export class AssessmentService {
 
           lastQuestionError = ErrorMessageKey.ASSESSMENT_AI_QUESTION_FAILED;
         } catch (error) {
+          if (error instanceof ForbiddenException) throw error;
           lastQuestionError = error;
           nextQuestion = null;
         }
@@ -1049,6 +1052,7 @@ export class AssessmentService {
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (/402|credits|can only afford|max_tokens/i.test(message)) {
         throw new InternalServerErrorException(
@@ -1089,6 +1093,7 @@ export class AssessmentService {
 
       return response.choices[0].message.content ?? '{}';
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       const message = error instanceof Error ? error.message : String(error);
       if (/402|credits|can only afford|max_tokens/i.test(message)) {
         throw new InternalServerErrorException(

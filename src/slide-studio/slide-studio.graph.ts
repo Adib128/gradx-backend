@@ -7,6 +7,7 @@ import {
   type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
+import { ErrorMessageKey } from 'src/common/constants/error-message';
 import {
   fitSlideDeckToTarget,
   normalizeAndPaginateSlideDeck,
@@ -140,6 +141,9 @@ function llmFailure(error: unknown): { reason: string; retryable: boolean } {
   const status = Number((error as { status?: unknown }).status);
   const message =
     error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (message.includes(ErrorMessageKey.AI_TOKEN_LIMIT_REACHED)) {
+    return { reason: 'monthly AI token allowance used up', retryable: false };
+  }
   if (status === 402 || /credit|afford/i.test(message)) {
     return { reason: 'AI credits exhausted', retryable: false };
   }

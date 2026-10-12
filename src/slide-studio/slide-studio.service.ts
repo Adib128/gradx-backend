@@ -28,6 +28,7 @@ import { buildStudioGraph, type StudioGraph, type StudioStateType } from './slid
 import { SlideStudioLlm } from './slide-studio.llm';
 import { customTemplateDbId } from './slide-studio.templates';
 import { SlideTemplatesService } from './slide-templates.service';
+import { AiUsageService } from 'src/ai-usage/ai-usage.service';
 import type {
   StudioChapterSelection,
   StudioContext,
@@ -93,6 +94,7 @@ export class SlideStudioService implements OnModuleDestroy {
     private readonly referenceVector: ReferenceVectorService,
     private readonly llm: SlideStudioLlm,
     private readonly slideTemplates: SlideTemplatesService,
+    private readonly aiUsage: AiUsageService,
   ) {
     this.redis = new Redis({
       host: config.get<string>('REDIS_HOST') ?? 'localhost',
@@ -361,6 +363,7 @@ export class SlideStudioService implements OnModuleDestroy {
     payload: Partial<StudioStateType> | Command | null,
     res: Response,
   ) {
+    await this.aiUsage.assertWithinLimit(meta.userId);
     const locked = await this.redis.set(
       this.lockKey(sessionId),
       '1',

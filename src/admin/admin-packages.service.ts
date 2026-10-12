@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { Prisma } from 'generated/prisma/browser';
 import { PrismaService } from 'prisma/prisma.service';
+import { AiUsageService } from 'src/ai-usage/ai-usage.service';
 import { paginate } from 'src/common/helpers/paginate.helper';
+import { activeSubscriptionWhere } from 'src/package/package.service';
 import type {
   CreateBillingPeriodDto,
   CreatePackageDto,
@@ -41,7 +43,10 @@ const LEGACY_LIMIT_COLUMNS = {
 
 @Injectable()
 export class AdminPackagesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiUsage: AiUsageService,
+  ) {}
 
   // ── Packages ───────────────────────────────────────────────────────────
 
@@ -83,7 +88,8 @@ export class AdminPackagesService {
   async createPackage(dto: CreatePackageDto) {
     await this.assertPlanCodeFree(dto.code);
     const features = await this.normalizeFeatures(dto.features ?? []);
-    const prices = await this.normalizePrices(dto.prices ?? []);
+    const isFree = dto.isFree ?? false;
+    const prices = isFree ? [] : await this.normalizePrices(dto.prices ?? []);
 
     const id = await this.prisma.$transaction(async (tx) => {
       const plan = await tx.plan.create({
@@ -95,11 +101,14 @@ export class AdminPackagesService {
           descriptionAr: dto.descriptionAr || null,
           currency: dto.currency ?? 'SAR',
           isActive: dto.isActive ?? true,
+          isFree,
+          aiTokenLimit: dto.aiTokenLimit === undefined ? 500_000 : dto.aiTokenLimit,
           sortOrder: dto.sortOrder ?? 0,
           featureValues: { create: features },
           prices: { create: prices },
         },
       });
+      await this.assertSellable(tx, plan.id);
       await this.syncLegacyColumns(tx, plan.id);
       return plan.id;
     });
@@ -107,14 +116,20 @@ export class AdminPackagesService {
   }
 
   async updatePackage(id: number, dto: UpdatePackageDto) {
-    await this.getPackage(id);
+    const existing = await this.getPackage(id);
     if (dto.code !== undefined) await this.assertPlanCodeFree(dto.code, id);
     const features =
       dto.features !== undefined ? await this.normalizeFeatures(dto.features) : undefined;
-    const prices =
-      dto.prices !== undefined ? await this.normalizePrices(dto.prices) : undefined;
+    const isFree = dto.isFree ?? existing.isFree;
+    const prices = isFree
+      ? []
+      : dto.prices !== undefined
+        ? await this.normalizePrices(dto.prices)
+        : undefined;
+    const tokenLimitChanged =
+      dto.aiTokenLimit !== undefined && dto.aiTokenLimit !== existing.aiTokenLimit;
 
-    await this.prisma.$transaction(async (tx) => {
+    const affectedUserIds = await this.prisma.$transaction(async (tx) => {
       await tx.plan.update({
         where: { id },
         data: {
@@ -127,6 +142,8 @@ export class AdminPackagesService {
             dto.descriptionAr === undefined ? undefined : dto.descriptionAr || null,
           currency: dto.currency,
           isActive: dto.isActive,
+          isFree: dto.isFree,
+          aiTokenLimit: dto.aiTokenLimit,
           sortOrder: dto.sortOrder,
         },
       });
@@ -161,8 +178,13 @@ export class AdminPackagesService {
         }
       }
 
+      await this.assertSellable(tx, id);
       await this.syncLegacyColumns(tx, id);
+      return tokenLimitChanged
+        ? this.applyTokenLimitToSubscribers(tx, id, existing.aiTokenLimit, dto.aiTokenLimit ?? null)
+        : [];
     });
+    for (const userId of affectedUserIds) void this.aiUsage.publish(userId);
     return this.getPackage(id);
   }
 
@@ -258,6 +280,44 @@ export class AdminPackagesService {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
+
+  /** An enabled paid package must be purchasable for at least one period. */
+  private async assertSellable(tx: Tx, planId: number) {
+    const plan = await tx.plan.findUnique({
+      where: { id: planId },
+      select: {
+        isActive: true,
+        isFree: true,
+        _count: { select: { prices: { where: { isActive: true } } } },
+      },
+    });
+    if (plan?.isActive && !plan.isFree && plan._count.prices === 0) {
+      throw new BadRequestException('PLAN_PAID_NEEDS_PRICE');
+    }
+  }
+
+  /**
+   * Moves current subscribers still on the package's previous token limit to
+   * the new one; users an admin gave a custom limit keep it.
+   */
+  private async applyTokenLimitToSubscribers(
+    tx: Tx,
+    planId: number,
+    previous: number | null,
+    next: number | null,
+  ) {
+    const users = await tx.user.findMany({
+      where: {
+        aiTokenLimit: previous,
+        subscriptions: { some: { planId, ...activeSubscriptionWhere() } },
+      },
+      select: { id: true },
+    });
+    if (users.length === 0) return [];
+    const ids = users.map((user) => user.id);
+    await tx.user.updateMany({ where: { id: { in: ids } }, data: { aiTokenLimit: next } });
+    return ids;
+  }
 
   private async normalizeFeatures(input: PackageFeatureInput[]) {
     const unique = new Map(input.map((item) => [item.featureId, item]));

@@ -7,6 +7,8 @@ import { Prisma, SubscriptionStatus, UserRole } from 'generated/prisma/browser';
 import { PrismaService } from 'prisma/prisma.service';
 import { paginate } from 'src/common/helpers/paginate.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import { AiUsageService } from 'src/ai-usage/ai-usage.service';
+import { PackageService } from 'src/package/package.service';
 import * as argon2 from 'argon2';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, extname } from 'path';
@@ -20,7 +22,11 @@ type PageQuery = {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiUsage: AiUsageService,
+    private readonly packages: PackageService,
+  ) {}
 
   private pageLimit(query: PageQuery) {
     const page = Math.max(1, Number(query.page) || 1);
@@ -218,6 +224,7 @@ export class AdminService {
           lastLogin: true,
           createdAt: true,
           authProvider: true,
+          aiTokenLimit: true,
           _count: {
             select: { loginLogs: true, aiUsageLogs: true, subscriptions: true },
           },
@@ -226,6 +233,7 @@ export class AdminService {
     ]);
 
     const tenantIds = [...new Set(users.map((u) => u.tenantId))];
+    const tokensUsed = await this.aiUsage.usedThisMonth(users.map((u) => u.id));
     const [courseCounts, assessmentCounts] =
       tenantIds.length === 0
         ? [[], []]
@@ -252,6 +260,7 @@ export class AdminService {
       ...user,
       loginCount: _count.loginLogs,
       aiRequestCount: _count.aiUsageLogs,
+      aiTokensUsed: tokensUsed.get(user.id) ?? 0,
       subscriptionCount: _count.subscriptions,
       courseCount: courseMap.get(user.tenantId) || 0,
       assessmentCount: assessmentMap.get(user.tenantId) || 0,
@@ -279,6 +288,7 @@ export class AdminService {
         authProvider: true,
         universityName: true,
         fieldName: true,
+        aiTokenLimit: true,
       },
     });
     if (!user) throw new NotFoundException(ErrorMessageKey.USER_NOT_FOUND);
@@ -287,6 +297,7 @@ export class AdminService {
     }
 
     const [
+      aiUsage,
       loginCount,
       aiCount,
       aiTokens,
@@ -296,6 +307,7 @@ export class AdminService {
       recentAi,
       subscriptions,
     ] = await Promise.all([
+      this.aiUsage.summary(id),
       this.prisma.loginLog.count({
         where: { userId: id, success: true },
       }),
@@ -340,6 +352,7 @@ export class AdminService {
 
     return {
       user,
+      aiUsage,
       kpis: {
         loginCount,
         aiRequestCount: aiCount,
@@ -361,6 +374,7 @@ export class AdminService {
       firstName?: string;
       lastName?: string;
       phone?: string | null;
+      aiTokenLimit?: number | null;
     },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -368,7 +382,15 @@ export class AdminService {
     if (user.role === UserRole.SUPER_ADMIN) {
       throw new BadRequestException(ErrorMessageKey.VALIDATION_FAILED);
     }
-    return this.prisma.user.update({
+    const { aiTokenLimit } = body;
+    if (
+      aiTokenLimit !== undefined &&
+      aiTokenLimit !== null &&
+      !(Number.isSafeInteger(aiTokenLimit) && aiTokenLimit >= 0 && aiTokenLimit <= 2_000_000_000)
+    ) {
+      throw new BadRequestException(ErrorMessageKey.VALIDATION_FAILED);
+    }
+    const updated = await this.prisma.user.update({
       where: { id },
       data: {
         role: body.role === UserRole.SUPER_ADMIN ? undefined : body.role,
@@ -376,6 +398,7 @@ export class AdminService {
         firstName: body.firstName,
         lastName: body.lastName,
         phone: body.phone === undefined ? undefined : body.phone,
+        aiTokenLimit,
       },
       select: {
         id: true,
@@ -387,8 +410,11 @@ export class AdminService {
         isActive: true,
         tenantId: true,
         lastLogin: true,
+        aiTokenLimit: true,
       },
     });
+    void this.aiUsage.publish(id);
+    return updated;
   }
 
   async listUniversities(query: PageQuery) {
@@ -668,6 +694,20 @@ export class AdminService {
   ) {
     const existing = await this.prisma.subscription.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('SUBSCRIPTION_NOT_FOUND');
+    if (
+      existing.status === SubscriptionStatus.PENDING_PAYMENT &&
+      body.status === SubscriptionStatus.ACTIVE
+    ) {
+      await this.packages.activateOrder(id);
+      return this.prisma.subscription.update({
+        where: { id },
+        data: {
+          notes: body.notes,
+          endsAt: body.endsAt ? new Date(body.endsAt) : undefined,
+        },
+        include: { plan: true, user: true },
+      });
+    }
     return this.prisma.subscription.update({
       where: { id },
       data: {

@@ -18,10 +18,12 @@ import { CourseAnswerSheetModule } from './course-answer-sheet/course-answer-she
 import { UniversityModule } from './university/university.module';
 import { AdminModule } from './admin/admin.module';
 import { PackageModule } from './package/package.module';
+import { AiUsageModule } from './ai-usage/ai-usage.module';
 
 @Module({
   imports: [
     PrismaModule,
+    AiUsageModule,
     AuthModule,
     ConfigModule.forRoot({ isGlobal: true }),
     StudentModule,

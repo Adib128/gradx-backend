@@ -36,6 +36,15 @@ export function setAiUsageLogger(logger: AiUsageLogger | null) {
   aiUsageLogger = logger;
 }
 
+/** Throws when the user behind the request may not spend more AI tokens. */
+type AiQuotaGuard = (context: ChatCompletionContext) => Promise<void>;
+
+let aiQuotaGuard: AiQuotaGuard | null = null;
+
+export function setAiQuotaGuard(guard: AiQuotaGuard | null) {
+  aiQuotaGuard = guard;
+}
+
 export async function recordAiUsage(entry: AiUsageLogEntry) {
   if (!aiUsageLogger) return;
   await aiUsageLogger(entry);
@@ -205,6 +214,7 @@ export async function createChatCompletion(
     ...context,
     purpose: context?.purpose || stored?.purpose || 'other',
   };
+  await aiQuotaGuard?.(merged);
 
   const log = async (
     partial: Partial<AiUsageLogEntry> & { success: boolean },
@@ -304,6 +314,7 @@ export async function streamChatCompletion(
     ...options.context,
     purpose: options.context?.purpose || stored?.purpose || 'other',
   };
+  await aiQuotaGuard?.(merged);
 
   const log = async (
     partial: Partial<AiUsageLogEntry> & { success: boolean },

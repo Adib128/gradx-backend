@@ -310,6 +310,7 @@ export class AuthService {
       },
     });
 
+    const isNewUser = !user;
     if (!user) {
       user = await this.prisma.$transaction(async (tx) => {
         const tenant = await tx.tenant.create({ data: {} });
@@ -345,7 +346,7 @@ export class AuthService {
       });
     }
 
-    return this.login(user);
+    return { ...(await this.login(user)), isNewUser };
   }
 
   async verify(verifyDto: VerifyDto) {

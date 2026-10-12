@@ -36,6 +36,9 @@ const packageShape = z.object({
   descriptionAr: optionalText,
   currency: z.string().trim().min(1).max(10),
   isActive: z.boolean(),
+  isFree: z.boolean(),
+  /** Monthly AI tokens for subscribers: null = unlimited */
+  aiTokenLimit: z.number().int().min(0).max(2_000_000_000).nullable(),
   sortOrder: z.number().int(),
   features: z.array(packageFeatureValueSchema),
   prices: z.array(packagePriceSchema),
@@ -44,6 +47,8 @@ const packageShape = z.object({
 export const createPackageSchema = packageShape.extend({
   currency: packageShape.shape.currency.default('SAR'),
   isActive: packageShape.shape.isActive.default(true),
+  isFree: packageShape.shape.isFree.default(false),
+  aiTokenLimit: packageShape.shape.aiTokenLimit.default(500_000),
   sortOrder: packageShape.shape.sortOrder.default(0),
   features: packageShape.shape.features.default([]),
   prices: packageShape.shape.prices.default([]),
