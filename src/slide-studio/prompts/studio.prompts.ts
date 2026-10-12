@@ -38,6 +38,12 @@ const PROFESSIONAL_STYLE = `Professional standard (assertion-evidence slide desi
   (no periods) or all full sentences on a slide. No filler ("It is important to note", "In this slide").
 - Precision: concrete values with units, named cases and the reference's own terminology; define a term the first
   time it appears; never vague quantifiers ("many", "various") when the reference gives a number.
+- Every line earns its place: a bullet states a fact, mechanism, cause, consequence or number — never only a topic
+  name ("Process states") or a promise ("We will see how…").
+- No hedging or meta-commentary about the slide itself ("not a complete list", "varies by system", "this slide shows").
+  State a limit only when the reference does, and then precisely (which systems, which condition).
+- Show each idea in one form: a comparison is either two columns or a table, a process either a diagram or numbered
+  bullets — never the same content twice on one slide.
 - Academic tone: neutral and confident; no hype words, exclamation marks or emojis.
 - Accessibility: meaning never depends on colour alone; diagram labels ≤ 4 words.`;
 
@@ -53,7 +59,7 @@ function exemplars(profile: DisciplineProfile) {
 }
 
 const SLIDE_TYPES =
-  'TITLE | AGENDA | LEARNING_OUTCOMES | SECTION | CONTENT | DEFINITION | FORMULA | CODE | DIAGRAM | EXAMPLE | COMPARISON | ACTIVITY | CHECKPOINT | SUMMARY | REFERENCES';
+  'TITLE | INTRODUCTION | AGENDA | LEARNING_OUTCOMES | SECTION | CONTENT | DEFINITION | FORMULA | CODE | DIAGRAM | EXAMPLE | COMPARISON | ACTIVITY | CHECKPOINT | SUMMARY | CONCLUSION | REFERENCES';
 const SLIDE_LAYOUTS =
   'TITLE_CENTER | BULLETS | TWO_COLUMN | DEFINITION | FORMULA_FOCUS | EXAMPLE_STEPS | QUOTE_CALLOUT | SECTION_DIVIDER';
 
@@ -171,7 +177,10 @@ Then one line per section, in teaching order:
 
 Rules:
 - The sum of slideCount over all sections MUST equal ${input.slideCount}.
-- First section opens the lecture (title slide + outcomes/agenda); last section closes it (summary + checkpoint question).
+- First section opens the lecture: the cover slide (built automatically from the course data), then an INTRODUCTION
+  slide (why the topic matters and what the lecture covers), optionally outcomes/agenda. Last section closes it:
+  a checkpoint question, then a CONCLUSION slide with the key takeaways. The CONCLUSION is the lecture's only recap:
+  never plan a separate SUMMARY slide as well.
 - Usually 4-8 sections; every core section maps to at least one CLO code from the list.
 - Ground key points in the reference excerpts; use their terminology and examples.
 - Think like an expert professor: sequence from prerequisites to the hardest idea, and where students commonly
@@ -250,9 +259,13 @@ Output NDJSON: one JSON object per line (one per slide, in order), no prose, no 
 Types: ${SLIDE_TYPES}
 Layouts: ${SLIDE_LAYOUTS}
 Rules:
-- Respect each section's slide count and order. Slide 1 is TITLE/TITLE_CENTER.
-- Teaching arc: open with a motivating question or real-world problem, then the learning outcomes; inside each
-  core section go concept → worked example or visual → application; close with SUMMARY and a CHECKPOINT.
+- Respect each section's slide count and order. Slide 1 is TITLE/TITLE_CENTER (the cover; its content is filled from
+  the course data). Slide 2 is INTRODUCTION/BULLETS. The last teaching slide is CONCLUSION/BULLETS (key takeaways),
+  followed only by the REFERENCES slide when there is one.
+- Teaching arc: the INTRODUCTION opens with a motivating question or real-world problem and previews the lecture
+  (visual none — it frames the topic and never teaches the first concept); inside each core section go
+  concept → worked example or visual → application; close with a CHECKPOINT, then the CONCLUSION (visual none).
+  The CONCLUSION is the only recap: never add a SUMMARY slide next to it.
 - Insert a CHECKPOINT or ACTIVITY roughly every 6-8 slides; every key concept is followed within 2 slides by an
   EXAMPLE, a visual or a COMPARISON.
 - Titles are assertion headlines (see the standard below); no two slides share a title.
@@ -308,6 +321,13 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - TITLE / SECTION slides: title + subtitle only.
 - CONTENT, AGENDA, LEARNING_OUTCOMES, SUMMARY → 3-5 bullets, each 6-16 words, parallel grammar, informative (no filler,
   no "In this slide…"). Bold the one key term of a bullet with **term** (at most one bold run per bullet).
+- INTRODUCTION → subtitle: one sentence on why the topic matters (a real problem, a familiar situation or a motivating
+  question) + 3-4 bullets previewing what the lecture covers, in teaching order, each naming the concept and what the
+  student will be able to do with it. It frames the lecture: no diagram, code, figure, formula or worked example, and
+  it does not teach the first concept (that is the next slide's job).
+- CONCLUSION → 3-5 bullets, each a key takeaway the student should remember, stated as a full claim (not a topic name)
+  that connects ideas from different sections; the last bullet may point to the next topic or a real application.
+  No visual. It is the deck's only recap, so it must not restate any earlier slide word for word.
 - DEFINITION → callout {label, text ≤ 35 words} + up to 2 bullets (property, non-example).
 - FORMULA → formula {latex: valid KaTeX without $ delimiters (escape backslashes as \\\\ in JSON), explanation that names
   every symbol} + up to 2 bullets on when to use it.
@@ -317,8 +337,9 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
   lines. Elide irrelevant lines with "…" instead of shrinking the font. Never put code in bullets, never pair code
   with a diagram.
 - EXAMPLE → example {problem with concrete values/data, steps (2-4, each ≤ 20 words), solution with result + interpretation}.
-- COMPARISON → leftColumn + rightColumn with matching aspects in the same order (3-4 bullets each); for 3+ items or
-  several attributes use table {headers: 2-4 short, rows: 2-5, cells ≤ 6 words} with at most 2 bullets.
+- COMPARISON → two items: leftColumn + rightColumn with matching aspects in the same order (3-4 bullets each), no table.
+  Three or more items, or several attributes: type CONTENT, layout BULLETS, table {headers: 2-4 short, rows: 2-5,
+  cells ≤ 6 words} with at most 2 bullets, no columns. Never both columns and a table.
 - CHECKPOINT / ACTIVITY → callout {label: "Checkpoint"|"Activity", text: one question or task}; speakerNotes starts with
   "Answer:" (checkpoint) or the expected outcome (activity).
 - Visual "mermaid:<idea>" → diagram {title, mermaid} AND 1-3 short bullets. Mermaid: flowchart LR for a sequence of
@@ -331,14 +352,16 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - Visual "figure:<key>" → the reference figure is attached automatically; write 1-3 bullets on what to notice in it.
   Do not include a diagram.
 - type and layout must be the matching pair, and the body must fill that layout's main element:
-  CONTENT|DIAGRAM|CODE|AGENDA|SUMMARY → BULLETS, DEFINITION → DEFINITION, FORMULA → FORMULA_FOCUS, EXAMPLE → EXAMPLE_STEPS,
+  CONTENT|DIAGRAM|CODE|AGENDA|SUMMARY|INTRODUCTION|CONCLUSION → BULLETS, DEFINITION → DEFINITION, FORMULA → FORMULA_FOCUS, EXAMPLE → EXAMPLE_STEPS,
   COMPARISON → TWO_COLUMN (needs both columns), CHECKPOINT|ACTIVITY → QUOTE_CALLOUT. Never use TWO_COLUMN without columns
   or EXAMPLE_STEPS without a real worked example — such text is hidden on the slide.
 - Every content slide shows readable text: a figure or diagram is never the whole slide.
 - Say each thing once: never repeat the bullets inside the example/callout (or the other way round), and do not reuse
   sentences from other slides. No markdown other than **bold**.
-- speakerNotes: 3-5 sentences the instructor says — explain the idea in plain words, give an analogy or real case,
-  end with a transition to the next slide.
+- speakerNotes: 4-6 sentences the instructor says, in the first person to the class — explain the idea in plain
+  words, give an analogy or real case, name the misconception students most often hold about it (when there is one)
+  or a question to ask the room, and end with a one-sentence transition to the next slide. Never read the bullets
+  back; add what the slide does not say.
 - Stay faithful to the reference excerpts and their terminology; never invent facts, numbers or citations.`;
 
 function slideLine(item: StudioOutlineItem, figureByKey: Map<string, StudioFigure>) {
@@ -469,10 +492,13 @@ You are the INSPECTOR agent (quality control). Audit every slide of the draft de
 - layout: body too dense for a 16:9 slide, wrong element for the content (e.g. comparison written as plain bullets),
   a figure/diagram with no text telling students what to notice, a diagram that does not match its bullets or title,
   type/layout that does not fit the body (TWO_COLUMN shows only the columns, EXAMPLE_STEPS the worked example);
-- coherence: repeats another slide, the same text twice on one slide (bullets copied into the example or callout),
-  breaks the teaching order, inconsistent terminology;
+- coherence: repeats another slide, the same text twice on one slide (bullets copied into the example or callout,
+  a table that restates the columns), breaks the teaching order, inconsistent terminology;
+- framing: slide 2 (INTRODUCTION) must motivate the topic and preview the lecture, not teach its first concept;
+  the CONCLUSION must synthesise takeaways across sections, and a SUMMARY next to it is redundant;
 - polish: headline is a topic label instead of a claim, the body does not prove the headline, mixed fragment and
-  sentence bullets, hype or filler, vague quantities where the reference gives numbers.
+  sentence bullets, hype or filler, hedging or meta-commentary ("not a complete list", "varies by system"), vague
+  quantities where the reference gives numbers, speaker notes that only read the bullets back.
 Ask of every slide: "Would a senior professor project this as-is?" If not, say exactly what to change.
 Fact audit (do it before anything else): recompute every worked example, formula and number; check each definition,
 value, date and name against the reference excerpts. A wrong fact or result is always "high" and its message states
@@ -644,7 +670,8 @@ export function reviewerPrompt(
     system: `${TEAM}
 You are the REVIEWER agent (quality assurance). Check the deck against the plan, the CLOs and the reference excerpts:
 coverage, accuracy, clarity, progression, cognitive load, visual support and professional polish (assertion headlines,
-consistent style, every "rendered:" line fits). Score as a demanding department head reviewing a colleague's lecture:
+consistent style, every "rendered:" line fits, no hedging or repeated content). The lecture must be framed: cover,
+an INTRODUCTION that motivates and previews, teaching slides, one CONCLUSION that synthesises (no extra SUMMARY). Score as a demanding department head reviewing a colleague's lecture:
 90+ only when the deck could be projected tomorrow without a single edit.
 ${disciplineAudit(profile)} Score a deck that teaches its field mostly in prose (no code for programming, no formulas
 and worked examples for mathematics, no figures for sciences) below 80.

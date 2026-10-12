@@ -32,15 +32,18 @@ import { AiUsageService } from 'src/ai-usage/ai-usage.service';
 import type {
   StudioChapterSelection,
   StudioContext,
+  StudioCover,
   StudioEvent,
   StudioExcerpt,
   StudioFigure,
   StudioInput,
   StudioInterrupt,
+  StudioLanguage,
   StudioPlanSection,
   StudioResume,
 } from './slide-studio.types';
 import { summarizeContext } from './slide-studio.types';
+import { semesterLabel } from './utils/studio-frame.util';
 
 const PREFIX = 'slide-studio';
 const SESSION_TTL_SECONDS = 3 * 24 * 60 * 60;
@@ -144,6 +147,83 @@ export class SlideStudioService implements OnModuleDestroy {
       throw new NotFoundException(ErrorMessageKey.SLIDE_STUDIO_SESSION_NOT_FOUND);
     }
     return meta;
+  }
+
+  /**
+   * Cover data: university (name + logo) matched from the course institution, else from the
+   * university picked on the course's latest assessment header; instructor from the user.
+   */
+  private async coverFor(
+    course: {
+      id: number;
+      title: string;
+      code: string | null;
+      institution: string | null;
+      college: string | null;
+      academicYear: string | null;
+      semester: string | null;
+    },
+    topic: { title: string; topicNumber: number },
+    userId: number | null,
+    language: StudioLanguage,
+  ): Promise<StudioCover> {
+    const ar = language === 'ar';
+    const user = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { firstName: true, lastName: true, universityName: true },
+        })
+      : null;
+    const institution = course.institution?.trim() || user?.universityName?.trim() || null;
+    const university = institution
+      ? await this.prisma.university.findFirst({
+          where: {
+            OR: [
+              { nameEn: { equals: institution, mode: 'insensitive' } },
+              { nameAr: institution },
+              { code: { equals: institution, mode: 'insensitive' } },
+            ],
+          },
+          select: { nameEn: true, nameAr: true, logoUrl: true },
+        })
+      : null;
+
+    let universityName = university ? (ar ? university.nameAr : university.nameEn) || institution : institution;
+    let universityLogo = university?.logoUrl || null;
+    if (!universityLogo) {
+      const assessments = await this.prisma.assessment.findMany({
+        where: { courseId: course.id },
+        select: { headerConfig: true },
+        orderBy: { id: 'desc' },
+        take: 10,
+      });
+      for (const { headerConfig } of assessments) {
+        const header = (headerConfig ?? {}) as Record<string, unknown>;
+        const logo = typeof header.logoUrl === 'string' ? header.logoUrl.trim() : '';
+        if (!logo) continue;
+        universityLogo = logo;
+        const name = header[ar ? 'universityAr' : 'universityEn'];
+        if (!universityName && typeof name === 'string' && name.trim()) universityName = name.trim();
+        break;
+      }
+    }
+
+    const instructorName = [user?.firstName, user?.lastName]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join(' ');
+    return {
+      universityName,
+      universityLogo,
+      college: course.college?.trim() || null,
+      courseTitle: course.title,
+      courseCode: course.code?.trim() || null,
+      topicNumber: topic.topicNumber,
+      topicTitle: topic.title,
+      academicYear: course.academicYear?.trim() || null,
+      semester: semesterLabel(course.semester, language),
+      instructorName: instructorName || null,
+    };
   }
 
   private config(sessionId: string) {
@@ -263,6 +343,12 @@ export class SlideStudioService implements OnModuleDestroy {
       });
     }
 
+    const language = detectContentLanguage(
+      topic.title,
+      course.title,
+      course.description,
+      ...course.clos.map((clo) => clo.description),
+    );
     const sessionId = randomUUID();
     const input: StudioInput = {
       sessionId,
@@ -285,13 +371,9 @@ export class SlideStudioService implements OnModuleDestroy {
       })),
       slideCount: dto.slideCount,
       selections,
-      language: detectContentLanguage(
-        topic.title,
-        course.title,
-        course.description,
-        ...course.clos.map((clo) => clo.description),
-      ),
+      language,
       customTemplates: await this.slideTemplates.customTemplates(tenantId),
+      cover: await this.coverFor(course, topic, userId ?? null, language),
     };
 
     const meta: SessionMeta = {

@@ -157,6 +157,9 @@ export function parseVisual(
   return { kind: 'mermaid', idea: match[2].trim() };
 }
 
+/** Slides that frame the lecture: text only, never a figure or diagram. */
+const FRAME_TYPES = new Set(['INTRODUCTION', 'CONCLUSION', 'REFERENCES']);
+
 export function coerceOutlineItem(
   raw: Record<string, unknown>,
   index: number,
@@ -167,15 +170,16 @@ export function coerceOutlineItem(
   const title = text(raw.title, 160);
   if (!title) return null;
   const requested = text(raw.section ?? raw.sectionId, 20);
+  const type = text(raw.type, 30).toUpperCase() || 'CONTENT';
   return {
     index,
     sectionId: sectionIds.includes(requested) ? requested : fallbackSectionId,
-    type: text(raw.type, 30).toUpperCase() || 'CONTENT',
+    type,
     layout: text(raw.layout, 30).toUpperCase() || 'BULLETS',
     title,
     intent: text(raw.intent, 400),
     cloCode: text(raw.cloCode, 20) || null,
-    visual: parseVisual(raw.visual, figureKeys),
+    visual: FRAME_TYPES.has(type) ? { kind: 'none' } : parseVisual(raw.visual, figureKeys),
   };
 }
 

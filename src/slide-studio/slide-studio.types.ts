@@ -16,6 +16,22 @@ export type StudioClo = {
   linked: boolean;
 };
 
+/** What the cover slide shows, resolved from the course, its university and the instructor. */
+export type StudioCover = {
+  universityName: string | null;
+  /** Public path or URL of the university logo, e.g. `/universities/najran.png`. */
+  universityLogo: string | null;
+  college: string | null;
+  courseTitle: string;
+  courseCode: string | null;
+  topicNumber: number;
+  topicTitle: string;
+  academicYear: string | null;
+  /** Display label in the deck language, e.g. "First semester". */
+  semester: string | null;
+  instructorName: string | null;
+};
+
 /** Everything the graph needs that comes from the request + database. */
 export type StudioInput = {
   sessionId: string;
@@ -36,6 +52,8 @@ export type StudioInput = {
   language: StudioLanguage;
   /** Institution templates available to the designer (absent in older sessions). */
   customTemplates?: SlideTemplate[];
+  /** Cover slide data (absent in older sessions). */
+  cover?: StudioCover;
 };
 
 export type StudioExcerpt = {

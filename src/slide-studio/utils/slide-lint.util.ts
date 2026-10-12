@@ -27,6 +27,8 @@ const MAX_LABEL_TITLE_WORDS = 2;
 const MIN_NOTES_CHARS = 60;
 /** Text-only slides in a row before the deck reads like a wall of bullets. */
 const MAX_TEXT_RUN = 2;
+/** A SUMMARY this close to the CONCLUSION recaps the same lecture twice. */
+const RECAP_DISTANCE = 2;
 const FILLER_RE =
   /\b(it is (very )?important to (note|remember|understand)|in this slide|as (we|you) can see|let'?s (look|see|take)|needless to say|basically|at the end of the day)\b/i;
 const HYPE_RE = /\p{L}{3,}!\s*$/u;
@@ -142,6 +144,17 @@ export function lintSlides(
     textRun = textOnly(slide) ? textRun + 1 : 0;
     if (isStructural(slide)) return;
 
+    if (
+      slide.type === 'INTRODUCTION' &&
+      (hasVisual(slide) || plain(slide.code?.source) || slide.example || plain(slide.formula?.latex))
+    ) {
+      add(
+        index,
+        'medium',
+        'pedagogy',
+        'Introduction teaches content instead of framing the lecture; drop the visual/code, give a motivating subtitle and 3-4 bullets previewing what the lecture covers.',
+      );
+    }
     if (CONTENT_TYPES.has(String(slide.type)) && title && words(title) <= MAX_LABEL_TITLE_WORDS) {
       add(index, 'low', 'polish', 'Headline is a topic label; state the slide\'s claim as a 5-10 word sentence.');
     }
@@ -294,6 +307,18 @@ export function lintSlides(
     }
     if (plain(slide.speakerNotes).length < MIN_NOTES_CHARS) {
       add(index, 'low', 'pedagogy', 'Speaker notes are missing or too thin.');
+    }
+  });
+
+  const conclusion = slides.findIndex((slide) => slide.type === 'CONCLUSION');
+  slides.forEach((slide, index) => {
+    if (slide.type === 'SUMMARY' && conclusion >= 0 && Math.abs(conclusion - index) <= RECAP_DISTANCE) {
+      add(
+        index,
+        'medium',
+        'coherence',
+        `Recaps the lecture right next to the conclusion (slide ${conclusion + 1}); turn it into a CHECKPOINT question or a worked example that applies several ideas together.`,
+      );
     }
   });
   if (profile) findings.push(...disciplineFindings(slides, profile));

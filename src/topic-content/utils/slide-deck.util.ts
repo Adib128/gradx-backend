@@ -260,6 +260,8 @@ function canonicalizeTypeAndLayout(
     OUTCOMES: 'LEARNING_OUTCOMES',
     NEXT_STEP: 'NEXT_STEPS',
     REFERENCE: 'REFERENCES',
+    INTRO: 'INTRODUCTION',
+    CONCLUSIONS: 'CONCLUSION',
     QUIZ: 'CHECKPOINT',
     CHECK: 'CHECKPOINT',
   };
@@ -733,6 +735,8 @@ function slideKeepPriority(slide: SlideDeckSlide, index: number): number {
   const type = asText(slide.type).toUpperCase();
   const layout = asText(slide.layout).toUpperCase();
   if (type === 'TITLE' || layout === 'TITLE_CENTER' || index === 0) return 1000;
+  if (type === 'INTRODUCTION') return 950;
+  if (type === 'CONCLUSION') return 940;
   if (type === 'LEARNING_OUTCOMES') return 900;
   if (type === 'AGENDA') return 850;
   if (type === 'SUMMARY') return 800;

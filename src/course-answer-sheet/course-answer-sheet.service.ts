@@ -35,7 +35,7 @@ export class CourseAnswerSheetService {
       .trim()
       .toUpperCase();
 
-    const courseWhere: Prisma.CourseWhereInput = {};
+    const courseWhere: Prisma.CourseWhereInput = { deletedAt: null };
     if (academicYear) {
       courseWhere.academicYear = {
         in: academicYearMatchValues(academicYear),
@@ -47,7 +47,7 @@ export class CourseAnswerSheetService {
 
     const where: Prisma.CourseAnswerSheetWhereInput = {
       tenantId,
-      ...(Object.keys(courseWhere).length > 0 ? { course: courseWhere } : {}),
+      course: courseWhere,
     };
 
     return this.prisma.courseAnswerSheet.findMany({
@@ -86,7 +86,7 @@ export class CourseAnswerSheetService {
 
   async findByCourse(courseId: number, tenantId: number) {
     return this.prisma.courseAnswerSheet.findMany({
-      where: { courseId, tenantId },
+      where: { courseId, tenantId, course: { deletedAt: null } },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -104,7 +104,7 @@ export class CourseAnswerSheetService {
 
   async findOne(courseId: number, id: number, tenantId: number) {
     const sheet = await this.prisma.courseAnswerSheet.findFirst({
-      where: { id, courseId, tenantId },
+      where: { id, courseId, tenantId, course: { deletedAt: null } },
       include: includeFull,
     });
     if (!sheet) {
@@ -119,7 +119,7 @@ export class CourseAnswerSheetService {
     dto: CreateCourseAnswerSheetDto,
   ) {
     const course = await this.prisma.course.findFirst({
-      where: { id: courseId, tenantId },
+      where: { id: courseId, tenantId, deletedAt: null },
     });
     if (!course) {
       throw new NotFoundException('Course not found');

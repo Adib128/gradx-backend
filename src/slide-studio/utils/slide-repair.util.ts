@@ -12,6 +12,8 @@ const NEUTRAL_TYPES = new Set([
   'DIAGRAM',
   'AGENDA',
   'SUMMARY',
+  'INTRODUCTION',
+  'CONCLUSION',
   'LEARNING_OUTCOMES',
   'NEXT_STEPS',
   'REFERENCES',
@@ -104,6 +106,16 @@ function hasExample(slide: StudioSlide): boolean {
 
 function hasColumns(slide: StudioSlide): boolean {
   return Boolean(slide.leftColumn?.bullets?.length && slide.rightColumn?.bullets?.length);
+}
+
+/** A table whose item headers are the two column headings ("Aspect | Batch | Time-sharing"). */
+function tableRestatesColumns(slide: StudioSlide): boolean {
+  const items = (slide.table?.headers ?? []).slice(1).map(textKey);
+  const headings = [slide.leftColumn?.heading, slide.rightColumn?.heading].map(textKey);
+  return (
+    items.length === 2 &&
+    items.every((item, i) => Boolean(item && headings[i] && (headings[i].includes(item) || item.includes(headings[i]))))
+  );
 }
 
 /** The layout the slide renderers (web, PDF, PPTX) actually draw for this slide. */
@@ -249,6 +261,17 @@ export function repairSlideStructure(input: StudioSlide): { slide: StudioSlide; 
     }
     slide.leftColumn = null;
     slide.rightColumn = null;
+  }
+
+  if (hasColumns(slide) && slide.table?.headers?.length) {
+    if (tableRestatesColumns(slide)) {
+      slide.table = null;
+      fixes.push('removed a table that repeated the two comparison columns');
+    } else {
+      slide.leftColumn = null;
+      slide.rightColumn = null;
+      fixes.push('kept the comparison table and dropped the columns that repeated it');
+    }
   }
 
   const before = renderedLayout(slide);

@@ -27,8 +27,17 @@ export function figureCaption(figure: StudioFigure, language: StudioLanguage): s
   return caption ? `${caption} · ${source}` : source;
 }
 
-/** One line per reference the deck drew on, with the chapters used. */
-export function referenceSources(context: StudioContext | null, language: StudioLanguage): string[] {
+export type StudioReferenceEntry = {
+  /** Full citation as typed by the instructor, cleaned. */
+  title: string;
+  /** Chapters this lecture drew on. */
+  chapters: string[];
+};
+
+const MAX_REFERENCES = 8;
+
+/** References in course order with every chapter the deck drew on. */
+function usedReferences(context: StudioContext | null): Array<{ title: string; chapters: string[] }> {
   if (!context || context.mode === 'none') return [];
   const byReference = new Map<number, { title: string; chapters: string[] }>();
   const add = (referenceIndex: number, title: string, chapter: string | null) => {
@@ -42,18 +51,31 @@ export function referenceSources(context: StudioContext | null, language: Studio
   for (const excerpt of context.excerpts) {
     add(excerpt.referenceIndex, excerpt.referenceTitle, excerpt.chapterName?.trim() || null);
   }
-  const chaptersLabel = language === 'ar' ? 'الفصول' : 'Chapters';
   return [...byReference.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([, entry]) => {
-      const title = cleanCitation(entry.title);
-      if (!entry.chapters.length) return title;
-      const listed = entry.chapters.slice(0, MAX_CHAPTERS_LISTED).join('; ');
-      const more = entry.chapters.length > MAX_CHAPTERS_LISTED ? '; …' : '';
-      const line = `${title} — ${chaptersLabel}: ${listed}${more}`;
-      return line.length > MAX_SOURCE_CHARS ? `${line.slice(0, MAX_SOURCE_CHARS - 1).trimEnd()}…` : line;
-    })
-    .filter(Boolean);
+    .map(([, entry]) => ({ title: cleanCitation(entry.title), chapters: entry.chapters }))
+    .filter((entry) => entry.title)
+    .slice(0, MAX_REFERENCES);
+}
+
+/** The references the deck drew on, for the references list on the slide. */
+export function referenceEntries(context: StudioContext | null): StudioReferenceEntry[] {
+  return usedReferences(context).map((entry) => ({
+    title: entry.title,
+    chapters: entry.chapters.slice(0, MAX_CHAPTERS_LISTED),
+  }));
+}
+
+/** One line per reference the deck drew on, with the chapters used. */
+export function referenceSources(context: StudioContext | null, language: StudioLanguage): string[] {
+  const chaptersLabel = language === 'ar' ? 'الفصول' : 'Chapters';
+  return usedReferences(context).map((entry) => {
+    if (!entry.chapters.length) return entry.title;
+    const listed = entry.chapters.slice(0, MAX_CHAPTERS_LISTED).join('; ');
+    const more = entry.chapters.length > MAX_CHAPTERS_LISTED ? '; …' : '';
+    const line = `${entry.title} — ${chaptersLabel}: ${listed}${more}`;
+    return line.length > MAX_SOURCE_CHARS ? `${line.slice(0, MAX_SOURCE_CHARS - 1).trimEnd()}…` : line;
+  });
 }
 
 /**
@@ -77,6 +99,7 @@ export function withReferencesSlide(
     title: language === 'ar' ? 'المراجع' : 'References',
     subtitle: null,
     bullets: sources,
+    references: referenceEntries(context),
     leftColumn: null,
     rightColumn: null,
     callout: null,

@@ -67,6 +67,7 @@ import {
 } from './utils/slide-lint.util';
 import { fillEmptySlideBody, repairSlideStructure } from './utils/slide-repair.util';
 import { figureCaption, withReferencesSlide } from './utils/studio-references.util';
+import { withCoverSlide, withLectureFrame } from './utils/studio-frame.util';
 import {
   applyPlanMeta,
   coerceAnalysis,
@@ -589,7 +590,7 @@ export function buildStudioGraph(
 
     activity(config, 'writer', 'done', `${slides.filter(Boolean).length} slides written`);
     const written = slides.map((slide, index) => slide ?? { title: outline[index].title });
-    const cited = withReferencesSlide(written, context, state.input.language);
+    const cited = withReferencesSlide(withCoverSlide(written, state.input), context, state.input.language);
     cited.forEach((slide, index) => {
       if (slide !== written[index]) emit(config, { event: 'slide', data: { index, slide } });
     });
@@ -1054,7 +1055,8 @@ export function buildStudioGraph(
     activity(config, 'publisher', 'start', 'Saving the deck');
     const template = findTemplate(state.templateId, state.input.customTemplates);
     const input = state.input;
-    const slides = withReferencesSlide(state.slides ?? [], state.context, input.language).map((slide) => {
+    const framed = withLectureFrame(state.slides ?? [], input, state.plan ?? null, state.analysis ?? null, state.context ?? null);
+    const slides = framed.map((slide) => {
       const { slide: repaired } = repairSlideStructure(slide);
       fillEmptySlideBody(repaired);
       return repaired;
@@ -1069,6 +1071,7 @@ export function buildStudioGraph(
             designTheme: 'UNIVERSITY_ACADEMIC',
             ...templateDeckMeta(template),
             language: input.language,
+            cover: input.cover ?? null,
             studio: {
               sessionId: input.sessionId,
               deckTitle: state.plan?.title ?? null,
