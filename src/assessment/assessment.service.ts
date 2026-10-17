@@ -2208,10 +2208,24 @@ export class AssessmentService {
   }
 
   private buildAnswerSheetDocumentLines(assessment: any, version: any): string[] {
+    const code = String(assessment.code || '').trim();
+    const title = String(assessment.title || '').trim();
+    const assessmentLabel =
+      code && title
+        ? title.toUpperCase().startsWith(code.toUpperCase())
+          ? title
+          : `${code} ${title}`
+        : code || title || 'Assessment';
+    const courseCode = String(assessment.course?.code || '').trim();
+    const courseTitle = String(assessment.course?.title || 'N/A').trim();
+    const courseLabel =
+      courseCode && courseTitle
+        ? `${courseCode} - ${courseTitle}`
+        : courseCode || courseTitle;
     const lines = [
-      `${assessment.title} - Answer Sheet`,
+      `${assessmentLabel} - Answer Sheet`,
       `${version.versionName}`,
-      `Course: ${assessment.course?.title ?? 'N/A'}`,
+      `Course: ${courseLabel}`,
       '',
     ].filter(Boolean);
 
@@ -2747,6 +2761,7 @@ export class AssessmentService {
         duration: true,
         tenantId: true,
         isPublished: true,
+        numberOfStudentIdDigits: true,
         createdAt: true,
         updatedAt: true,
         generationConfig: true,

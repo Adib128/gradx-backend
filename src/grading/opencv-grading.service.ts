@@ -10,6 +10,9 @@ export type OpenCvProcessResult = {
   answers: Record<string, string>;
   questionDetails?: unknown[];
   detectedStudentId?: string | null;
+  detectedAssessmentCode?: string | null;
+  detectedStudentName?: string | null;
+  detectedStudentSection?: string | null;
   error?: string;
   debug?: Record<string, unknown>;
 };

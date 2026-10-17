@@ -173,12 +173,22 @@ export class NodeGraderService {
       );
 
       const detected = opts[bestIdx];
-      const status = heavy.length > 0 ? 'multiple' : 'answered';
+      if (heavy.length > 0) {
+        answers[String(qNum)] = '';
+        details.push({
+          question: qNum,
+          detected: null,
+          status: 'multiple',
+          fills: this.zipFills(opts, fills),
+          options: [...opts],
+        });
+        continue;
+      }
       answers[String(qNum)] = detected;
       details.push({
         question: qNum,
         detected,
-        status,
+        status: 'answered',
         fills: this.zipFills(opts, fills),
         options: [...opts],
       });

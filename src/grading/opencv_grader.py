@@ -90,8 +90,15 @@ def merge_config(base: dict, override: dict) -> dict:
 # Perspective warp
 # ---------------------------------------------------------------------------
 
-def find_corner_anchor(gray, np, x0, y0, x1, y1):
-    """Find the centre of the darkest square-ish blob in the given ROI."""
+def find_corner_anchor(gray, np, x0, y0, x1, y1, prefer="any"):
+    """
+    Find the centre of the darkest square-ish blob in the given ROI.
+
+    prefer:
+      'top'    — bias toward the highest marks (true top registration squares)
+      'bottom' — bias toward the lowest marks (avoids left mid-page / version squares)
+      'any'    — pure shape confidence
+    """
     roi = gray[y0:y1, x0:x1]
     if roi.size == 0:
         return ((x0 + x1) // 2, (y0 + y1) // 2, 0.0)
@@ -107,23 +114,36 @@ def find_corner_anchor(gray, np, x0, y0, x1, y1):
     best_centre = ((x0 + x1) // 2, (y0 + y1) // 2)
     best_conf = 0.0
     roi_area = roi.shape[0] * roi.shape[1]
+    box_h = max(1, y1 - y0)
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 12 or area > roi_area * 0.6:
+        # Registration marks are small solid squares — reject huge dark regions.
+        if area < 12 or area > min(roi_area * 0.25, 2500):
             continue
         rx, ry, rw, rh = cv2.boundingRect(cnt)
         if rw == 0 or rh == 0:
             continue
+        # Marks are ~4.5 mm squares; reject long thin noise.
+        if max(rw, rh) > 55 or min(rw, rh) < 8:
+            continue
         aspect = max(rw, rh) / min(rw, rh)
-        if aspect > 3.5:
+        if aspect > 1.8:
             continue
         squareness = 1.0 - abs(rw - rh) / max(rw, rh)
         fill_in_rect = area / (rw * rh) if rw * rh > 0 else 0
-        conf = squareness * 0.5 + fill_in_rect * 0.5
+        shape_conf = squareness * 0.5 + fill_in_rect * 0.5
+        cy = y0 + ry + rh // 2
+        y_frac = (cy - y0) / box_h
+        if prefer == "bottom":
+            conf = shape_conf * 0.55 + y_frac * 0.45
+        elif prefer == "top":
+            conf = shape_conf * 0.55 + (1.0 - y_frac) * 0.45
+        else:
+            conf = shape_conf
         if conf > best_conf:
             best_conf = conf
-            best_centre = (x0 + rx + rw // 2, y0 + ry + rh // 2)
+            best_centre = (x0 + rx + rw // 2, cy)
 
     return (*best_centre, best_conf)
 
@@ -171,26 +191,34 @@ def perspective_warp(cv2, np, image, config):
         "bottomRight": (int(0.78*w), int(0.60*h), w,           h          ),
     }
 
-    # The mobile scanner sends the mark centres it tracked live; search a
-    # tight window there first (answer bubbles now reach the corner boxes).
+    # The mobile scanner may send mark centres. Only trust hints that land
+    # inside the same corner search box used for autodetection — cropped
+    # uploads with full-frame coordinates would otherwise warp the sheet into
+    # garbage and blank out the student-ID grid.
     hints = config.get("anchorHints") or {}
     hint_half = int(0.035 * max(w, h))
 
     anchor_debug = {}
     for name in corner_names:
         x0, y0, x1, y1 = corner_search_boxes[name]
+        prefer = "top" if name.startswith("top") else "bottom"
 
-        fx, fy, conf = find_corner_anchor(gray, np, x0, y0, x1, y1)
+        fx, fy, conf = find_corner_anchor(gray, np, x0, y0, x1, y1, prefer=prefer)
         hint = hints.get(name)
-        if hint:
-            hx, hy = int(hint["x"] * w), int(hint["y"] * h)
-            hfx, hfy, hconf = find_corner_anchor(
-                gray, np,
-                max(0, hx - hint_half), max(0, hy - hint_half),
-                min(w, hx + hint_half), min(h, hy + hint_half),
-            )
-            if hconf >= 0.5 or hconf >= conf:
-                fx, fy, conf = hfx, hfy, hconf
+        # When corner autodetection is already confident, ignore hints — a
+        # cropped upload with stale full-frame coordinates would pull the warp
+        # onto answer bubbles and destroy student-ID reads.
+        if hint and conf < 0.45:
+            hx, hy = int(float(hint["x"]) * w), int(float(hint["y"]) * h)
+            if x0 <= hx <= x1 and y0 <= hy <= y1:
+                hfx, hfy, hconf = find_corner_anchor(
+                    gray, np,
+                    max(0, hx - hint_half), max(0, hy - hint_half),
+                    min(w, hx + hint_half), min(h, hy + hint_half),
+                    prefer=prefer,
+                )
+                if hconf >= 0.5 and hconf >= conf:
+                    fx, fy, conf = hfx, hfy, hconf
         found_src.append([fx, fy])
 
         # Destination: expected position in output (full-page coords)
@@ -206,6 +234,8 @@ def perspective_warp(cv2, np, image, config):
         }
 
     warp_conf = total_conf / 4.0
+    corner_confs = [float(anchor_debug[n]["conf"]) for n in corner_names]
+    min_corner_conf = min(corner_confs) if corner_confs else 0.0
 
     # Geometric sanity check: the detected quadrilateral must not be degenerate.
     # We verify that top anchors are above bottom anchors and left anchors are
@@ -215,7 +245,10 @@ def perspective_warp(cv2, np, image, config):
     quad_valid = (
         tl[1] < bl[1] and tr[1] < br[1] and  # tops above bottoms
         tl[0] < tr[0] and bl[0] < br[0] and  # lefts left of rights
-        warp_conf > 0.05                        # at least marginal confidence
+        warp_conf > 0.25
+        # A single failed corner (conf≈0) skews the ID grid into garbage reads
+        # like 444332208 instead of 443206950 — prefer a plain resize then.
+        and min_corner_conf >= 0.35
     )
 
     if quad_valid:
@@ -223,11 +256,12 @@ def perspective_warp(cv2, np, image, config):
         warped = cv2.warpPerspective(image, M, (out_w, out_h))
         warp_applied = True
     else:
-        # Last-resort fallback: plain resize.  This will have wrong y-scale for
-        # non-A4 images but is better than crashing.
+        # Fallback: plain resize. Mobile already crops to the page, so this
+        # keeps bubble geometry intact when a corner mark was missed.
         warped = cv2.resize(image, (out_w, out_h))
-        warp_conf = 0.10
+        warp_conf = max(0.10, min_corner_conf)
         warp_applied = False
+        anchor_debug["fallback"] = "resize_low_corner_confidence"
 
     return warped, warp_conf, warp_applied, anchor_debug
 
@@ -379,8 +413,10 @@ def analyze_answer_grid(darkness, np, config):
     x_step = grid.get("bubbleXStep", 0.03254)
     y_step = grid.get("rowYStep", 0.03676)
     b_radius_norm = grid.get("bubbleRadius", 0.01302)
-    fill_thresh = grid.get("fillThreshold", 0.3)
-    diff_factor = grid.get("darknessDifferential", 1.6)
+    # Slightly higher than PDF default so faint graphite rings are not "answered".
+    fill_thresh = grid.get("fillThreshold", 0.32)
+    # Stronger separation: a second mark must be clearly filled to count as multi.
+    diff_factor = grid.get("darknessDifferential", 1.45)
 
     radius_px = max(4, int(b_radius_norm * w))
 
@@ -450,13 +486,23 @@ def analyze_answer_grid(darkness, np, config):
         ]
 
         detected = row_options[best_idx]
-        status = "multiple" if heavy else "answered"
+        if heavy:
+            # Multi-mark rows earn no credit and must not look like a single answer.
+            answers[str(q_num)] = ""
+            details.append({
+                "question": q_num,
+                "detected": None,
+                "status": "multiple",
+                "candidates": [row_options[best_idx]] + [row_options[i] for i in heavy],
+                **fill_info,
+            })
+            continue
 
         answers[str(q_num)] = detected
         details.append({
             "question": q_num,
             "detected": detected,
-            "status": status,
+            "status": "answered",
             **fill_info,
         })
 
@@ -464,16 +510,179 @@ def analyze_answer_grid(darkness, np, config):
 
 
 # ---------------------------------------------------------------------------
+# Assessment code detection (printed ASM###### above the Name header)
+# ---------------------------------------------------------------------------
+
+ASSESSMENT_CODE_RE = re.compile(r"\bASM\d{4,8}\b", re.IGNORECASE)
+
+
+def detect_assessment_code(cv2, gray_img, np):
+    """
+    OCR the horizontal assessment code printed near the top of the sheet.
+    Returns (code_or_none, debug_dict).
+    """
+    h, w = gray_img.shape[:2]
+    # Printed at ~NAME_HEADER (x=24mm,y≈12mm) on A4 — search the top band.
+    rois = [
+        (int(0.08 * w), int(0.015 * h), int(0.55 * w), int(0.085 * h)),
+        (int(0.05 * w), int(0.01 * h), int(0.95 * w), int(0.12 * h)),
+    ]
+    debug = {"rois": [], "raw": []}
+    try:
+        import subprocess
+        import tempfile
+        import os
+    except Exception as exc:
+        return None, {"error": str(exc)}
+
+    for x0, y0, x1, y1 in rois:
+        roi = gray_img[y0:y1, x0:x1]
+        if roi.size == 0:
+            continue
+        # Upscale thin text for tesseract.
+        scale = 3
+        big = cv2.resize(roi, (roi.shape[1] * scale, roi.shape[0] * scale), interpolation=cv2.INTER_CUBIC)
+        _, thr = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            cv2.imwrite(tmp, thr)
+            proc = subprocess.run(
+                ["tesseract", tmp, "stdout", "--psm", "7", "-c", "tessedit_char_whitelist=ASMasm0123456789"],
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            text = (proc.stdout or "").strip()
+            debug["raw"].append(text)
+            debug["rois"].append([x0, y0, x1, y1])
+            match = ASSESSMENT_CODE_RE.search(text.replace(" ", ""))
+            if match:
+                return match.group(0).upper(), {**debug, "method": "ocr"}
+            # Also accept OCR that split letters oddly.
+            compact = re.sub(r"[^A-Za-z0-9]", "", text).upper()
+            match = ASSESSMENT_CODE_RE.search(compact)
+            if match:
+                return match.group(0).upper(), {**debug, "method": "ocr_compact"}
+        except Exception as exc:
+            debug["error"] = str(exc)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    return None, debug
+
+
+# ---------------------------------------------------------------------------
+# Handwritten Name / Section (Name header capsule on the sheet)
+# ---------------------------------------------------------------------------
+
+def _ocr_roi_text(cv2, gray_img, x0, y0, x1, y1, psm=7):
+    """Run tesseract on a ROI; return cleaned text or ''."""
+    h, w = gray_img.shape[:2]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 <= x0 + 4 or y1 <= y0 + 4:
+        return ""
+    roi = gray_img[y0:y1, x0:x1]
+    try:
+        import subprocess
+        import tempfile
+        import os
+        scale = 3
+        big = cv2.resize(
+            roi,
+            (max(1, roi.shape[1] * scale), max(1, roi.shape[0] * scale)),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        _, thr = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            cv2.imwrite(tmp, thr)
+            proc = subprocess.run(
+                ["tesseract", tmp, "stdout", f"--psm", str(psm)],
+                capture_output=True,
+                text=True,
+                timeout=6,
+            )
+            text = (proc.stdout or "").strip()
+            # Drop the printed labels if OCR picked them up.
+            text = re.sub(r"(?i)\b(name|section|sec)\s*:?\s*", "", text).strip()
+            text = re.sub(r"\s+", " ", text)
+            return text
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        return ""
+
+
+def detect_name_and_section(cv2, gray_img, np):
+    """
+    OCR the Name / Section capsule printed at the top of GradX sheets
+    (NAME_HEADER: x=24,y=14,w=162,h=12 mm on A4; sectionWidth=44mm on the right).
+    """
+    h, w = gray_img.shape[:2]
+    # Capsule bounds (normalised from mm / page).
+    hx0, hy0 = int(24 / 210 * w), int(14 / 297 * h)
+    hx1, hy1 = int((24 + 162) / 210 * w), int((14 + 12) / 297 * h)
+    section_w = int(44 / 210 * w)
+    # Leave room for the printed "Name:" / "section:" labels.
+    name_x0 = hx0 + int(18 / 210 * w)
+    name_x1 = hx1 - section_w - int(4 / 210 * w)
+    sec_x0 = hx1 - section_w + int(10 / 210 * w)
+    sec_x1 = hx1 - int(2 / 210 * w)
+    pad_y = max(1, int(0.004 * h))
+    name = _ocr_roi_text(cv2, gray_img, name_x0, hy0 + pad_y, name_x1, hy1 - pad_y, psm=7)
+    section = _ocr_roi_text(cv2, gray_img, sec_x0, hy0 + pad_y, sec_x1, hy1 - pad_y, psm=7)
+    # Reject garbage that is mostly digits/symbols.
+    def clean_person(value: str) -> str | None:
+        v = (value or "").strip(" .-_|")
+        if len(v) < 2:
+            return None
+        letters = sum(1 for c in v if c.isalpha())
+        if letters < 2:
+            return None
+        return v
+
+    def clean_section(value: str) -> str | None:
+        v = (value or "").strip(" .-_|")
+        if not v or len(v) > 24:
+            return None
+        if re.fullmatch(r"(?i)section|sec|name", v):
+            return None
+        return v
+
+    return {
+        "detectedStudentName": clean_person(name),
+        "detectedStudentSection": clean_section(section),
+        "rawName": name,
+        "rawSection": section,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Student ID detection
 # ---------------------------------------------------------------------------
 
-def find_student_id_blobs(cv2, gray_img):
+def find_student_id_blobs(cv2, gray_img, roi_norm=None):
     """Locate filled bubble blobs in the student-ID region of a warped sheet."""
     h, w = gray_img.shape[:2]
-    # Left edge starts right of the version-code strip (ends at 0.143 w) so its
-    # solid squares are never mistaken for filled ID bubbles.
-    x0, y0 = int(0.17 * w), int(0.08 * h)
-    x1, y1 = int(0.32 * w), int(0.36 * h)
+    if isinstance(roi_norm, dict):
+        x0 = int(float(roi_norm.get("x0", 0.12)) * w)
+        y0 = int(float(roi_norm.get("y0", 0.08)) * h)
+        x1 = int(float(roi_norm.get("x1", 0.42)) * w)
+        y1 = int(float(roi_norm.get("y1", 0.40)) * h)
+    else:
+        x0, y0 = int(0.12 * w), int(0.08 * h)
+        x1, y1 = int(0.42 * w), int(0.40 * h)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, max(x0 + 1, x1)), min(h, max(y0 + 1, y1))
     roi = gray_img[y0:y1, x0:x1]
     if roi.size == 0:
         return []
@@ -498,211 +707,331 @@ def find_student_id_blobs(cv2, gray_img):
     return blobs
 
 
+def _cluster_1d(values, gap):
+    """Group sorted 1-D positions into clusters separated by > gap."""
+    if not values:
+        return []
+    values = sorted(values)
+    groups = [[values[0]]]
+    for v in values[1:]:
+        if v - groups[-1][-1] > gap:
+            groups.append([v])
+        else:
+            groups[-1].append(v)
+    return [float(sum(g) / len(g)) for g in groups]
+
+
+def locate_student_id_grid(cv2, gray_img, np, num_digits):
+    """
+    Locate the Student ID bubble grid from the printed circles / "Student ID"
+    heading. The block can sit TOP_LEFT / TOP_RIGHT / BOTTOM_*, so we search
+    both upper halves rather than trusting fixed PDF coordinates alone.
+
+    Returns dict with xs, ys, col_gap, row_gap (pixels) or None.
+    """
+    h, w = gray_img.shape[:2]
+    # Two candidate pockets: left and right of the upper page.
+    pockets = [
+        (int(0.06 * w), int(0.06 * h), int(0.48 * w), int(0.48 * h)),
+        (int(0.52 * w), int(0.06 * h), int(0.94 * w), int(0.48 * h)),
+    ]
+
+    label_hint = None
+    try:
+        import subprocess, tempfile, os
+        fd, tmp = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            # OCR the upper half for the printed heading.
+            header = gray_img[int(0.05 * h):int(0.35 * h), int(0.05 * w):int(0.95 * w)]
+            cv2.imwrite(tmp, header)
+            proc = subprocess.run(
+                ["tesseract", tmp, "stdout", "tsv", "--psm", "11"],
+                capture_output=True, text=True, timeout=6,
+            )
+            best = None
+            for line in (proc.stdout or "").splitlines()[1:]:
+                parts = line.split("\t")
+                if len(parts) < 12:
+                    continue
+                try:
+                    left, top, width, height = map(int, parts[6:10])
+                    conf = float(parts[10])
+                except ValueError:
+                    continue
+                text = (parts[11] or "").strip().lower()
+                if conf < 25 or "stud" not in text:
+                    continue
+                score = conf + width
+                if best is None or score > best[0]:
+                    # Map back into full-image coords.
+                    best = (score, left + int(0.05 * w), top + height + int(0.05 * h))
+            if best is not None:
+                label_hint = (best[1], best[2])
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    best_grid = None
+    best_score = -1.0
+
+    for px0, py0, px1, py1 in pockets:
+        # Prefer the pocket that contains the OCR label when available.
+        if label_hint is not None:
+            lx, ly = label_hint
+            if not (px0 - 20 <= lx <= px1 + 20 and py0 - 20 <= ly <= py1 + 20):
+                # Still evaluate, but with a penalty later.
+                pocket_bonus = 0.0
+            else:
+                pocket_bonus = 50.0
+        else:
+            pocket_bonus = 0.0
+
+        roi = gray_img[py0:py1, px0:px1]
+        if roi.size == 0:
+            continue
+        blur = cv2.medianBlur(roi, 5)
+        circles = cv2.HoughCircles(
+            blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=11,
+            param1=70, param2=16, minRadius=4, maxRadius=18,
+        )
+        if circles is None:
+            continue
+        pts = np.round(circles[0]).astype(int)
+        if len(pts) < max(12, num_digits * 3):
+            continue
+
+        xs = _cluster_1d([int(p[0]) for p in pts], gap=10)
+        ys = _cluster_1d([int(p[1]) for p in pts], gap=10)
+        # Need ~num_digits columns and ~10 digit rows (write-in boxes may add 1).
+        if len(xs) < max(4, num_digits - 2) or len(ys) < 8:
+            continue
+
+        # Pick the densest run of `num_digits` consecutive columns.
+        if len(xs) >= num_digits:
+            # Use the leftmost run with the most circles assigned.
+            col_counts = []
+            for i, cx in enumerate(xs):
+                col_counts.append(sum(1 for p in pts if abs(p[0] - cx) < 8))
+            best_i, best_c = 0, -1
+            for i in range(0, len(xs) - num_digits + 1):
+                c = sum(col_counts[i:i + num_digits])
+                if c > best_c:
+                    best_c, best_i = c, i
+            xs = xs[best_i:best_i + num_digits]
+        else:
+            continue
+
+        # Digit rows are the last 10 row clusters (write-in boxes sit above).
+        if len(ys) > 10:
+            ys = ys[-10:]
+        elif len(ys) < 10:
+            continue
+
+        col_gap = float(np.median(np.diff(xs))) if len(xs) > 1 else 20.0
+        row_gap = float(np.median(np.diff(ys))) if len(ys) > 1 else 20.0
+        if col_gap < 10 or row_gap < 10:
+            continue
+
+        score = pocket_bonus + len(pts) + (20 if label_hint else 0)
+        if score > best_score:
+            best_score = score
+            best_grid = {
+                "xs": float(xs[0] + px0),
+                "ys": float(ys[0] + py0),
+                "col_gap": col_gap,
+                "row_gap": row_gap,
+                "label": label_hint,
+                "pocket": (px0, py0, px1, py1),
+            }
+
+    return best_grid
+
+
 def detect_student_id(gray_img, np, config, num_digits):
     """
     Detect the student ID from the bubble grid.
 
-    Strategy (in order of preference):
-      1. Blob-calibrated grid — find actual ink marks, estimate column/row pitch.
-      2. 2-D shift search — sweep x/y offsets around the nominal PDF layout.
-      3. Per-column absolute-max fill (no row-mean subtraction).
-
-    Returns (student_id_str, debug_dict).
+    1. Locate the ID block via bubble circles / "Student ID" text (position can move).
+    2. Also try the PDF layout origin.
+    3. Fine-shift and pick the strongest-fill complete read.
     """
     sid_cfg = config.get("studentIdGrid", DEFAULT_CONFIG.get("studentIdGrid", {}))
     digit_start_x = sid_cfg.get("digitStartX", 43.2 / 210)
-    grid_top_y    = sid_cfg.get("gridTopY",    59   / 297)
-    digit_gap     = sid_cfg.get("digitGap",    4.8  / 210)
-    row_gap       = sid_cfg.get("rowGap",      6.2  / 297)
+    grid_top_y = sid_cfg.get("gridTopY", 59 / 297)
+    digit_gap = sid_cfg.get("digitGap", 4.8 / 210)
+    row_gap = sid_cfg.get("rowGap", 6.2 / 297)
     b_radius_norm = sid_cfg.get("bubbleRadius", (2.0 / 210) * 1.2)
-    fill_thresh   = sid_cfg.get("fillThreshold", 0.15)
-    row_digits    = sid_cfg.get("rowDigits", ["0","1","2","3","4","5","6","7","8","9"])
+    fill_thresh = sid_cfg.get("fillThreshold", 0.15)
+    row_digits = sid_cfg.get("rowDigits", ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
 
     h, w = gray_img.shape[:2]
     radius_px = max(4, int(b_radius_norm * w))
     global_mean = float(gray_img.mean())
-
     cols = max(1, min(12, num_digits))
     num_rows = len(row_digits)
-
     col_pitch_px = max(1, int(digit_gap * w))
-    row_pitch_px = max(1, int(row_gap   * h))
-    # Exact layouts only need to absorb small warp error; half a pitch would
-    # reach the filled bubble of the neighbouring column.
-    search_frac = 0.25 if sid_cfg.get("exact") else 0.5
-    half_x = max(2, int(col_pitch_px * search_frac))
-    half_y = max(2, int(row_pitch_px * search_frac))
-    step   = max(2, radius_px // 2)
+    row_pitch_px = max(1, int(row_gap * h))
 
+    # Paper is bright on ink_gray; filled bubbles are darker than the page mean.
     def sample_fill_at(cx, cy):
-        x0 = max(0, cx - radius_px); y0 = max(0, cy - radius_px)
-        x1 = min(w, cx + radius_px + 1); y1 = min(h, cy + radius_px + 1)
-        r2 = radius_px ** 2
-        s, t = 0, 0
-        for py in range(y0, y1):
-            dy2 = (py - cy) ** 2
-            for px in range(x0, x1):
-                if (px - cx) ** 2 + dy2 <= r2:
-                    s += int(gray_img[py, px]); t += 1
-        mean_val = s / max(1, t)
+        x0 = max(0, int(cx) - radius_px)
+        y0 = max(0, int(cy) - radius_px)
+        x1 = min(w, int(cx) + radius_px + 1)
+        y1 = min(h, int(cy) + radius_px + 1)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        mask = (xx - cx) ** 2 + (yy - cy) ** 2 <= radius_px ** 2
+        vals = gray_img[y0:y1, x0:x1][mask]
+        if vals.size == 0:
+            return 0.0
+        mean_val = float(vals.mean())
         return max(0.0, (global_mean - mean_val) / max(1.0, global_mean))
 
     def read_grid(xs, ys, col_gap_px, row_gap_px):
-        """Read one digit per column via peak neighbourhood fill."""
         sid = ""
         total_fill = 0.0
+        margin_sum = 0.0
         col_debug = []
+        half = max(1, radius_px // 2)
         for col in range(cols):
-            cx = int(xs + col * col_gap_px)
+            cx = xs + col * col_gap_px
             best_f = 0.0
             second_f = 0.0
             best_row = -1
-            row_fills = []
             for row_i in range(num_rows):
-                nom_y = int(ys + row_i * row_gap_px)
+                nom_y = ys + row_i * row_gap_px
                 peak = 0.0
-                for dy in range(-half_y, half_y + 1, step):
-                    for dx in range(-half_x, half_x + 1, step):
-                        px, py = cx + dx, nom_y + dy
-                        if px < radius_px or py < radius_px or px >= w - radius_px or py >= h - radius_px:
-                            continue
-                        f = sample_fill_at(px, py)
-                        if f > peak:
-                            peak = f
-                row_fills.append(peak)
+                for dy in (-half, 0, half):
+                    for dx in (-half, 0, half):
+                        peak = max(peak, sample_fill_at(cx + dx, nom_y + dy))
                 if peak > best_f:
                     second_f = best_f
                     best_f = peak
                     best_row = row_i
                 elif peak > second_f:
                     second_f = peak
-            differential = 1.3
             confident = (
                 best_f >= fill_thresh
                 and best_row >= 0
-                and (second_f < fill_thresh or best_f >= second_f * differential)
+                and (second_f < fill_thresh or best_f >= second_f * 1.3)
             )
             digit = row_digits[best_row] if confident else "_"
             sid += digit
             total_fill += best_f
+            margin_sum += max(0.0, best_f - second_f)
             col_debug.append({
                 "col": col,
-                "nom_x": cx,
+                "nom_x": int(cx),
                 "best_row": best_row,
                 "best_digit": digit,
                 "best_fill": round(best_f, 3),
             })
-        return sid, sid.count("_"), total_fill, col_debug
+        return sid, sid.count("_"), total_fill, margin_sum, col_debug
 
-    def score_sid(sid):
-        blanks = sid.count("_")
-        filled = cols - blanks
-        return (blanks, -filled, -sum(1 for i, c in enumerate(sid) if c == row_digits[i]))
+    def score_candidate(blanks, total_fill, margin_sum):
+        return (blanks, -total_fill, -margin_sum)
+
+    seeds = [(digit_start_x * w, grid_top_y * h, col_pitch_px, row_pitch_px, "exact")]
+    located = (sid_cfg or {}).get("_located")
+    if isinstance(located, dict) and "xs" in located:
+        seeds.insert(0, (
+            float(located["xs"]), float(located["ys"]),
+            float(located["col_gap"]), float(located["row_gap"]),
+            "bubbles",
+        ))
+    else:
+        located = None
 
     candidates = []
-    blob_count = 0
-
-    # ZipGrade-grid sheets: the layout is recomputed from the assessment, so
-    # the nominal grid is exact after the warp. read_grid already searches
-    # half a pitch around each bubble; shifting by whole pitches would read
-    # neighbouring digits instead.
-    if sid_cfg.get("exact"):
-        sid, blanks, total, col_dbg = read_grid(
-            digit_start_x * w, grid_top_y * h, col_pitch_px, row_pitch_px,
-        )
-        return sid, {
-            "method": "exact",
-            "blanks": blanks,
-            "fillThresh": fill_thresh,
-            "globalMean": round(global_mean, 1),
-            "cols": col_dbg,
-        }
-
-    # --- Method 1: blob-calibrated grid ---
-    try:
-        import cv2  # type: ignore
-        blobs = find_student_id_blobs(cv2, gray_img)
-        blob_count = len(blobs)
-        if len(blobs) >= 2:
-            dxs = [blobs[i + 1][0] - blobs[i][0] for i in range(len(blobs) - 1)]
-            dys = [blobs[i + 1][1] - blobs[i][1] for i in range(len(blobs) - 1)]
-            good_dxs = [d for d in dxs if 15 <= d <= 42]
-            good_dys = [d for d in dys if 18 <= d <= 72]
-            est_col_gap = float(np.median(good_dxs)) if good_dxs else float(col_pitch_px)
-            est_row_gap = float(np.median(good_dys)) if good_dys else float(row_pitch_px)
-
-            for start_idx in range(min(3, len(blobs))):
-                bx, by = blobs[start_idx][0], blobs[start_idx][1]
-                for col0 in range(3):
-                    for row0 in range(3):
-                        xs = bx - col0 * est_col_gap
-                        ys = by - row0 * est_row_gap
-                        if xs < 40 or ys < 60:
-                            continue
-                        sid, blanks, total, col_dbg = read_grid(xs, ys, est_col_gap, est_row_gap)
-                        candidates.append({
-                            "sid": sid,
-                            "blanks": blanks,
-                            "score": score_sid(sid),
-                            "method": "blob",
-                            "xs": round(xs, 1),
-                            "ys": round(ys, 1),
-                            "col_gap": round(est_col_gap, 1),
-                            "row_gap": round(est_row_gap, 1),
-                            "cols": col_dbg,
-                        })
-    except Exception:
-        blobs = []
-
-    # --- Method 2: 2-D shift search (skip if blob method found all digits) ---
-    blob_perfect = any(c["blanks"] == 0 for c in candidates if c["method"] == "blob")
-    if not blob_perfect:
-        nom_xs = digit_start_x * w
-        nom_ys = grid_top_y * h
-        for x_sh in range(-5, 2):
-            for y_sh in range(-6, 2):
-                xs = nom_xs + x_sh * col_pitch_px
-                ys = nom_ys + y_sh * row_pitch_px
-                if xs < 40 or ys < 60:
+    for seed_xs, seed_ys, seed_cg, seed_rg, method in seeds:
+        for x_sh in range(-4, 5):
+            for y_sh in range(-5, 6):
+                xs = seed_xs + x_sh * seed_cg * 0.2
+                ys = seed_ys + y_sh * seed_rg * 0.2
+                if xs < 15 or ys < 30:
                     continue
-                sid, blanks, total, col_dbg = read_grid(xs, ys, col_pitch_px, row_pitch_px)
+                sid, blanks, total, margin, col_dbg = read_grid(xs, ys, seed_cg, seed_rg)
                 candidates.append({
                     "sid": sid,
                     "blanks": blanks,
-                    "score": score_sid(sid),
-                    "method": "grid",
+                    "total_fill": total,
+                    "score": score_candidate(blanks, total, margin),
+                    "method": method if x_sh == 0 and y_sh == 0 else "grid",
                     "x_shift": x_sh,
                     "y_shift": y_sh,
                     "cols": col_dbg,
                 })
+
+    # Filled-blob calibration as a third family of seeds.
+    blob_count = 0
+    try:
+        import cv2  # type: ignore
+        roi = None
+        if located is not None:
+            px0, py0, px1, py1 = located["pocket"]
+            roi = {
+                "x0": px0 / w, "y0": py0 / h,
+                "x1": px1 / w, "y1": py1 / h,
+            }
+        elif isinstance(sid_cfg.get("roi"), dict):
+            roi = sid_cfg["roi"]
+        blobs = find_student_id_blobs(cv2, gray_img, roi)
+        blob_count = len(blobs)
+        if len(blobs) >= max(3, cols // 2):
+            # One blob per column → digit from y using layout/located row pitch.
+            base_ys = located["ys"] if located else grid_top_y * h
+            base_rg = located["row_gap"] if located else float(row_pitch_px)
+            base_cg = located["col_gap"] if located else float(col_pitch_px)
+            xs0 = min(b[0] for b in blobs)
+            # Snap each blob to nearest column / row of a candidate grid.
+            for x_off in range(-2, 3):
+                for y_off in range(-3, 4):
+                    xs = xs0 + x_off * base_cg * 0.2
+                    ys = base_ys + y_off * base_rg * 0.2
+                    sid, blanks, total, margin, col_dbg = read_grid(xs, ys, base_cg, base_rg)
+                    candidates.append({
+                        "sid": sid,
+                        "blanks": blanks,
+                        "total_fill": total,
+                        "score": score_candidate(blanks, total, margin),
+                        "method": "blob",
+                        "x_shift": x_off,
+                        "y_shift": y_off,
+                        "cols": col_dbg,
+                    })
+    except Exception:
+        pass
 
     if not candidates:
         return "_" * cols, {"blanks": cols, "method": "none"}
 
     candidates.sort(key=lambda c: c["score"])
     best = candidates[0]
-
     debug_info = {
         "method": best["method"],
         "blanks": best["blanks"],
         "fillThresh": fill_thresh,
         "globalMean": round(global_mean, 1),
         "blobCount": blob_count,
+        "totalFill": round(best.get("total_fill", 0), 3),
         "cols": best.get("cols", []),
+        "xShift": best.get("x_shift"),
+        "yShift": best.get("y_shift"),
     }
-    if best["method"] == "blob":
-        debug_info.update({
-            "xs": best.get("xs"),
-            "ys": best.get("ys"),
-            "colGapPx": best.get("col_gap"),
-            "rowGapPx": best.get("row_gap"),
-        })
-    else:
-        debug_info.update({
-            "xShift": best.get("x_shift"),
-            "yShift": best.get("y_shift"),
-        })
-
+    if located is not None:
+        debug_info["located"] = {
+            "xs": round(located["xs"], 1),
+            "ys": round(located["ys"], 1),
+            "colGap": round(located["col_gap"], 1),
+            "rowGap": round(located["row_gap"], 1),
+            "label": located.get("label"),
+        }
     return best["sid"], debug_info
 
 
@@ -732,16 +1061,75 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
     # Phase 3: Bubble analysis
     answers, details, answer_debug = analyze_answer_grid(darkness, np, config)
 
-    # Phase 4: Student ID detection. Paper-normalised ink image (paper = 255)
-    # so coloured ink and uneven lighting read like pencil on white.
-    ink_gray = ((1.0 - darkness) * 255.0).astype(np.uint8)
+    # Phase 4: Student ID detection. Locate the ID block via bubble circles /
+    # "Student ID" text when possible. Also compare against a plain resize —
+    # mobile uploads are already page-cropped, and a slightly wrong warp can
+    # invent confident but wrong IDs (e.g. 444332208 instead of 443206950).
     num_digits = int(config.get("numIdDigits", 5))
-    raw_student_id, sid_debug = detect_student_id(ink_gray, np, config, num_digits)
+
+    def read_student_id_from(image_bgr):
+        dark = ink_darkness_map(cv2, np, image_bgr)
+        ink = ((1.0 - dark) * 255.0).astype(np.uint8)
+        gray = (
+            cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+            if len(image_bgr.shape) == 3
+            else image_bgr
+        )
+        try:
+            located = locate_student_id_grid(cv2, gray, np, num_digits)
+        except Exception:
+            located = None
+        sid_config = dict(config)
+        if located is not None:
+            sid_config = {
+                **config,
+                "studentIdGrid": {
+                    **(config.get("studentIdGrid") or {}),
+                    "_located": located,
+                },
+            }
+        raw, debug = detect_student_id(ink, np, sid_config, num_digits)
+        return raw, debug, dark
+
+    raw_student_id, sid_debug, darkness = read_student_id_from(warped)
+    resized = cv2.resize(image, (config.get("warpWidth", 1000), config.get("warpHeight", 1414)))
+    raw_resize, sid_debug_resize, darkness_resize = read_student_id_from(resized)
+
+    def sid_rank(raw, debug):
+        blanks = int((debug or {}).get("blanks", raw.count("_") if raw else num_digits))
+        fill = float((debug or {}).get("totalFill", 0.0))
+        return (blanks, -fill)
+
+    if sid_rank(raw_resize, sid_debug_resize) < sid_rank(raw_student_id, sid_debug):
+        raw_student_id = raw_resize
+        sid_debug = {**(sid_debug_resize or {}), "source": "resize_fallback"}
+        # Prefer the geometry that produced the better ID for answer bubbles too.
+        if warp_applied:
+            warped = resized
+            darkness = darkness_resize
+            binary = preprocess(cv2, np, warped)
+            answers, details, answer_debug = analyze_answer_grid(darkness, np, config)
+            warp_applied = False
+            anchor_debug = {**anchor_debug, "idFallback": "resize_better_student_id"}
+    else:
+        sid_debug = {**(sid_debug or {}), "source": "warped"}
+        # Re-analyse answers on the chosen darkness map (already done above).
     # Return null only when every digit is blank; partial IDs are still useful
     detected_student_id = None if re.fullmatch(r'_+', raw_student_id) else (raw_student_id or None)
 
     # Phase 5: Paper-version marker
     detected_version, version_debug = decode_version_code(binary, config)
+
+    # Phase 6: Assessment code (ASM######) printed above the Name header.
+    warp_gray = (
+        cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        if len(warped.shape) == 3
+        else warped
+    )
+    detected_assessment_code, assessment_code_debug = detect_assessment_code(
+        cv2, warp_gray, np
+    )
+    name_section = detect_name_and_section(cv2, warp_gray, np)
 
     answered = sum(1 for d in details if d["status"] == "answered")
     total = max(1, len(details))
@@ -755,6 +1143,9 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
         "decodedFormId": detected_version,
         "questionDetails": details,
         "detectedStudentId": detected_student_id,
+        "detectedAssessmentCode": detected_assessment_code,
+        "detectedStudentName": name_section.get("detectedStudentName"),
+        "detectedStudentSection": name_section.get("detectedStudentSection"),
         "debug": {
             "warpConfidence": round(warp_conf, 3),
             "warpApplied": warp_applied,
@@ -766,6 +1157,11 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
             "anchors": anchor_debug,
             "studentIdDebug": sid_debug,
             "versionCode": version_debug,
+            "assessmentCode": assessment_code_debug,
+            "nameSection": {
+                "rawName": name_section.get("rawName"),
+                "rawSection": name_section.get("rawSection"),
+            },
             "answerGrid": answer_debug,
         },
     }

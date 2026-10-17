@@ -27,6 +27,30 @@ type RequestUser = {
 const ANCHOR_NAMES = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const;
 type AnchorHints = Record<(typeof ANCHOR_NAMES)[number], { x: number; y: number }>;
 
+/** Blank columns from the bubble grid are stored as `_`. */
+function isCompleteStudentId(code: string | null | undefined): code is string {
+  const value = (code ?? '').trim();
+  return value.length > 0 && !value.includes('_');
+}
+
+/**
+ * Candidate codes to look up for a printed student ID. Exact match first, then
+ * common padding / leading-zero variants so "0443206950" still finds "443206950".
+ */
+function studentIdLookupVariants(raw: string): string[] {
+  const code = raw.trim();
+  if (!code || code.includes('_')) return [];
+  const variants = new Set<string>([code]);
+  const noLeadingZeros = code.replace(/^0+/, '') || '0';
+  variants.add(noLeadingZeros);
+  for (const width of [6, 9, 10, 12]) {
+    if (noLeadingZeros.length <= width) {
+      variants.add(noLeadingZeros.padStart(width, '0'));
+    }
+  }
+  return Array.from(variants);
+}
+
 /**
  * Registration-mark centres the mobile camera already located, normalised to
  * the uploaded image (0..1). Invalid input is ignored and the grader searches
@@ -146,6 +170,9 @@ export class GradingService {
       decodedFormId: number | null;
       questionDetails?: unknown[];
       detectedStudentId?: string | null;
+      detectedAssessmentCode?: string | null;
+      detectedStudentName?: string | null;
+      detectedStudentSection?: string | null;
     } | null = null;
     let processError: string | null = null;
 
@@ -245,16 +272,19 @@ export class GradingService {
       orderedQuestions,
     );
 
-    // Enrich grader questionDetails with per-question correctness and answer key
+    // Enrich grader questionDetails with per-question correctness and answer key.
+    // Blank / multi-mark rows are not "incorrect answers" — only answered rows get isCorrect.
     const enrichedDetails = (
       (processResult!.questionDetails as Array<Record<string, unknown>>) ?? []
     ).map((qd) => {
       const printedNumber = qd['question'] as number;
+      const status = String(qd['status'] ?? '');
       const qr = questionResults.find((r) => r.question === printedNumber);
       const question = orderedQuestions[printedNumber - 1];
+      const isAnswered = status === 'answered';
       return {
         ...qd,
-        isCorrect: qr?.isCorrect ?? false,
+        isCorrect: isAnswered ? (qr?.isCorrect ?? false) : null,
         correctAnswer: qr?.correctAnswer ?? null,
         questionId: question?.id ?? null,
         masterNumber: question ? (masterNumberById.get(question.id) ?? null) : null,
@@ -262,21 +292,48 @@ export class GradingService {
       };
     });
 
-    // Try to match detected student ID against students table
-    const rawStudentId = processResult!.detectedStudentId ?? null;
-    let matchedStudentCode: string | null = null;
-    if (rawStudentId) {
-      const student = await this.prisma.student.findUnique({
-        where: { studentId: rawStudentId },
-        select: { studentId: true },
-      });
-      matchedStudentCode = student?.studentId ?? null;
+    // Match a fully-read student ID against this course's roster only.
+    const rawStudentId = (processResult!.detectedStudentId ?? '').trim() || null;
+    const matchedStudent = await this.findCourseStudent(
+      assessment.courseId,
+      rawStudentId,
+    );
+    if (rawStudentId && !isCompleteStudentId(rawStudentId)) {
+      this.logger.warn(
+        `Student ID incomplete for scan ${created.id}: detected="${rawStudentId}"`,
+      );
+    } else if (rawStudentId && !matchedStudent) {
+      this.logger.warn(
+        `Student ID not in course ${assessment.courseId} roster: detected="${rawStudentId}"`,
+      );
     }
 
-    return this.prisma.gradingScan.update({
+    const detectedAssessmentCode = (
+      processResult!.detectedAssessmentCode ?? ''
+    )
+      .trim()
+      .toUpperCase() || null;
+    const expectedAssessmentCode = String(assessment.code || '')
+      .trim()
+      .toUpperCase();
+    if (
+      detectedAssessmentCode &&
+      expectedAssessmentCode &&
+      detectedAssessmentCode !== expectedAssessmentCode
+    ) {
+      await this.prisma.gradingScan
+        .delete({ where: { id: created.id } })
+        .catch(() => undefined);
+      throw new BadRequestException(
+        `This paper is for assessment ${detectedAssessmentCode}, but you selected ${expectedAssessmentCode}.`,
+      );
+    }
+
+    // PENDING = graded for review only; COMPLETED + confirmedAt = saved.
+    const scan = await this.prisma.gradingScan.update({
       where: { id: created.id },
       data: {
-        status: processError ? 'FAILED' : 'COMPLETED',
+        status: processError ? 'FAILED' : 'PENDING',
         confidence: processResult!.confidence,
         decodedFormId: processResult!.decodedFormId,
         detectedAnswers: processResult!.answers,
@@ -285,9 +342,80 @@ export class GradingService {
         maxScore,
         errorMessage: processError,
         detectedStudentId: rawStudentId,
-        matchedStudentCode,
+        matchedStudentCode: matchedStudent?.studentId ?? null,
+        ...(matchedStudent ? { studentId: matchedStudent.id } : {}),
+      },
+      include: {
+        student: {
+          select: { id: true, name: true, studentId: true, section: true },
+        },
+        assessment: {
+          select: { id: true, title: true, code: true, type: true },
+        },
       },
     });
+
+    const detectedStudentName = (
+      processResult!.detectedStudentName ?? ''
+    ).trim() || null;
+    const detectedStudentSection = (
+      processResult!.detectedStudentSection ?? ''
+    ).trim() || null;
+
+    return {
+      ...scan,
+      detectedAssessmentCode,
+      detectedStudentName,
+      detectedStudentSection,
+    };
+  }
+
+  /**
+   * Resolve a printed student ID to a student. Prefers this course's roster,
+   * then a global exact match, then a unique partial match on filled digits
+   * (so `44320695_` can still resolve `443206950`).
+   */
+  private async findCourseStudent(courseId: number, rawCode: string | null) {
+    const select = {
+      id: true,
+      studentId: true,
+      name: true,
+      section: true,
+    } as const;
+    const variants = studentIdLookupVariants(rawCode ?? '');
+    if (variants.length > 0) {
+      const inCourse = await this.prisma.student.findFirst({
+        where: { courseId, studentId: { in: variants } },
+        select,
+      });
+      if (inCourse) return inCourse;
+      // Legacy rows / wrong course link: still accept a unique global ID.
+      const global = await this.prisma.student.findFirst({
+        where: { studentId: { in: variants } },
+        select,
+      });
+      if (global) return global;
+      return null;
+    }
+
+    const pattern = (rawCode ?? '').trim();
+    if (!pattern || !pattern.includes('_') || /^_+$/.test(pattern)) return null;
+    const filled = (pattern.match(/\d/g) ?? []).length;
+    if (filled < 4) return null;
+
+    const roster = await this.prisma.student.findMany({
+      where: { courseId },
+      select,
+    });
+    const matches = roster.filter((student) => {
+      const code =
+        student.studentId.length === pattern.length
+          ? student.studentId
+          : student.studentId.padStart(pattern.length, '0');
+      if (code.length !== pattern.length) return false;
+      return [...pattern].every((ch, index) => ch === '_' || ch === code[index]);
+    });
+    return matches.length === 1 ? matches[0] : null;
   }
 
   async getScan(user: RequestUser, scanId: number) {
@@ -307,6 +435,7 @@ export class GradingService {
         tenantId: user.tenantId,
         assessmentId,
         status: 'COMPLETED',
+        confirmedAt: { not: null },
       },
       select: {
         id: true,
@@ -328,22 +457,27 @@ export class GradingService {
     });
   }
 
-  /** Confirm a grading scan: link to the detected student and timestamp the confirmation. */
+  /** Persist a grading scan: only Submit grading promotes PENDING → COMPLETED. */
   async confirmScan(user: RequestUser, scanId: number) {
     const scan = await this.prisma.gradingScan.findFirst({
       where: { id: scanId, tenantId: user.tenantId },
+      include: { assessment: { select: { courseId: true } } },
     });
     if (!scan) throw new NotFoundException('Grading scan not found.');
+    if (scan.status === 'FAILED') {
+      throw new BadRequestException('Cannot save a failed grading scan.');
+    }
 
-    // Resolve the student FK from the detected / matched student code
+    // Resolve the student FK from the matched / detected code within this course.
     let studentId: number | null = scan.studentId ?? null;
-    const code = scan.matchedStudentCode ?? scan.detectedStudentId;
-    if (!studentId && code) {
-      const student = await this.prisma.student.findUnique({
-        where: { studentId: code },
-        select: { id: true },
-      });
+    let matchedStudentCode = scan.matchedStudentCode;
+    if (!studentId) {
+      const student = await this.findCourseStudent(
+        scan.assessment.courseId,
+        scan.matchedStudentCode ?? scan.detectedStudentId,
+      );
       studentId = student?.id ?? null;
+      if (student) matchedStudentCode = student.studentId;
     }
 
     const confirmed = await this.prisma.gradingScan.update({
@@ -351,8 +485,9 @@ export class GradingService {
       data: {
         confirmedAt: new Date(),
         ...(studentId ? { studentId } : {}),
-        // Ensure matchedStudentCode is set even if it wasn't before
-        ...(code && !scan.matchedStudentCode ? { matchedStudentCode: code } : {}),
+        ...(matchedStudentCode && !scan.matchedStudentCode
+          ? { matchedStudentCode }
+          : {}),
         status: 'COMPLETED',
       },
       include: {
@@ -570,12 +705,13 @@ export class GradingService {
     return { success: true };
   }
 
-  /** Full grading history for the tenant (all confirmed scans with student + assessment details). */
+  /** Full grading history for the tenant (saved scans only). */
   async getGradingHistory(user: RequestUser) {
     const scans = await this.prisma.gradingScan.findMany({
       where: {
         tenantId: user.tenantId,
         status: 'COMPLETED',
+        confirmedAt: { not: null },
       },
       select: {
         id: true,
@@ -621,8 +757,11 @@ export class GradingService {
       new Set(
         scans
           .filter((scan) => !scan.student)
-          .map((scan) => (scan.matchedStudentCode ?? scan.detectedStudentId ?? '').trim())
-          .filter(Boolean),
+          .flatMap((scan) =>
+            studentIdLookupVariants(
+              scan.matchedStudentCode ?? scan.detectedStudentId ?? '',
+            ),
+          ),
       ),
     );
     if (unlinkedCodes.length === 0) return scans;
@@ -632,14 +771,18 @@ export class GradingService {
         studentId: { in: unlinkedCodes },
         course: { tenantId: user.tenantId },
       },
-      select: { id: true, name: true, studentId: true, section: true },
+      select: { id: true, name: true, studentId: true, section: true, courseId: true },
     });
     const byCode = new Map(students.map((student) => [student.studentId, student]));
 
     return scans.map((scan) => {
       if (scan.student) return scan;
-      const code = (scan.matchedStudentCode ?? scan.detectedStudentId ?? '').trim();
-      return { ...scan, student: byCode.get(code) ?? null };
+      const variants = studentIdLookupVariants(
+        scan.matchedStudentCode ?? scan.detectedStudentId ?? '',
+      );
+      const student =
+        variants.map((code) => byCode.get(code)).find(Boolean) ?? null;
+      return { ...scan, student };
     });
   }
 
@@ -1048,11 +1191,13 @@ export class GradingService {
     return value;
   }
 
-  /** All scans attributed to a student code (detected or matched). */
+  /** Saved scans attributed to a student code (detected or matched). */
   getStudentHistory(user: RequestUser, studentCode: string) {
     return this.prisma.gradingScan.findMany({
       where: {
         tenantId: user.tenantId,
+        status: 'COMPLETED',
+        confirmedAt: { not: null },
         OR: [
           { detectedStudentId: studentCode },
           { matchedStudentCode: studentCode },

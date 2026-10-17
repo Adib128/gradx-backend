@@ -1246,8 +1246,8 @@ export function buildGraderSheetConfig(layout: LayoutPlan, digits: number) {
     answerGrid: {
       columns,
       bubbleRadius: nx(layout.bubbleRadius * 0.72),
-      fillThreshold: 0.3,
-      darknessDifferential: 1.3,
+      fillThreshold: 0.32,
+      darknessDifferential: 1.45,
     },
     studentIdGrid: {
       digitStartX: nx(layout.digitStartX + layout.digitBoxSize / 2),
