@@ -26,7 +26,8 @@ EXPECTED OUTPUT JSON CONTRACT
       "options": [
         { "text": "Option text", "isCorrect": true, "order": 1 },
         { "text": "Distractor text", "isCorrect": false, "order": 2 }
-      ]
+      ],
+      "allowMultipleCorrect": false
     }
   ]
 }
@@ -164,7 +165,8 @@ ${sharedRules}
 5. Return a "questions" array with exactly ONE item.
 6. Set "topicId" to ${tg.topicId}.
 7. Set "type" exactly to "${questionType}".
-8. For TRUE_FALSE provide exactly 2 options (True/False). For MCQ provide 4 options with exactly one correct.
+8. For TRUE_FALSE provide exactly 2 options (True/False) with exactly one correct.
+9. For MCQ provide 4 options. Most items have exactly one correct option (allowMultipleCorrect=false). When the learning objective needs selecting all that apply, set allowMultipleCorrect=true and mark every correct option with isCorrect=true (2+ options).
 
 ${outputContract}
 `.trim();

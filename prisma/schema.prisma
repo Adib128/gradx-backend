@@ -47,6 +47,7 @@ enum AssessmentQuestionSource {
   COURSE_SPECIFICATION
 }
 
+/// Legacy enum kept for Postgres type history; assessments.type is free-text now.
 enum AssessmentType {
   QUIZ
   FINAL_EXAM
@@ -218,12 +219,18 @@ model Student {
   courseId Int?
   course   Course? @relation(fields: [courseId], references: [id])
 
+  /// Roster for standalone answer sheets (no course).
+  courseAnswerSheetId Int?
+  courseAnswerSheet   CourseAnswerSheet? @relation(fields: [courseAnswerSheetId], references: [id], onDelete: Cascade)
+
   gradingScans GradingScan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([studentId])
+  @@index([courseId])
+  @@index([courseAnswerSheetId])
   @@map("students")
 }
 
@@ -252,7 +259,12 @@ model Course {
   level             String?
   academicYear      String?
   semester          String?
+  /// CLO achievement threshold (%) — used by course CLO / PLO reports.
   passRate          Int     @default(70)
+  /// Assessment pass threshold (%) — used for assessment-level pass/fail.
+  assessmentPassRate Int    @default(70)
+  /// Letter-grade intervals [{ grade, min, max, gpa }]; null → default A+…F scale.
+  gradeBands        Json?
   teachingMode      String?
   teachingModes     Json?
   totalContactHours Int?
@@ -430,7 +442,10 @@ model Question {
   explanation String?
   points      Int          @default(1)
 
+  /// Letter key(s), e.g. "A" or "A,C" when several MCQ options are correct.
   correctAnswer  String?
+  /// When true (or multiple options areCorrect), students may mark several bubbles; partial credit applies.
+  allowMultipleCorrect Boolean @default(false)
   codeTemplate   String?
   codeLanguage   String?
   expectedOutput String?
@@ -487,7 +502,8 @@ model QuestionClo {
 
 model Assessment {
   id                                      Int                       @id @default(autoincrement())
-  type                                    AssessmentType
+  /// Dynamic label chosen at extract/create time from the assessment name (not a fixed enum).
+  type                                    String
   title                                   String
   /// Unique auto-generated alphanumeric code (e.g. ASM000001)
   code                                    String                    @unique
@@ -547,8 +563,12 @@ model Assessment {
 
 model GradingScan {
   id               Int               @id @default(autoincrement())
-  assessmentId     Int
-  assessment       Assessment        @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  /// Set when grading an assessment paper; null for standalone answer-sheet scans.
+  assessmentId     Int?
+  assessment       Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  /// Set when grading a course/standalone answer sheet.
+  courseAnswerSheetId Int?
+  courseAnswerSheet   CourseAnswerSheet? @relation(fields: [courseAnswerSheetId], references: [id], onDelete: Cascade)
   tenantId         Int
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
   graderUserId     Int
@@ -575,6 +595,7 @@ model GradingScan {
   updatedAt        DateTime          @updatedAt
 
   @@index([assessmentId])
+  @@index([courseAnswerSheetId])
   @@index([tenantId])
   @@index([graderUserId])
   @@index([detectedStudentId])
@@ -660,7 +681,7 @@ model TopicClo {
 model CourseAnswerSheet {
   id                       Int                  @id @default(autoincrement())
   name                     String
-  assessmentType           AssessmentType       @default(FINAL_EXAM)
+  assessmentType           String               @default("Final Exam")
   points                   Int                  @default(100)
   showMarksPerQuestion     Boolean              @default(false)
   numberOfQuestions        Int                  @default(50)
@@ -681,14 +702,19 @@ model CourseAnswerSheet {
   pdfPath                  String?
   pdfSizeBytes             Int?
 
-  courseId Int
-  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  /// Optional — standalone answer sheets have no course.
+  courseId Int?
+  course   Course? @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
   tenantId Int
   tenant   Tenant @relation(fields: [tenantId], references: [id])
 
-  questions CourseAnswerSheetQuestion[]
-  versions  CourseAnswerSheetVersion[]
+  questions   CourseAnswerSheetQuestion[]
+  versions    CourseAnswerSheetVersion[]
+  /// Standalone CLOs when the sheet has no course (course CLOs are used otherwise).
+  clos        CourseAnswerSheetClo[]
+  gradingScans GradingScan[]
+  students    Student[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -696,6 +722,24 @@ model CourseAnswerSheet {
   @@index([courseId])
   @@index([tenantId])
   @@map("course_answer_sheets")
+}
+
+/// Editable CLO list for answer sheets created without a course.
+model CourseAnswerSheetClo {
+  id            Int     @id @default(autoincrement())
+  code          String
+  description   String  @default("")
+  sortOrder     Int     @default(0)
+
+  answerSheetId Int
+  answerSheet   CourseAnswerSheet @relation(fields: [answerSheetId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([answerSheetId])
+  @@unique([answerSheetId, code])
+  @@map("course_answer_sheet_clos")
 }
 
 model CourseAnswerSheetQuestion {

@@ -9,8 +9,11 @@ import {
   computeStudentTotals,
   isPassingTotal,
   resolveAssessmentMax,
+  resolveGradeBands,
   resolvePassRate,
+  resolveCourseWeights,
   resolveScopedWeights,
+  type AssessmentPlanWeightItem,
   rosterKey,
   round1,
   round2,
@@ -223,7 +226,15 @@ export class CourseReportsService {
       },
       orderBy: [{ confirmedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
     });
-    return selectStudentScans(scans, roster);
+    return selectStudentScans(
+      scans
+        .filter((scan) => scan.assessmentId != null)
+        .map((scan) => ({
+          ...scan,
+          assessmentId: scan.assessmentId as number,
+        })),
+      roster,
+    );
   }
 
   private async loadCloCourse(tenantId: number, courseId: number) {
@@ -242,6 +253,14 @@ export class CourseReportsService {
       throw new NotFoundException('Course not found.');
     }
     return course;
+  }
+
+  private assessmentPlanItems(
+    assessmentPlan: unknown,
+  ): AssessmentPlanWeightItem[] | null {
+    return Array.isArray(assessmentPlan)
+      ? (assessmentPlan as AssessmentPlanWeightItem[])
+      : null;
   }
 
   private loadCloAssessments(tenantId: number, courseId: number, assessmentId?: number) {
@@ -263,7 +282,8 @@ export class CourseReportsService {
     const course = await this.loadCloCourse(tenantId, courseId);
     const passRatePercent = resolvePassRate(course.passRate);
     const assessments = await this.loadCloAssessments(tenantId, courseId, assessmentId);
-    const weights = resolveScopedWeights(assessments, assessmentId);
+    const plan = this.assessmentPlanItems(course.assessmentPlan);
+    const weights = resolveScopedWeights(assessments, assessmentId, plan);
     const scans = await this.loadStudentScans(
       tenantId,
       assessments.map((assessment) => assessment.id),
@@ -479,7 +499,11 @@ export class CourseReportsService {
   private async loadScoreCourse(tenantId: number, courseId: number, assessmentId?: number) {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
-      include: {
+      select: {
+        id: true,
+        passRate: true,
+        gradeBands: true,
+        assessmentPlan: true,
         students: { select: { id: true, studentId: true } },
         assessments: {
           where: assessmentId ? { id: assessmentId } : undefined,
@@ -506,7 +530,9 @@ export class CourseReportsService {
   ) {
     const course = await this.loadScoreCourse(tenantId, courseId, assessmentId);
     const passMarkThreshold = resolvePassRate(course.passRate);
-    const weights = resolveScopedWeights(course.assessments, assessmentId);
+    const gradeBands = resolveGradeBands(course.gradeBands);
+    const plan = this.assessmentPlanItems(course.assessmentPlan);
+    const weights = resolveScopedWeights(course.assessments, assessmentId, plan);
     const scans = await this.loadStudentScans(
       tenantId,
       course.assessments.map((assessment) => assessment.id),
@@ -519,13 +545,13 @@ export class CourseReportsService {
     const percentOf = (count: number) =>
       gradedCount > 0 ? round1((count / gradedCount) * 100) : null;
 
-    const bandCounts = new Map<string, number>(GRADE_BANDS.map((band) => [band.grade, 0]));
+    const bandCounts = new Map<string, number>(gradeBands.map((band) => [band.grade, 0]));
     for (const score of scores) {
-      const band = scoreToGradeBand(score);
+      const band = scoreToGradeBand(score, gradeBands);
       bandCounts.set(band.grade, (bandCounts.get(band.grade) ?? 0) + 1);
     }
 
-    const rows = GRADE_BANDS.map((band) => {
+    const rows = gradeBands.map((band) => {
       const count = bandCounts.get(band.grade) ?? 0;
       const achieved = band.min >= passMarkThreshold;
       return {
@@ -544,9 +570,9 @@ export class CourseReportsService {
     const averageScore =
       scores.length > 0 ? round1(scores.reduce((sum, score) => sum + score, 0) / scores.length) : null;
 
-    const highestBand = highestScore != null ? scoreToGradeBand(highestScore) : null;
-    const lowestBand = lowestScore != null ? scoreToGradeBand(lowestScore) : null;
-    const averageBand = averageScore != null ? scoreToGradeBand(averageScore) : null;
+    const highestBand = highestScore != null ? scoreToGradeBand(highestScore, gradeBands) : null;
+    const lowestBand = lowestScore != null ? scoreToGradeBand(lowestScore, gradeBands) : null;
+    const averageBand = averageScore != null ? scoreToGradeBand(averageScore, gradeBands) : null;
 
     const failingCount = scores.filter((score) => !isPassingTotal(score, passMarkThreshold)).length;
     const failingPercent = percentOf(failingCount);
@@ -566,10 +592,12 @@ export class CourseReportsService {
         .sort((a, b) => b.count - a.count || b.percentOfClass - a.percentOfClass)[0]
         ?.grade ??
       averageBand?.grade ??
+      gradeBands[0]?.grade ??
       GRADE_BANDS[0].grade;
 
     return {
       passMarkThreshold,
+      gradeBands,
       enrolledCount,
       gradedCount,
       hasGradingData: gradedCount > 0,
@@ -622,17 +650,8 @@ export class CourseReportsService {
       course.students,
     );
 
-    const typeOrder: Record<string, number> = {
-      MID_TERM_EXAM: 0,
-      FINAL_EXAM: 1,
-      QUIZ: 2,
-      LAB: 3,
-      ASSIGNMENT: 4,
-      OTHER: 5,
-    };
-
     const orderedAssessments = [...course.assessments].sort((a, b) => {
-      const typeDiff = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+      const typeDiff = String(a.type || '').localeCompare(String(b.type || ''));
       if (typeDiff !== 0) return typeDiff;
       return (a.title || '').localeCompare(b.title || '');
     });
@@ -725,24 +744,18 @@ export class CourseReportsService {
   ) {
     const course = await this.loadCloCourse(tenantId, courseId);
     const passRatePercent = resolvePassRate(course.passRate);
+    const gradeBands = resolveGradeBands(course.gradeBands);
     const assessments = await this.loadCloAssessments(tenantId, courseId, assessmentId);
-
-    const typeOrder: Record<string, number> = {
-      QUIZ: 0,
-      ASSIGNMENT: 1,
-      OTHER: 2,
-      MID_TERM_EXAM: 3,
-      LAB: 4,
-      FINAL_EXAM: 5,
-    };
+    const plan = this.assessmentPlanItems(course.assessmentPlan);
 
     const orderedAssessments = [...assessments].sort((a, b) => {
-      const typeDiff = (typeOrder[a.type] ?? 99) - (typeOrder[b.type] ?? 99);
+      const typeDiff = String(a.type || '').localeCompare(String(b.type || ''));
       if (typeDiff !== 0) return typeDiff;
       return (a.title || '').localeCompare(b.title || '');
     });
 
-    const weights = resolveScopedWeights(orderedAssessments, assessmentId);
+    const weights = resolveScopedWeights(orderedAssessments, assessmentId, plan);
+    const courseWeights = resolveCourseWeights(orderedAssessments, plan);
     const scans = await this.loadStudentScans(
       tenantId,
       orderedAssessments.map((assessment) => assessment.id),
@@ -770,7 +783,10 @@ export class CourseReportsService {
         label: this.formatAssessmentComponentLabel(assessment.title, assessment.type, maxScore),
         shortLabel: this.formatAssessmentShortLabel(assessment.title, assessment.type),
         maxScore,
+        // Scoring weight (may be 100 when a single assessment is scoped).
         weight: weights.get(assessment.id) ?? 0,
+        // Real course / assessment-type weight for the Weight % table (e.g. 15).
+        courseWeight: courseWeights.get(assessment.id) ?? 0,
         color: this.assessmentTypeColor(assessment.type),
       };
     });
@@ -799,7 +815,7 @@ export class CourseReportsService {
     const buildRow = (student: { id: number | null; studentId: string; name: string | null }) => {
       const studentScans = scanByStudent.get(student.studentId) ?? new Map<number, SelectedScan>();
       const total = totals.get(student.studentId) ?? null;
-      const gradeBand = total != null ? scoreToGradeBand(total) : null;
+      const gradeBand = total != null ? scoreToGradeBand(total, gradeBands) : null;
       return {
         key: student.studentId,
         studentDbId: student.id,
@@ -861,22 +877,17 @@ export class CourseReportsService {
     const passing =
       totalValues.length > 0 ? round1((passingCount / totalValues.length) * 100) : null;
 
-    const distributionBands = [
-      { key: '0-49', label: '0-49', min: 0, max: 49 },
-      { key: '50-59', label: '50-59', min: 50, max: 59 },
-      { key: '60-69', label: '60-69', min: 60, max: 69 },
-      { key: '70-79', label: '70-79', min: 70, max: 79 },
-      { key: '80-89', label: '80-89', min: 80, max: 89 },
-      { key: '90-100', label: '90-100', min: 90, max: 100 },
-    ];
-
-    const distribution = distributionBands.map((band) => {
+    // Score distribution chart follows the course letter-grade intervals.
+    const distribution = gradeBands.map((band) => {
       const count = totalValues.filter((value) => {
         const rounded = Math.round(value);
         return rounded >= band.min && rounded <= band.max;
       }).length;
       return {
-        ...band,
+        key: band.grade,
+        label: `${band.grade} (${band.markRange})`,
+        min: band.min,
+        max: band.max,
         count,
         percent: totalValues.length > 0 ? round1((count / totalValues.length) * 100) : 0,
       };
@@ -889,6 +900,7 @@ export class CourseReportsService {
 
     return {
       passRatePercent,
+      gradeBands,
       hasGradingData: gradedRows.length > 0,
       enrolledCount: course.students.length,
       components,
@@ -911,26 +923,29 @@ export class CourseReportsService {
     type: string,
   ) {
     const raw = String(title || '').trim();
-    const typeFallback: Record<string, string> = {
-      MID_TERM_EXAM: 'Midterm',
-      FINAL_EXAM: 'Final',
+    const typeLabel = this.humanizeAssessmentType(type);
+    if (!raw) return typeLabel;
+    return raw.length > 12 ? `${raw.slice(0, 10).trim()}…` : raw;
+  }
+
+  private humanizeAssessmentType(type: string) {
+    const raw = String(type || '').trim();
+    if (!raw) return 'Assessment';
+    const legacy: Record<string, string> = {
       QUIZ: 'Quizzes',
+      FINAL_EXAM: 'Final',
+      MID_TERM_EXAM: 'Midterm',
       LAB: 'Lab',
       ASSIGNMENT: 'Assign',
-      OTHER: 'Other',
+      OTHER: 'Assessment',
     };
-    if (!raw) return typeFallback[type] ?? 'Assessment';
-    if (/quiz/i.test(raw)) return 'Quizzes';
-    if (/assign/i.test(raw)) return 'Assign';
-    if (/lab/i.test(raw)) return 'Lab';
-    if (/mid/i.test(raw)) return 'Midterm';
-    if (/final/i.test(raw)) return 'Final';
-    if (/project/i.test(raw)) return 'Project';
+    const key = raw.toUpperCase().replace(/[\s-]+/g, '_');
+    if (legacy[key]) return legacy[key];
     return raw.length > 12 ? `${raw.slice(0, 10).trim()}…` : raw;
   }
 
   private assessmentTypeColor(type: string) {
-    const colors: Record<string, string> = {
+    const legacy: Record<string, string> = {
       QUIZ: '#5B3A9E',
       ASSIGNMENT: '#E07A3A',
       OTHER: '#64748B',
@@ -938,7 +953,27 @@ export class CourseReportsService {
       LAB: '#22C55E',
       FINAL_EXAM: '#A16207',
     };
-    return colors[type] ?? '#5B3A9E';
+    const key = String(type || '')
+      .toUpperCase()
+      .replace(/[\s-]+/g, '_');
+    if (legacy[key]) return legacy[key];
+
+    // Stable color from dynamic type string
+    const palette = [
+      '#5B3A9E',
+      '#E07A3A',
+      '#3B82F6',
+      '#22C55E',
+      '#A16207',
+      '#0891B2',
+      '#DC2626',
+      '#4338CA',
+    ];
+    let hash = 0;
+    for (const ch of String(type || '')) {
+      hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    }
+    return palette[hash % palette.length];
   }
 
   private cloDotColor(index: number) {
@@ -973,26 +1008,9 @@ export class CourseReportsService {
     maxScore: number,
   ) {
     const raw = String(title || '').trim();
-    const typeFallback: Record<string, string> = {
-      MID_TERM_EXAM: 'Midterm',
-      FINAL_EXAM: 'Final',
-      QUIZ: 'Quizzes',
-      LAB: 'Lab',
-      ASSIGNMENT: 'Assign',
-      OTHER: 'Other',
-    };
-
-    let short = raw;
-    if (!short) {
-      short = typeFallback[type] ?? 'Assessment';
-    } else if (short.length > 22) {
-      if (/quiz/i.test(short)) short = 'Quizzes';
-      else if (/assign/i.test(short)) short = 'Assign';
-      else if (/lab/i.test(short)) short = 'Lab';
-      else if (/project/i.test(short)) short = 'Project';
-      else if (/mid/i.test(short)) short = 'Midterm';
-      else if (/final/i.test(short)) short = 'Final';
-      else short = `${short.slice(0, 18).trim()}…`;
+    let short = raw || this.humanizeAssessmentType(type);
+    if (short.length > 22) {
+      short = `${short.slice(0, 18).trim()}…`;
     }
 
     return `${short} /${maxScore}`;

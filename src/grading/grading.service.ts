@@ -36,10 +36,19 @@ function isCompleteStudentId(code: string | null | undefined): code is string {
 /**
  * Candidate codes to look up for a printed student ID. Exact match first, then
  * common padding / leading-zero variants so "0443206950" still finds "443206950".
+ * Incomplete bubble grids use `_` for blank columns — those skip exact variants
+ * (partial matching handles them in findCourseStudent). Digits-only forms are
+ * still tried so an add-student flow that stripped `_` can be re-linked.
  */
 function studentIdLookupVariants(raw: string): string[] {
   const code = raw.trim();
-  if (!code || code.includes('_')) return [];
+  if (!code) return [];
+  const digitsOnly = code.replace(/_/g, '');
+  if (!digitsOnly) return [];
+  // Incomplete grids: only try the digits-only form (add-student strips `_`).
+  if (code.includes('_')) {
+    return studentIdLookupVariants(digitsOnly);
+  }
   const variants = new Set<string>([code]);
   const noLeadingZeros = code.replace(/^0+/, '') || '0';
   variants.add(noLeadingZeros);
@@ -261,11 +270,30 @@ export class GradingService {
       );
     }
 
-    // A row with more than one mark earns no credit, even if the darkest
-    // mark is the key.
+    // Multi-mark rows: zero for single-answer MCQ; for multi-correct questions,
+    // keep all marked letters (from candidates) so partial credit can apply.
     const scoredAnswers = { ...processResult!.answers };
-    for (const detail of (processResult!.questionDetails as Array<Record<string, unknown>>) ?? []) {
-      if (detail['status'] === 'multiple') scoredAnswers[String(detail['question'])] = '';
+    const detailsRaw =
+      (processResult!.questionDetails as Array<Record<string, unknown>>) ?? [];
+    for (const detail of detailsRaw) {
+      const qNum = Number(detail['question']);
+      const question = orderedQuestions[qNum - 1];
+      const multiAllowed = this.questionAllowsMultipleCorrect(question);
+      if (detail['status'] === 'multiple') {
+        if (multiAllowed) {
+          const candidates = Array.isArray(detail['candidates'])
+            ? (detail['candidates'] as unknown[])
+                .map((value) => String(value || '').trim().toUpperCase())
+                .filter(Boolean)
+            : [];
+          const joined = candidates.join(',');
+          scoredAnswers[String(qNum)] = joined;
+          detail['detected'] = joined || null;
+          detail['status'] = joined ? 'answered' : 'blank';
+        } else {
+          scoredAnswers[String(qNum)] = '';
+        }
+      }
     }
     const { score, maxScore, questionResults } = this.gradeAnswers(
       scoredAnswers,
@@ -273,10 +301,8 @@ export class GradingService {
     );
 
     // Enrich grader questionDetails with per-question correctness and answer key.
-    // Blank / multi-mark rows are not "incorrect answers" — only answered rows get isCorrect.
-    const enrichedDetails = (
-      (processResult!.questionDetails as Array<Record<string, unknown>>) ?? []
-    ).map((qd) => {
+    // Blank rows are not "incorrect"; multi-correct may earn partial credit.
+    const enrichedDetails = detailsRaw.map((qd) => {
       const printedNumber = qd['question'] as number;
       const status = String(qd['status'] ?? '');
       const qr = questionResults.find((r) => r.question === printedNumber);
@@ -286,6 +312,8 @@ export class GradingService {
         ...qd,
         isCorrect: isAnswered ? (qr?.isCorrect ?? false) : null,
         correctAnswer: qr?.correctAnswer ?? null,
+        earnedPoints: isAnswered ? (qr?.earnedPoints ?? 0) : null,
+        maxPoints: question?.points ?? null,
         questionId: question?.id ?? null,
         masterNumber: question ? (masterNumberById.get(question.id) ?? null) : null,
         versionNumber: scoringVersionNumber,
@@ -395,7 +423,7 @@ export class GradingService {
         select,
       });
       if (global) return global;
-      return null;
+      // Digits-only match found nothing; fall through to partial `_` matching.
     }
 
     const pattern = (rawCode ?? '').trim();
@@ -405,6 +433,45 @@ export class GradingService {
 
     const roster = await this.prisma.student.findMany({
       where: { courseId },
+      select,
+    });
+    const matches = roster.filter((student) => {
+      const code =
+        student.studentId.length === pattern.length
+          ? student.studentId
+          : student.studentId.padStart(pattern.length, '0');
+      if (code.length !== pattern.length) return false;
+      return [...pattern].every((ch, index) => ch === '_' || ch === code[index]);
+    });
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  private async findAnswerSheetStudent(
+    courseAnswerSheetId: number,
+    rawCode: string | null,
+  ) {
+    const select = {
+      id: true,
+      studentId: true,
+      name: true,
+      section: true,
+    } as const;
+    const variants = studentIdLookupVariants(rawCode ?? '');
+    if (variants.length > 0) {
+      const onSheet = await this.prisma.student.findFirst({
+        where: { courseAnswerSheetId, studentId: { in: variants } },
+        select,
+      });
+      if (onSheet) return onSheet;
+    }
+
+    const pattern = (rawCode ?? '').trim();
+    if (!pattern || !pattern.includes('_') || /^_+$/.test(pattern)) return null;
+    const filled = (pattern.match(/\d/g) ?? []).length;
+    if (filled < 4) return null;
+
+    const roster = await this.prisma.student.findMany({
+      where: { courseAnswerSheetId },
       select,
     });
     const matches = roster.filter((student) => {
@@ -457,8 +524,16 @@ export class GradingService {
     });
   }
 
-  /** Persist a grading scan: only Submit grading promotes PENDING → COMPLETED. */
-  async confirmScan(user: RequestUser, scanId: number) {
+  /**
+   * Persist a grading scan: only Submit grading promotes PENDING → COMPLETED.
+   * Optional `studentId` (course-student FK) is used after mobile add-student
+   * so the new roster row is linked even if bubble-ID lookup would miss.
+   */
+  async confirmScan(
+    user: RequestUser,
+    scanId: number,
+    opts?: { studentId?: number | null },
+  ) {
     const scan = await this.prisma.gradingScan.findFirst({
       where: { id: scanId, tenantId: user.tenantId },
       include: { assessment: { select: { courseId: true } } },
@@ -468,16 +543,59 @@ export class GradingService {
       throw new BadRequestException('Cannot save a failed grading scan.');
     }
 
-    // Resolve the student FK from the matched / detected code within this course.
+    // Resolve the student FK: explicit body wins, then existing link, then roster lookup.
     let studentId: number | null = scan.studentId ?? null;
     let matchedStudentCode = scan.matchedStudentCode;
-    if (!studentId) {
-      const student = await this.findCourseStudent(
-        scan.assessment.courseId,
-        scan.matchedStudentCode ?? scan.detectedStudentId,
-      );
-      studentId = student?.id ?? null;
-      if (student) matchedStudentCode = student.studentId;
+    const explicitId =
+      typeof opts?.studentId === 'number' && Number.isFinite(opts.studentId)
+        ? opts.studentId
+        : null;
+    const answerSheetId = scan.courseAnswerSheetId ?? null;
+    const courseId =
+      scan.assessment?.courseId ??
+      (
+        await this.prisma.courseAnswerSheet.findFirst({
+          where: { id: answerSheetId ?? -1, tenantId: user.tenantId },
+          select: { courseId: true },
+        })
+      )?.courseId ??
+      null;
+
+    if (explicitId != null) {
+      const explicit = await this.prisma.student.findFirst({
+        where: {
+          id: explicitId,
+          ...(courseId != null
+            ? { courseId }
+            : answerSheetId != null
+              ? { courseAnswerSheetId: answerSheetId }
+              : { id: -1 }),
+        },
+        select: { id: true, studentId: true },
+      });
+      if (!explicit) {
+        throw new BadRequestException(
+          'Student does not belong to this assessment or answer sheet.',
+        );
+      }
+      studentId = explicit.id;
+      matchedStudentCode = explicit.studentId;
+    } else if (!studentId) {
+      if (courseId != null) {
+        const student = await this.findCourseStudent(
+          courseId,
+          scan.matchedStudentCode ?? scan.detectedStudentId,
+        );
+        studentId = student?.id ?? null;
+        if (student) matchedStudentCode = student.studentId;
+      } else if (answerSheetId != null) {
+        const student = await this.findAnswerSheetStudent(
+          answerSheetId,
+          scan.matchedStudentCode ?? scan.detectedStudentId,
+        );
+        studentId = student?.id ?? null;
+        if (student) matchedStudentCode = student.studentId;
+      }
     }
 
     const confirmed = await this.prisma.gradingScan.update({
@@ -485,7 +603,7 @@ export class GradingService {
       data: {
         confirmedAt: new Date(),
         ...(studentId ? { studentId } : {}),
-        ...(matchedStudentCode && !scan.matchedStudentCode
+        ...(matchedStudentCode
           ? { matchedStudentCode }
           : {}),
         status: 'COMPLETED',
@@ -568,6 +686,11 @@ export class GradingService {
     if (!scan) throw new NotFoundException('Grading scan not found.');
 
     const assessment = scan.assessment;
+    if (!assessment) {
+      throw new BadRequestException(
+        'CLO breakdown is only available for assessment grading scans.',
+      );
+    }
     const details = Array.isArray(scan.questionDetails)
       ? (scan.questionDetails as Array<Record<string, unknown>>)
       : [];
@@ -652,7 +775,14 @@ export class GradingService {
       const weightedPoints =
         weightSum > 0 ? (weights[index] / weightSum) * examTotal : 0;
       const detail = detailByQuestion.get(questionNumber);
-      const earned = detail?.isCorrect === true ? weightedPoints : 0;
+      const maxPts = Number(detail?.maxPoints);
+      const earnedPts = Number(detail?.earnedPoints);
+      const earned =
+        Number.isFinite(earnedPts) && Number.isFinite(maxPts) && maxPts > 0
+          ? (earnedPts / maxPts) * weightedPoints
+          : detail?.isCorrect === true
+            ? weightedPoints
+            : 0;
       const cloIds = resolveCloIds(question);
       const targets = cloIds.length > 0 ? cloIds : [null];
       for (const cloId of targets) {
@@ -1213,11 +1343,24 @@ export class GradingService {
   // -------------------------------------------------------------------------
   // Scoring
   // -------------------------------------------------------------------------
+  private questionAllowsMultipleCorrect(question: {
+    allowMultipleCorrect?: boolean | null;
+    questionOptions?: Array<{ isCorrect: boolean }> | null;
+  } | null | undefined): boolean {
+    if (!question) return false;
+    if (question.allowMultipleCorrect) return true;
+    const correctCount = (question.questionOptions ?? []).filter(
+      (opt) => opt.isCorrect,
+    ).length;
+    return correctCount > 1;
+  }
+
   private gradeAnswers(
     detectedAnswers: Record<string, string>,
     questions: Array<{
       type?: string | null;
       correctAnswer: string | null;
+      allowMultipleCorrect?: boolean | null;
       questionOptions: Array<{ text: string; isCorrect: boolean; order?: number | null }>;
       points: number;
     }>,
@@ -1225,62 +1368,58 @@ export class GradingService {
     const norm = (v: string) =>
       v.trim().toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
 
-    const prefixRe = /^(?:OPTION\s*)?([A-E])(?:[\).\-:\s]|$)/i;
-    // Case-sensitive so the article "a" in a text answer is not read as option A.
-    const letterRe = /\b([A-E])\b/;
+    const prefixRe = /^(?:OPTION\s*)?([A-F])(?:[\).\-:\s]|$)/i;
+    const letterRe = /\b([A-F])\b/;
+    const OPTION_LETTERS = new Set(['A', 'B', 'C', 'D', 'E', 'F', 'T']);
 
-    const getAccepted = (q: {
+    /** Correct option letters only (A–F / T–F), used for partial credit. */
+    const getCorrectLetters = (q: {
       correctAnswer: string | null;
       questionOptions: Array<{ text: string; isCorrect: boolean; order?: number | null }>;
-    }): Set<string> => {
-      const accepted = new Set<string>();
+    }): string[] => {
       const opts = [...q.questionOptions].sort(
         (a, b) => (a.order ?? 0) - (b.order ?? 0),
       );
+      const fromFlags = opts
+        .map((opt, idx) =>
+          opt.isCorrect ? String.fromCharCode(65 + idx) : null,
+        )
+        .filter(Boolean) as string[];
+      if (fromFlags.length > 0) return fromFlags;
 
-      // Add letter + text of every isCorrect option
-      opts.forEach((opt, idx) => {
-        if (!opt.isCorrect) return;
-        accepted.add(String.fromCharCode(65 + idx)); // 'A', 'B', …
-        const t = norm(opt.text || '');
-        if (t) accepted.add(t);
-      });
-
-      // Parse correctAnswer string
       const raw = q.correctAnswer ?? '';
-      const normRaw = norm(raw);
-      if (normRaw) accepted.add(normRaw);
-
-      const pm = raw.match(prefixRe);
-      if (pm?.[1]) accepted.add(pm[1].toUpperCase());
-
-      // Options flagged isCorrect are authoritative; only fall back to a
-      // loose letter search when the key exists solely as text.
-      if (!opts.some((opt) => opt.isCorrect)) {
-        const lm = raw.match(letterRe);
-        if (lm?.[1]) accepted.add(lm[1]);
-      }
-
-      // Cross-reference: if correctAnswer text matches an option text, accept that letter
-      opts.forEach((opt, idx) => {
-        const t = norm(opt.text || '');
-        if (!t || !normRaw) return;
-        if (t === normRaw || normRaw.includes(t) || t.includes(normRaw)) {
-          accepted.add(String.fromCharCode(65 + idx));
-        }
-      });
-
-      // Multi-value correctAnswer (semicolons, commas, etc.)
-      raw
+      const tokens = raw
         .split(/[;,|/]/)
         .map(norm)
-        .filter(Boolean)
-        .forEach((token) => accepted.add(token));
-
-      return accepted;
+        .filter(Boolean);
+      const letters: string[] = [];
+      for (const token of tokens) {
+        if (OPTION_LETTERS.has(token) || token === 'F') {
+          letters.push(token);
+          continue;
+        }
+        const pm = token.match(prefixRe);
+        if (pm?.[1]) letters.push(pm[1].toUpperCase());
+        else {
+          const lm = token.match(letterRe);
+          if (lm?.[1]) letters.push(lm[1].toUpperCase());
+        }
+      }
+      return Array.from(new Set(letters));
     };
 
-    // True/False sheets print T/F bubbles regardless of option order.
+    const parseSelectedLetters = (raw: string): string[] => {
+      if (!raw) return [];
+      return Array.from(
+        new Set(
+          raw
+            .split(/[;,|/\s]+/)
+            .map(norm)
+            .filter((token) => /^[A-F]$/.test(token) || token === 'T' || token === 'F'),
+        ),
+      );
+    };
+
     const trueWords = new Set(['T', 'TRUE', 'VRAI', 'YES', 'صح', 'صحيح']);
     const falseWords = new Set(['F', 'FALSE', 'FAUX', 'NO', 'خطأ', 'خطا']);
     const trueFalseKey = (q: {
@@ -1299,29 +1438,93 @@ export class GradingService {
       return null;
     };
 
+    /**
+     * Partial credit for multi-correct MCQ:
+     * earned = points × max(0, |hit| − |extra|) / |correct|
+     * so marking only some correct options awards a share; wrong extras cancel hits.
+     */
+    const scoreSelection = (
+      selected: string[],
+      correct: string[],
+      points: number,
+    ): { earned: number; isCorrect: boolean } => {
+      if (correct.length === 0) {
+        return { earned: 0, isCorrect: false };
+      }
+      const correctSet = new Set(correct);
+      const selectedSet = new Set(selected);
+      let hit = 0;
+      let extra = 0;
+      for (const letter of selectedSet) {
+        if (correctSet.has(letter)) hit += 1;
+        else extra += 1;
+      }
+      const earned = Math.round(
+        ((points * Math.max(0, hit - extra)) / correct.length) * 100,
+      ) / 100;
+      const isCorrect =
+        hit === correct.length && extra === 0 && selectedSet.size === correct.length;
+      return { earned, isCorrect };
+    };
+
     let score = 0;
     let maxScore = 0;
     const questionResults: Array<{
       question: number;
       isCorrect: boolean;
       correctAnswer: string | null;
+      earnedPoints: number;
     }> = [];
 
     questions.forEach((q, idx) => {
       const qNum = idx + 1;
       const points = q.points || 1;
       maxScore += points;
-      const answer = norm(detectedAnswers[String(qNum)] ?? '');
+      const rawAnswer = String(detectedAnswers[String(qNum)] ?? '');
       const tfKey = isTrueFalseQuestion(q) ? trueFalseKey(q) : null;
-      const accepted = getAccepted(q);
-      const isCorrect = tfKey
-        ? answer === tfKey
-        : Boolean(answer && accepted.has(answer));
-      if (isCorrect) score += points;
-      // Resolve the primary correct letter (A-E, or T/F) from the accepted set
-      const correctLetter =
-        tfKey ?? ['A', 'B', 'C', 'D', 'E', 'F'].find((l) => accepted.has(l)) ?? null;
-      questionResults.push({ question: qNum, isCorrect, correctAnswer: correctLetter });
+
+      if (tfKey) {
+        const answer = norm(rawAnswer);
+        const isCorrect = answer === tfKey;
+        const earned = isCorrect ? points : 0;
+        if (earned) score += earned;
+        questionResults.push({
+          question: qNum,
+          isCorrect,
+          correctAnswer: tfKey,
+          earnedPoints: earned,
+        });
+        return;
+      }
+
+      const correctLetters = getCorrectLetters(q);
+      const multi =
+        this.questionAllowsMultipleCorrect(q) || correctLetters.length > 1;
+      const selected = parseSelectedLetters(rawAnswer);
+
+      if (!multi) {
+        // Single-answer MCQ: full points only when the one selected letter matches.
+        const answer = selected[0] ?? norm(rawAnswer);
+        const isCorrect = Boolean(answer && correctLetters.includes(answer));
+        const earned = isCorrect ? points : 0;
+        if (earned) score += earned;
+        questionResults.push({
+          question: qNum,
+          isCorrect,
+          correctAnswer: correctLetters[0] ?? null,
+          earnedPoints: earned,
+        });
+        return;
+      }
+
+      const { earned, isCorrect } = scoreSelection(selected, correctLetters, points);
+      score += earned;
+      questionResults.push({
+        question: qNum,
+        isCorrect,
+        correctAnswer: correctLetters.join(',') || null,
+        earnedPoints: earned,
+      });
     });
 
     return { score, maxScore, questionResults };

@@ -66,8 +66,9 @@ export class GradingController {
   confirmScan(
     @GetUser() user: JwtUser,
     @Param('scanId', ParseIntPipe) scanId: number,
+    @Body() body?: { studentId?: number },
   ) {
-    return this.gradingService.confirmScan(user, scanId);
+    return this.gradingService.confirmScan(user, scanId, body);
   }
 
   @Delete('scans/:scanId')

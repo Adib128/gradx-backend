@@ -424,15 +424,12 @@ export function findAssessmentActivityRows(text: string): AssessmentActivityRow[
   return [];
 }
 
-/** Same title → type mapping as the frontend (assign, quiz, lab, mid, exam). */
+/** Type label taken from the assessment activity name (dynamic, not a fixed enum). */
 export function inferAssessmentType(title: string): string {
-  const t = title.toLowerCase();
-  if (/assign|homework|واجب/.test(t)) return 'ASSIGNMENT';
-  if (/quiz|اختبار\s*قصير|اختبارات\s*قصيرة/.test(t)) return 'QUIZ';
-  if (/\blab|معمل|مختبر/.test(t)) return 'LAB';
-  if (/\bmid|منتصف|فصلي/.test(t)) return 'MID_TERM_EXAM';
-  if (/exam|test|اختبار|امتحان/.test(t)) return 'FINAL_EXAM';
-  return 'OTHER';
+  const cleaned = String(title || '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return cleaned || 'Assessment';
 }
 
 /** Document rows win (order, title, timing, percentage, type) when the table is readable. */

@@ -23,20 +23,32 @@ const normalizeCourseAssessment = (value: unknown) => {
   }
 
   const assessment = { ...(value as Record<string, unknown>) };
-  const title = String(assessment.title ?? '').toLowerCase();
-  const rawType = String(assessment.type ?? '').trim().toUpperCase();
+  const title = String(assessment.title ?? '').trim();
+  let type = String(assessment.type ?? '').trim();
 
-  if (rawType === 'EXAM') {
-    assessment.type = title.includes('mid') ? 'MID_TERM_EXAM' : 'FINAL_EXAM';
-  } else if (rawType === 'MIDTERM' || rawType === 'MID_TERM') {
-    assessment.type = 'MID_TERM_EXAM';
-  } else if (rawType === 'FINAL') {
-    assessment.type = 'FINAL_EXAM';
-  } else if (rawType === 'ASSIGN' || rawType === 'ASSIGNMENTS') {
-    assessment.type = 'ASSIGNMENT';
-  } else if (!rawType && title.includes('assign')) {
-    assessment.type = 'ASSIGNMENT';
+  // Dynamic types: never coerce into fixed enum codes / OTHER.
+  const legacyCodes: Record<string, string> = {
+    QUIZ: 'Quizzes',
+    FINAL_EXAM: 'Final Exam',
+    FINAL: 'Final Exam',
+    MID_TERM_EXAM: 'Mid-Term Exam',
+    MIDTERM: 'Mid-Term Exam',
+    MID_TERM: 'Mid-Term Exam',
+    LAB: 'Lab',
+    ASSIGNMENT: 'Assignment',
+    ASSIGN: 'Assignment',
+    ASSIGNMENTS: 'Assignment',
+    OTHER: '',
+    EXAM: '',
+  };
+  const upper = type.toUpperCase().replace(/[\s-]+/g, '_');
+  if (legacyCodes[upper] !== undefined) {
+    type = legacyCodes[upper];
   }
+  if (!type) {
+    type = title || 'Assessment';
+  }
+  assessment.type = type;
 
   if (!assessment.difficulty || String(assessment.difficulty).trim() === '') {
     assessment.difficulty = 'BALANCED';
@@ -191,6 +203,23 @@ export const CreateCourseSchema = z.object({
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? Math.round(numberValue) : 70;
   }, z.number().int().min(0, V.PASS_RATE_INVALID).max(100, V.PASS_RATE_INVALID).default(70)),
+  assessmentPassRate: z.preprocess((value) => {
+    if (value === null || value === undefined || value === '') return 70;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? Math.round(numberValue) : 70;
+  }, z.number().int().min(0, V.PASS_RATE_INVALID).max(100, V.PASS_RATE_INVALID).default(70)),
+  gradeBands: z
+    .array(
+      z.object({
+        grade: z.string().min(1),
+        min: z.number().min(0).max(100),
+        max: z.number().min(0).max(100),
+        gpa: z.number().min(0).max(4).optional().default(0),
+        markRange: z.string().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
   teachingMode: z.preprocess((value) => {
     const cleaned = emptyStringToUndefined(value);
     if (cleaned == null) return undefined;

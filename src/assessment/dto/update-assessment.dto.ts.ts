@@ -6,7 +6,6 @@ import {
   AssessmentAnswerSheetMode,
   AssessmentPaperSize,
   AssessmentStudentIdLabel,
-  AssessmentType,
   DifficultyDistribution,
   Language,
 } from 'generated/prisma/enums';
@@ -21,7 +20,12 @@ export const CreateAssessmentSchema = AssessmentObjectSchema.extend({
 
 export const UpdateAssessmentSchema = z.object({
   title: z.string().min(1, V.ASSESSMENT_TITLE_REQUIRED).optional(),
-  type: prismaEnumToZod(AssessmentType, V.ASSESSMENT_TYPE_INVALID).optional(),
+  type: z
+    .string({ message: V.ASSESSMENT_TYPE_INVALID })
+    .trim()
+    .min(1, V.ASSESSMENT_TYPE_INVALID)
+    .max(120, V.ASSESSMENT_TYPE_INVALID)
+    .optional(),
   percentage: z
     .number({ message: V.ASSESSMENT_TOTAL_MARKS_INVALID })
     .int()

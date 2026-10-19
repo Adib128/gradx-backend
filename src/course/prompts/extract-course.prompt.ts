@@ -23,6 +23,12 @@ Rules for "1. Course Identification":
 - "courseRequirement" (Course type B): the checked option → "REQUIRED" | "ELECTIVE".
 - Use null when no option is checked. Never guess from unchecked boxes.
 
+Rules for pass rates (percent 0–100, or null when not stated):
+- "passRate" = CLO pass rate — the threshold for Course Learning Outcome achievement (labels like "CLO pass rate", "CLO achievement", "نسبة نجاح مخرجات المقرر").
+- "assessmentPassRate" = Assessment pass rate — the threshold for assessment / exam passing (labels like "assessment pass rate", "pass mark %", "نسبة نجاح التقييم").
+- If the document states a single generic "pass rate" / "نسبة النجاح" without distinguishing CLO vs assessment, put that value in BOTH fields.
+- Do NOT confuse these with an assessment row's "passMark" (exam point total) or grade-weight "percentage".
+
 Rules for "3. Contact Hours" table (Activity | Contact Hours):
 - "lectureHours" = Lectures, "labHours" = Laboratory/Studio, "fieldHours" = Field, "tutorialHours" = Tutorial, "otherContactHours" = Others (specify) with its specified name in "otherContactHoursLabel", "totalContactHours" = Total.
 - Empty cells → null. Do not use the Teaching Mode table or the Course Content topic hours for these fields.
@@ -79,14 +85,15 @@ No | Assessment Activities | Assessment timing (in week no) | Percentage of Tota
 Then produce:
 
 "assessments": [
-  { "title": "Mid-Term Exam", "type": "MID_TERM_EXAM", "percentage": 20, "timing": "7th week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Quizzes", "type": "QUIZ", "percentage": 10, "timing": "4, 6 and 10th", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Final Exam", "type": "FINAL_EXAM", "percentage": 40, "timing": "17 or 18 week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
+  { "title": "Mid-Term Exam", "type": "Mid-Term Exam", "percentage": 20, "timing": "7th week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Quizzes", "type": "Quizzes", "percentage": 10, "timing": "4, 6 and 10th", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Final Exam", "type": "Final Exam", "percentage": 40, "timing": "17 or 18 week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
 ],
 "assessmentsTotalPercentage": 70
 
 Rules for the "Students Assessment Activities" table (No | Assessment Activities | Assessment timing (in week no) | Percentage of Total Assessment Score):
 - One "assessments" item per activity row, "title" copied exactly (e.g. "Project, presentation and Quiz").
+- "type" is DYNAMIC: choose a short human type label from the assessment activity name (usually the title itself, or a concise category drawn from that name). Examples: title "Mid-Term Exam" → type "Mid-Term Exam"; title "Quizzes" → type "Quizzes"; title "Project, presentation and Quiz" → type "Project Presentation & Quiz". NEVER use fixed codes (QUIZ, FINAL_EXAM, MID_TERM_EXAM, LAB, ASSIGNMENT, OTHER). NEVER use "OTHER". Every assessment must have its own meaningful type.
 - "timing" = the "Assessment timing (in week no)" cell copied verbatim (e.g. "4, 6 and 10th", "7th week", "1-15 week", "17 or 18 week"); null when empty.
 - The "Total" row is NOT an assessment: put its percentage in "assessmentsTotalPercentage" exactly as printed (e.g. 100) and do not add it to "assessments".
 
@@ -131,6 +138,8 @@ The JSON must follow this exact structure:
   "courseTypeOther": string | null,
   "courseRequirement": "REQUIRED" | "ELECTIVE" | null,
   "level": string | null,
+  "passRate": number | null,
+  "assessmentPassRate": number | null,
   "teachingModes": [
     {
       "modeOfInstruction": string,
@@ -184,7 +193,7 @@ The JSON must follow this exact structure:
   "assessments": [
     {
       "title": string,
-      "type": "QUIZ" | "FINAL_EXAM" | "MID_TERM_EXAM" | "LAB" | "ASSIGNMENT" | "OTHER",
+      "type": string,
       "percentage": number | null,
       "timing": string | null,
       "duration": number | null,

@@ -22,7 +22,7 @@ import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
-import { AssessmentType, Prisma } from 'generated/prisma/client';
+import { Prisma } from 'generated/prisma/client';
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
@@ -817,18 +817,30 @@ export class AssessmentService {
       ),
     );
 
+    const options = Array.isArray(question.options) ? question.options : [];
+    const correctLetters = options
+      .map((opt: any, index: number) =>
+        opt?.isCorrect ? String.fromCharCode(65 + index) : null,
+      )
+      .filter(Boolean) as string[];
+    const allowMultipleCorrect =
+      Boolean(question.allowMultipleCorrect) || correctLetters.length > 1;
+
     return this.prisma.question.create({
       data: {
         text: question.text,
         type: question.type,
         explanation: question.explanation,
         points: question.points ?? 1,
+        correctAnswer:
+          correctLetters.join(',') || question.correctAnswer || null,
+        allowMultipleCorrect,
         assessmentId,
         tenantId,
         courseId,
         topicId: question.topicId,
         questionOptions: {
-          create: (question.options ?? []).map((opt: any, index: number) => ({
+          create: options.map((opt: any, index: number) => ({
             text: opt.text,
             isCorrect: Boolean(opt.isCorrect),
             order: opt.order ?? index + 1,
@@ -1228,18 +1240,28 @@ export class AssessmentService {
         const totalQuestions = generatedData.questions.length;
 
         for (const q of generatedData.questions) {
+          const options = Array.isArray(q.options) ? q.options : [];
+          const correctLetters = options
+            .map((opt: any, index: number) =>
+              opt?.isCorrect ? String.fromCharCode(65 + index) : null,
+            )
+            .filter(Boolean) as string[];
+          const allowMultipleCorrect =
+            Boolean(q.allowMultipleCorrect) || correctLetters.length > 1;
           const question = await tx.question.create({
             data: {
               text: q.text,
               type: q.type,
               explanation: q.explanation,
               points: q.points ?? 1,
+              correctAnswer: correctLetters.join(',') || null,
+              allowMultipleCorrect,
               assessmentId,
               tenantId,
               courseId,
               topicId: q.topicId,
               questionOptions: {
-                create: (q.options ?? []).map((opt: any) => ({
+                create: options.map((opt: any) => ({
                   text: opt.text,
                   isCorrect: opt.isCorrect,
                   order: opt.order,
@@ -1456,11 +1478,22 @@ export class AssessmentService {
     }
 
     const { questionOptions, cloIds, ...questionFields } = dto;
+    const correctLetters = (questionOptions ?? [])
+      .map((option, index) =>
+        option.isCorrect ? String.fromCharCode(65 + index) : null,
+      )
+      .filter(Boolean) as string[];
+    const allowMultipleCorrect =
+      Boolean(questionFields.allowMultipleCorrect) || correctLetters.length > 1;
+    const correctAnswer =
+      correctLetters.join(',') || questionFields.correctAnswer;
 
     return await this.prisma.$transaction(async (tx) => {
       const question = await tx.question.create({
         data: {
           ...questionFields,
+          correctAnswer,
+          allowMultipleCorrect,
           assessmentId,
           tenantId,
           courseId: assessment.courseId,
@@ -1503,6 +1536,21 @@ export class AssessmentService {
     }
 
     const { questionOptions, cloIds, ...questionFields } = dto;
+    const correctLetters = (questionOptions ?? [])
+      .map((option, index) =>
+        option.isCorrect ? String.fromCharCode(65 + index) : null,
+      )
+      .filter(Boolean) as string[];
+    const derived =
+      questionOptions != null
+        ? {
+            correctAnswer:
+              correctLetters.join(',') || questionFields.correctAnswer,
+            allowMultipleCorrect:
+              Boolean(questionFields.allowMultipleCorrect) ||
+              correctLetters.length > 1,
+          }
+        : {};
 
     return await this.prisma.$transaction(async (tx) => {
       if (cloIds) {
@@ -1522,6 +1570,7 @@ export class AssessmentService {
         where: { id: questionId },
         data: {
           ...questionFields,
+          ...derived,
           ...(questionOptions
             ? {
                 questionOptions: {
@@ -1715,7 +1764,7 @@ export class AssessmentService {
   async getGenerationTopics(
     tenantId: number,
     courseId: number,
-    type?: AssessmentType,
+    type?: string,
   ) {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },

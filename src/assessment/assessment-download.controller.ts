@@ -11,8 +11,6 @@ import type { Response } from 'express';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AssessmentService } from './assessment.service';
-import { AssessmentType } from 'generated/prisma/enums';
-
 @UseGuards(JwtAuthGuard)
 @Controller('courses/:courseId/assessments/generate/ai')
 export class AssessmentDownloadController {
@@ -22,7 +20,7 @@ export class AssessmentDownloadController {
   getGenerationTopics(
     @GetUser('tenantId') tenantId: number,
     @Param('courseId', ParseIntPipe) courseId: number,
-    @Query('type') type?: AssessmentType,
+    @Query('type') type?: string,
   ) {
     return this.assessmentService.getGenerationTopics(tenantId, courseId, type);
   }

@@ -3,7 +3,6 @@ import {
   AssessmentAnswerSheetMode,
   AssessmentPaperSize,
   AssessmentStudentIdLabel,
-  AssessmentType,
   DifficultyDistribution,
   Language,
 } from 'generated/prisma/enums';
@@ -47,7 +46,12 @@ const normalizeAssessmentMeta = (value: unknown) => {
 
 export const AssessmentObjectSchema = z.object({
   title: z.string().min(1, V.ASSESSMENT_TITLE_REQUIRED),
-  type: prismaEnumToZod(AssessmentType, V.ASSESSMENT_TYPE_INVALID),
+  /** Dynamic type label (from course-spec assessment name); not a fixed enum. */
+  type: z
+    .string({ message: V.ASSESSMENT_TYPE_INVALID })
+    .trim()
+    .min(1, V.ASSESSMENT_TYPE_INVALID)
+    .max(120, V.ASSESSMENT_TYPE_INVALID),
   percentage: nullableNonNegativeInt,
   duration: z
     .number({ message: V.ASSESSMENT_DURATION_INVALID })

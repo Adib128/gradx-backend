@@ -7,7 +7,9 @@ export const QuestionSchema = z.object({
   text: z.string(),
   explanation: z.string().optional(),
   points: z.number().optional(),
+  /** Single letter ("A") or multi ("A,C") when several MCQ options are correct. */
   correctAnswer: z.string(),
+  allowMultipleCorrect: z.boolean().optional().default(false),
   codeTemplate: z.string().optional(),
   codeLanguage: z.string().optional(),
   expectedOutput: z.string().optional(),

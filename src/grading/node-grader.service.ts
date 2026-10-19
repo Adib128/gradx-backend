@@ -23,6 +23,8 @@ interface BubbleResult {
   fills: Record<string, number>;
   /** Printed option order; `fills` key order is lost once stored as jsonb. */
   options: string[];
+  /** Marked option letters when status is multiple (for multi-correct partial credit). */
+  candidates?: string[];
 }
 
 const FULL_INK_DARKNESS = 0.4;
@@ -110,15 +112,37 @@ export class NodeGraderService {
 
     // Compute global mean intensity for normalising fill ratios
     let globalSum = 0;
-    for (let i = 0; i < grayBuf.length; i++) globalSum += grayBuf[i];
+    let minG = 255;
+    let maxG = 0;
+    for (let i = 0; i < grayBuf.length; i++) {
+      const v = grayBuf[i];
+      globalSum += v;
+      if (v < minG) minG = v;
+      if (v > maxG) maxG = v;
+    }
     const globalMean = globalSum / grayBuf.length;
+    // Flat lighting, soft phone photos, or tiny captures → loosen fill detection.
+    const lowRes = Math.min(w, h) < 900;
+    const degraded =
+      lowRes || maxG - minG < 70 || globalMean < 95 || globalMean > 200;
 
-    this.logger.debug(`Image loaded: ${w}×${h}, globalMean=${globalMean.toFixed(1)}`);
+    this.logger.debug(
+      `Image loaded: ${w}×${h}, globalMean=${globalMean.toFixed(1)}, degraded=${degraded}`,
+    );
 
     // -----------------------------------------------------------------------
     // Grade each question
     // -----------------------------------------------------------------------
     const radiusPx = Math.max(5, Math.round(cfg.bubbleRadius * w));
+    const searchPx = degraded ? 5 : 3;
+    let fillThresh = cfg.fillThreshold;
+    let diffFactor = cfg.darknessDifferential;
+    if (degraded) {
+      fillThresh = Math.max(0.18, fillThresh * 0.78);
+      diffFactor = Math.max(1.28, diffFactor * 0.92);
+    }
+    const clearMargin = degraded ? 0.08 : 0.1;
+    const softMargin = degraded ? 0.045 : 0.035;
     const answers: Record<string, string> = {};
     const details: BubbleResult[] = [];
 
@@ -132,7 +156,7 @@ export class NodeGraderService {
           col.rowLabels?.[rowIdx] ?? col.options ?? cfg.options ?? ['A', 'B', 'C', 'D', 'E'];
         const darkness = opts.map((_, optIdx) => {
           const bx = Math.round((col.bubbleAX + optIdx * xStep) * w);
-          const mean = this.sampleMean(grayBuf, w, h, bx, rowY, radiusPx);
+          const mean = this.samplePeakMean(grayBuf, w, h, bx, rowY, radiusPx, searchPx);
           return Math.max(0, (globalMean - mean) / globalMean);
         });
         rows.push({ qNum: col.startQuestion + rowIdx, opts, darkness });
@@ -142,15 +166,28 @@ export class NodeGraderService {
     // Same scale as the OpenCV grader: darkness above an unmarked bubble
     // (printed ring + letter), where FULL_INK_DARKNESS reads as fully filled.
     const sorted = rows.flatMap((r) => r.darkness).sort((a, b) => a - b);
-    const baseline = sorted.length ? sorted[Math.floor(sorted.length / 4)] : 0;
+    const globalBaseline = sorted.length ? sorted[Math.floor(sorted.length / 4)] : 0;
+
+    const peaksAbove = rows.map((r) => {
+      const base = Math.max(globalBaseline, this.rowEmptyBaseline(r.darkness));
+      return Math.max(...r.darkness) - base;
+    }).sort((a, b) => a - b);
+    const typicalPeak = peaksAbove.length
+      ? peaksAbove[Math.floor(peaksAbove.length * 0.75)]
+      : FULL_INK_DARKNESS;
+    let inkScale = FULL_INK_DARKNESS;
+    if (degraded && typicalPeak > 0.08) {
+      inkScale = Math.max(0.2, Math.min(FULL_INK_DARKNESS, typicalPeak * 0.9));
+    }
 
     for (const { qNum, opts, darkness } of rows) {
+      const rowBase = Math.max(globalBaseline * 0.85, this.rowEmptyBaseline(darkness));
       const fills = darkness.map((d) =>
-        Math.max(0, Math.min(1, (d - baseline) / FULL_INK_DARKNESS)),
+        Math.max(0, Math.min(1, (d - rowBase) / inkScale)),
       );
       const maxFill = Math.max(...fills);
 
-      if (maxFill < cfg.fillThreshold) {
+      if (maxFill < fillThresh) {
         answers[String(qNum)] = '';
         details.push({
           question: qNum,
@@ -163,22 +200,58 @@ export class NodeGraderService {
       }
 
       const bestIdx = fills.indexOf(maxFill);
+      const sortedFills = [...fills].sort((a, b) => b - a);
+      const second = sortedFills.length > 1 ? sortedFills[1] : 0;
+      const margin = maxFill - second;
+      const detected = opts[bestIdx];
 
-      // Check for multiple heavily-filled bubbles
+      // Clear winner → ignore light neighbour bleed above the fill threshold.
+      if (margin >= clearMargin) {
+        answers[String(qNum)] = detected;
+        details.push({
+          question: qNum,
+          detected,
+          status: 'answered',
+          fills: this.zipFills(opts, fills),
+          options: [...opts],
+        });
+        continue;
+      }
+
       const heavy = fills.filter(
         (f, i) =>
           i !== bestIdx &&
-          f >= cfg.fillThreshold &&
-          f >= maxFill / cfg.darknessDifferential,
+          f >= fillThresh &&
+          f >= maxFill / diffFactor,
       );
-
-      const detected = opts[bestIdx];
       if (heavy.length > 0) {
+        const heavyIdxs = fills
+          .map((f, i) =>
+            i !== bestIdx &&
+            f >= fillThresh &&
+            f >= maxFill / diffFactor
+              ? i
+              : -1,
+          )
+          .filter((i) => i >= 0);
+        const candidates = [opts[bestIdx], ...heavyIdxs.map((i) => opts[i])];
         answers[String(qNum)] = '';
         details.push({
           question: qNum,
           detected: null,
           status: 'multiple',
+          fills: this.zipFills(opts, fills),
+          options: [...opts],
+          candidates,
+        });
+        continue;
+      }
+      if (degraded && margin < softMargin && maxFill < fillThresh * 1.35) {
+        answers[String(qNum)] = '';
+        details.push({
+          question: qNum,
+          detected: null,
+          status: 'blank',
           fills: this.zipFills(opts, fills),
           options: [...opts],
         });
@@ -524,6 +597,37 @@ export class NodeGraderService {
   // -------------------------------------------------------------------------
   // Per-bubble mean intensity sampling (circular ROI)
   // -------------------------------------------------------------------------
+  private rowEmptyBaseline(raw: number[]): number {
+    if (!raw.length) return 0;
+    const ordered = [...raw].sort((a, b) => a - b);
+    const k = Math.max(1, Math.ceil(ordered.length * 0.6));
+    let sum = 0;
+    for (let i = 0; i < k; i++) sum += ordered[i];
+    return sum / k;
+  }
+
+  private samplePeakMean(
+    gray: Buffer,
+    w: number,
+    h: number,
+    cx: number,
+    cy: number,
+    radius: number,
+    searchPx: number,
+  ): number {
+    const rInner = Math.max(3, Math.round(radius * 0.72));
+    const search = Math.max(0, Math.round(searchPx));
+    const step = search <= 4 ? 1 : 2;
+    let best = 255;
+    for (let dy = -search; dy <= search; dy += step) {
+      for (let dx = -search; dx <= search; dx += step) {
+        const mean = this.sampleMean(gray, w, h, cx + dx, cy + dy, rInner);
+        if (mean < best) best = mean;
+      }
+    }
+    return best;
+  }
+
   private sampleMean(
     gray: Buffer,
     w: number,

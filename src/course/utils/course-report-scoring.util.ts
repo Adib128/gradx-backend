@@ -2,16 +2,23 @@ import { orderQuestionsForSheet } from 'src/grading/answer-sheet-layout';
 
 export const DEFAULT_PASS_RATE_PERCENT = 70;
 
-export const GRADE_BANDS = [
+export type GradeBand = {
+  grade: string;
+  min: number;
+  max: number;
+  markRange: string;
+  gpa: number;
+};
+
+/** Default letter-grade intervals (editable per course via `gradeBands`). */
+export const GRADE_BANDS: GradeBand[] = [
   { grade: 'A+', min: 90, max: 100, markRange: '90-100', gpa: 4.0 },
   { grade: 'A', min: 85, max: 89, markRange: '85-89', gpa: 3.75 },
   { grade: 'B+', min: 80, max: 84, markRange: '80-84', gpa: 3.5 },
   { grade: 'B', min: 75, max: 79, markRange: '75-79', gpa: 3.0 },
   { grade: 'C+', min: 70, max: 74, markRange: '70-74', gpa: 2.5 },
   { grade: 'F', min: 0, max: 69, markRange: '0-69', gpa: 0 },
-] as const;
-
-export type GradeBand = (typeof GRADE_BANDS)[number];
+];
 
 export const round1 = (value: number) => Math.round(value * 10) / 10;
 export const round2 = (value: number) => Math.round(value * 100) / 100;
@@ -22,12 +29,62 @@ export function resolvePassRate(passRate: number | null | undefined) {
     : DEFAULT_PASS_RATE_PERCENT;
 }
 
+function clampMark(value: number) {
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+/**
+ * Normalize course-stored grade intervals. Falls back to defaults when empty
+ * or invalid. Sorted high→low by min; `markRange` is always regenerated.
+ */
+export function resolveGradeBands(raw: unknown): GradeBand[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return GRADE_BANDS.map((band) => ({ ...band }));
+  }
+
+  const parsed: GradeBand[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const record = row as Record<string, unknown>;
+    const grade = String(record.grade ?? '').trim();
+    const min = Number(record.min);
+    const max = Number(record.max);
+    const gpa = Number(record.gpa);
+    if (!grade || !Number.isFinite(min) || !Number.isFinite(max)) continue;
+    const lo = clampMark(Math.min(min, max));
+    const hi = clampMark(Math.max(min, max));
+    parsed.push({
+      grade,
+      min: lo,
+      max: hi,
+      markRange: `${lo}-${hi}`,
+      gpa: Number.isFinite(gpa) ? Math.max(0, Math.round(gpa * 100) / 100) : 0,
+    });
+  }
+
+  if (parsed.length < 2) {
+    return GRADE_BANDS.map((band) => ({ ...band }));
+  }
+
+  parsed.sort((a, b) => b.min - a.min || b.max - a.max);
+  return parsed;
+}
+
+/** Persistable copy of grade bands (JSON column). */
+export function serializeGradeBands(raw: unknown): GradeBand[] {
+  return resolveGradeBands(raw);
+}
+
 /** Grades and pass/fail are decided on the course total rounded to the nearest whole mark. */
-export function scoreToGradeBand(score: number): GradeBand {
+export function scoreToGradeBand(
+  score: number,
+  bands: GradeBand[] = GRADE_BANDS,
+): GradeBand {
+  const list = bands.length > 0 ? bands : GRADE_BANDS;
   const rounded = Math.round(score);
   return (
-    GRADE_BANDS.find((band) => rounded >= band.min && rounded <= band.max) ??
-    GRADE_BANDS[GRADE_BANDS.length - 1]
+    list.find((band) => rounded >= band.min && rounded <= band.max) ??
+    list[list.length - 1]
   );
 }
 
@@ -132,20 +189,112 @@ export function scaleScanScore(scan: SelectedScan, assessmentMax: number) {
   return assessmentMax > 0 ? (scan.score / scan.maxScore) * assessmentMax : scan.score;
 }
 
+export type AssessmentPlanWeightItem = {
+  type?: string | null;
+  title?: string | null;
+  activity?: string | null;
+  percentage?: number | null;
+  score?: number | null;
+};
+
+const hasPercentage = (value: unknown): value is number =>
+  value != null && Number.isFinite(Number(value)) && Number(value) >= 0;
+
+function normalizeTypeKey(value: unknown) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+/** Weight % from the course assessment plan for a given assessment type/title. */
+export function lookupAssessmentPlanWeight(
+  assessment: { type?: string | null; title?: string | null },
+  assessmentPlan?: AssessmentPlanWeightItem[] | null,
+): number | null {
+  if (!Array.isArray(assessmentPlan) || assessmentPlan.length === 0) return null;
+
+  const typeKey = normalizeTypeKey(assessment.type);
+  const titleKey = normalizeTypeKey(assessment.title);
+
+  const planWeight = (item: AssessmentPlanWeightItem) => {
+    const raw = item.percentage ?? item.score;
+    return hasPercentage(raw) ? Number(raw) : null;
+  };
+
+  // Prefer exact type match (dynamic type labels from course-spec).
+  if (typeKey) {
+    const byType = assessmentPlan.filter(
+      (item) => normalizeTypeKey(item.type) === typeKey,
+    );
+    const weights = byType.map(planWeight).filter((v): v is number => v != null);
+    if (weights.length === 1) return weights[0];
+    if (weights.length > 1 && new Set(weights).size === 1) return weights[0];
+  }
+
+  // Fall back to title / activity match against plan rows.
+  if (titleKey) {
+    const byTitle = assessmentPlan.find((item) => {
+      const planTitle = normalizeTypeKey(item.title || item.activity);
+      return (
+        planTitle &&
+        (planTitle === titleKey ||
+          titleKey.includes(planTitle) ||
+          planTitle.includes(titleKey))
+      );
+    });
+    const weight = byTitle ? planWeight(byTitle) : null;
+    if (weight != null) return weight;
+  }
+
+  // Last resort: plan type appears inside assessment title (e.g. "MID 1" vs "Midterm Exam-I").
+  if (titleKey || typeKey) {
+    for (const item of assessmentPlan) {
+      const planType = normalizeTypeKey(item.type || item.title || item.activity);
+      if (!planType) continue;
+      if (
+        (typeKey && (typeKey.includes(planType) || planType.includes(typeKey))) ||
+        (titleKey && (titleKey.includes(planType) || planType.includes(titleKey)))
+      ) {
+        const weight = planWeight(item);
+        if (weight != null) return weight;
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
- * Explicit `percentage` wins. Assessments without one share the weight left
- * over from 100% equally. When explicit weights exceed 100% and every
- * assessment of a type carries the same value, that value is treated as the
- * type's shared weight (two quizzes stored as 10 → 5 each).
+ * Explicit `percentage` wins, then assessment-plan type weight. Assessments
+ * without either share the weight left over from 100% equally. When explicit
+ * weights exceed 100% and every assessment of a type carries the same value,
+ * that value is treated as the type's shared weight (two quizzes stored as
+ * 10 → 5 each).
  */
 export function resolveAssessmentWeights(
-  assessments: Array<{ id: number; type: string; percentage: number | null }>,
+  assessments: Array<{
+    id: number;
+    type: string;
+    percentage: number | null;
+    title?: string | null;
+  }>,
+  assessmentPlan?: AssessmentPlanWeightItem[] | null,
 ) {
   const weights = new Map<number, number>();
-  const hasPercentage = (value: number | null) =>
-    value != null && Number.isFinite(value) && value >= 0;
-  const withPercentage = assessments.filter((a) => hasPercentage(a.percentage));
-  const withoutPercentage = assessments.filter((a) => !hasPercentage(a.percentage));
+  const enriched = assessments.map((assessment) => {
+    if (hasPercentage(assessment.percentage)) {
+      return { ...assessment, percentage: Number(assessment.percentage) };
+    }
+    const fromPlan = lookupAssessmentPlanWeight(assessment, assessmentPlan);
+    return {
+      ...assessment,
+      percentage: fromPlan,
+    };
+  });
+
+  const withPercentage = enriched.filter((a) => hasPercentage(a.percentage));
+  const withoutPercentage = enriched.filter((a) => !hasPercentage(a.percentage));
 
   for (const assessment of withPercentage) {
     weights.set(assessment.id, Number(assessment.percentage));
@@ -153,7 +302,10 @@ export function resolveAssessmentWeights(
 
   if (withoutPercentage.length > 0) {
     const assigned = withPercentage.reduce((sum, a) => sum + Number(a.percentage), 0);
-    const share = Math.max(0, 100 - assigned) / withoutPercentage.length;
+    const share =
+      withoutPercentage.length > 0
+        ? Math.max(0, 100 - assigned) / withoutPercentage.length
+        : 0;
     for (const assessment of withoutPercentage) {
       weights.set(assessment.id, share);
     }
@@ -161,9 +313,9 @@ export function resolveAssessmentWeights(
 
   const totalWeight = Array.from(weights.values()).reduce((sum, value) => sum + value, 0);
   if (totalWeight > 100.01) {
-    const byType = new Map<string, typeof assessments>();
-    for (const assessment of assessments) {
-      const type = String(assessment.type || 'OTHER');
+    const byType = new Map<string, typeof enriched>();
+    for (const assessment of enriched) {
+      const type = String(assessment.type || 'Assessment');
       byType.set(type, [...(byType.get(type) ?? []), assessment]);
     }
     for (const group of byType.values()) {
@@ -183,14 +335,38 @@ export function resolveAssessmentWeights(
   return weights;
 }
 
-/** A single assessment in scope counts for the whole 100%. */
-export function resolveScopedWeights(
-  assessments: Array<{ id: number; type: string; percentage: number | null }>,
-  assessmentId?: number,
+/** Real course weights (assessment % / assessment-plan type %), never forced to 100. */
+export function resolveCourseWeights(
+  assessments: Array<{
+    id: number;
+    type: string;
+    percentage: number | null;
+    title?: string | null;
+  }>,
+  assessmentPlan?: AssessmentPlanWeightItem[] | null,
 ) {
-  return assessmentId
-    ? new Map(assessments.map((assessment) => [assessment.id, 100]))
-    : resolveAssessmentWeights(assessments);
+  return resolveAssessmentWeights(assessments, assessmentPlan);
+}
+
+/**
+ * Scoring weights. A single assessment in scope counts for the whole 100% so
+ * student totals read as that assessment's percent score. Prefer
+ * `resolveCourseWeights` for the Weight % column in reports.
+ */
+export function resolveScopedWeights(
+  assessments: Array<{
+    id: number;
+    type: string;
+    percentage: number | null;
+    title?: string | null;
+  }>,
+  assessmentId?: number,
+  assessmentPlan?: AssessmentPlanWeightItem[] | null,
+) {
+  if (assessmentId) {
+    return new Map(assessments.map((assessment) => [assessment.id, 100]));
+  }
+  return resolveAssessmentWeights(assessments, assessmentPlan);
 }
 
 /** Course total out of 100: Σ (scan score / scan max × 100) × assessment weight / 100. */
@@ -372,7 +548,15 @@ export function computeCloScores(options: {
       }
 
       for (const detail of scan.questionDetails) {
-        if (detail.isCorrect !== true) continue;
+        const maxPts = Number(detail.maxPoints);
+        const earnedPts = Number(detail.earnedPoints);
+        const fraction =
+          Number.isFinite(earnedPts) && Number.isFinite(maxPts) && maxPts > 0
+            ? Math.min(1, Math.max(0, earnedPts / maxPts))
+            : detail.isCorrect === true
+              ? 1
+              : 0;
+        if (fraction <= 0) continue;
         const questionId = Number(detail.questionId);
         let question = Number.isInteger(questionId) ? model.byId.get(questionId) : undefined;
         if (!question) {
@@ -383,7 +567,7 @@ export function computeCloScores(options: {
               : undefined) ?? model.master;
           question = sheet[Number(detail.question) - 1];
         }
-        credit(question, 1);
+        credit(question, fraction);
       }
     }
   } else {

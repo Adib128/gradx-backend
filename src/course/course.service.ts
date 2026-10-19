@@ -43,6 +43,7 @@ import {
   pickCourseSpecFields,
   type CourseSpecFields,
 } from './utils/course-spec-fields.util';
+import { serializeGradeBands } from './utils/course-report-scoring.util';
 
 type ExtractStreamSection = {
   id: string;
@@ -73,6 +74,7 @@ const EXTRACT_STREAM_SECTIONS: ExtractStreamSection[] = [
       courseRequirement: result.courseRequirement ?? null,
       level: result.level ?? null,
       passRate: result.passRate ?? null,
+      assessmentPassRate: result.assessmentPassRate ?? null,
       teachingMode: result.teachingMode ?? null,
       totalContactHours: result.totalContactHours ?? null,
       lectureHours: result.lectureHours ?? null,
@@ -165,6 +167,8 @@ export class CourseService {
       creditHours,
       level,
       passRate,
+      assessmentPassRate,
+      gradeBands,
       teachingMode,
       totalContactHours,
       lectureHours,
@@ -227,6 +231,17 @@ export class CourseService {
             passRate != null && Number.isFinite(Number(passRate))
               ? Math.min(100, Math.max(0, Math.round(Number(passRate))))
               : 70,
+          assessmentPassRate:
+            assessmentPassRate != null && Number.isFinite(Number(assessmentPassRate))
+              ? Math.min(100, Math.max(0, Math.round(Number(assessmentPassRate))))
+              : 70,
+          ...(gradeBands != null
+            ? {
+                gradeBands: serializeGradeBands(
+                  gradeBands,
+                ) as unknown as Prisma.InputJsonValue,
+              }
+            : {}),
           teachingMode: teachingMode ?? null,
           totalContactHours: totalContactHours ?? null,
           lectureHours: lectureHours ?? null,
@@ -1150,6 +1165,8 @@ export class CourseService {
 
     const {
       title, code, program, description, creditHours, level, passRate,
+      assessmentPassRate,
+      gradeBands,
       teachingMode, teachingModes, totalContactHours, lectureHours, labHours,
       academicYear, semester,
       prerequisites, coRequisites, mainObjective, requiredFacilitiesAndEquipment, references,
@@ -1173,6 +1190,20 @@ export class CourseService {
           Number.isFinite(Number(passRate)) && {
             passRate: Math.min(100, Math.max(0, Math.round(Number(passRate)))),
           }),
+        ...(assessmentPassRate !== undefined &&
+          assessmentPassRate !== null &&
+          Number.isFinite(Number(assessmentPassRate)) && {
+            assessmentPassRate: Math.min(
+              100,
+              Math.max(0, Math.round(Number(assessmentPassRate))),
+            ),
+          }),
+        ...(gradeBands !== undefined && {
+          gradeBands:
+            gradeBands == null
+              ? Prisma.JsonNull
+              : (serializeGradeBands(gradeBands) as unknown as Prisma.InputJsonValue),
+        }),
         ...(teachingMode !== undefined && { teachingMode }),
         ...(teachingModes !== undefined && { teachingModes: teachingModes as unknown as Prisma.InputJsonValue }),
         ...(totalContactHours !== undefined && { totalContactHours }),
@@ -1337,6 +1368,14 @@ export class CourseService {
       creditHours?: number | null;
       level?: string;
       passRate?: number | null;
+      assessmentPassRate?: number | null;
+      gradeBands?: Array<{
+        grade: string;
+        min: number;
+        max: number;
+        gpa?: number;
+        markRange?: string;
+      }> | null;
       totalContactHours?: number | null;
       lectureHours?: number | null;
       labHours?: number | null;
@@ -1355,6 +1394,10 @@ export class CourseService {
       body.passRate === null || body.passRate === undefined
         ? undefined
         : Math.min(100, Math.max(0, Math.round(Number(body.passRate))));
+    const assessmentPassRate =
+      body.assessmentPassRate === null || body.assessmentPassRate === undefined
+        ? undefined
+        : Math.min(100, Math.max(0, Math.round(Number(body.assessmentPassRate))));
 
     const updated = await this.prisma.course.update({
       where: { id },
@@ -1366,6 +1409,16 @@ export class CourseService {
         ...(body.creditHours !== undefined && { creditHours: body.creditHours }),
         ...(body.level !== undefined && { level: body.level }),
         ...(passRate !== undefined && Number.isFinite(passRate) && { passRate }),
+        ...(assessmentPassRate !== undefined &&
+          Number.isFinite(assessmentPassRate) && { assessmentPassRate }),
+        ...(body.gradeBands !== undefined && {
+          gradeBands:
+            body.gradeBands == null
+              ? Prisma.JsonNull
+              : (serializeGradeBands(
+                  body.gradeBands,
+                ) as unknown as Prisma.InputJsonValue),
+        }),
         ...(body.totalContactHours !== undefined && { totalContactHours: body.totalContactHours }),
         ...(body.lectureHours !== undefined && { lectureHours: body.lectureHours }),
         ...(body.labHours !== undefined && { labHours: body.labHours }),

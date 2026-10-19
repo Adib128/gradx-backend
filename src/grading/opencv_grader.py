@@ -50,8 +50,8 @@ DEFAULT_CONFIG = {
         "bubbleXStep": 0.02619,   # 5.5 / 210
         "rowYStep":    0.02525,   # 7.5 / 297
         "bubbleRadius": 0.01048,  # 2.2 / 210  — tight circle, no inflation
-        "fillThreshold": 0.25,
-        "darknessDifferential": 1.3,
+        "fillThreshold": 0.28,
+        "darknessDifferential": 1.5,
     },
     # Machine-readable paper-version marker (mirrors sheet-config.ts versionCode).
     # Solid 4 mm squares: slot 0 = start mark, slots 1-4 = version bits (MSB
@@ -297,6 +297,8 @@ def ink_darkness_map(cv2, np, image):
     counts like pencil, and divides by a local paper estimate so shadows and
     screen glare do not read as marks. A global binary threshold cannot do
     this: mid-tone ink (pink, light pencil) falls on the "paper" side of Otsu.
+    Low-contrast / unclear photos get a mild percentile stretch so faint
+    graphite still separates from paper.
     """
     darkest = image.min(axis=2) if image.ndim == 3 else image
     darkest = darkest.astype(np.float32)
@@ -304,7 +306,47 @@ def ink_darkness_map(cv2, np, image):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
     paper = cv2.morphologyEx(darkest, cv2.MORPH_CLOSE, kernel)
     paper = cv2.GaussianBlur(paper, (k, k), 0)
-    return np.clip((paper - darkest) / np.maximum(paper, 1.0), 0.0, 1.0)
+    darkness = np.clip((paper - darkest) / np.maximum(paper, 1.0), 0.0, 1.0)
+    p2, p98 = np.percentile(darkness, [2, 98])
+    span = float(p98 - p2)
+    if span < 0.22:
+        # Flat lighting / phone glare: stretch the useful ink range.
+        darkness = np.clip((darkness - float(p2)) / max(span, 1e-3), 0.0, 1.0)
+    return darkness
+
+
+def estimate_sheet_quality(cv2, np, image):
+    """
+    Cheap blur / contrast / resolution heuristics for adapting bubble thresholds.
+    Low laplacian variance → soft/blurry capture; low grey span → flat light;
+    small pixel size → phone thumbnail / far capture.
+    """
+    gray = (
+        cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if len(image.shape) == 3
+        else image
+    )
+    if gray.dtype != np.uint8:
+        gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+    else:
+        gray_u8 = gray
+    h, w = gray_u8.shape[:2]
+    lap = float(cv2.Laplacian(gray_u8, cv2.CV_64F).var())
+    p5, p95 = np.percentile(gray_u8, [5, 95])
+    contrast = float(p95 - p5)
+    blurry = lap < 90.0
+    low_contrast = contrast < 70.0
+    low_res = min(w, h) < 900
+    return {
+        "laplacian": round(lap, 1),
+        "contrast": round(contrast, 1),
+        "width": int(w),
+        "height": int(h),
+        "blurry": blurry,
+        "lowContrast": low_contrast,
+        "lowRes": low_res,
+        "degraded": blurry or low_contrast or low_res,
+    }
 
 
 def mean_in_disc(values, np, cx, cy, radius_px):
@@ -318,6 +360,83 @@ def mean_in_disc(values, np, cx, cy, radius_px):
     disc = (xx - cx) ** 2 + (yy - cy) ** 2 <= radius_px ** 2
     patch = values[y0:y1, x0:x1][disc]
     return float(patch.mean()) if patch.size else 0.0
+
+
+def peak_in_disc(values, np, cx, cy, radius_px, search_px=3, radius_scale=0.72):
+    """
+    Best interior-disc mean in a small search window.
+
+    Handles slight warp / camera misalignment and soft bubble edges on
+    low-quality photos. Samples a smaller radius so the printed ring / neighbour
+    bleed contributes less than the filled core.
+    """
+    r_inner = max(3, int(radius_px * radius_scale))
+    search = max(0, int(search_px))
+    step = 1 if search <= 4 else 2
+    best = 0.0
+    for dy in range(-search, search + 1, step):
+        for dx in range(-search, search + 1, step):
+            v = mean_in_disc(values, np, cx + dx, cy + dy, r_inner)
+            if v > best:
+                best = v
+    return best
+
+
+def _row_empty_baseline(raw):
+    """Baseline from the emptiest options in a row (handles uneven lighting)."""
+    if not raw:
+        return 0.0
+    ordered = sorted(raw)
+    k = max(1, int(math.ceil(len(ordered) * 0.6)))
+    return sum(ordered[:k]) / float(k)
+
+
+def _calibrate_answer_offset(darkness, np, row_centres, radius_px, search_px=4):
+    """
+    Find a global (dx, dy) that maximises clear single-mark margins across rows.
+    Compensates small perspective / crop drift common in mobile photos.
+    """
+    if not row_centres:
+        return 0, 0
+    best_score = -1.0
+    best_dx, best_dy = 0, 0
+    # Coarse then refine — keep cost low on large sheets.
+    for dy in range(-search_px, search_px + 1, 2):
+        for dx in range(-search_px, search_px + 1, 2):
+            score = 0.0
+            for centres in row_centres:
+                raw = [
+                    peak_in_disc(darkness, np, cx + dx, cy + dy, radius_px, search_px=1)
+                    for cx, cy in centres
+                ]
+                if len(raw) < 2:
+                    continue
+                ordered = sorted(raw, reverse=True)
+                score += ordered[0] - ordered[1]
+            if score > best_score:
+                best_score = score
+                best_dx, best_dy = dx, dy
+    # Fine search around the coarse winner.
+    fine_best = best_score
+    fine_dx, fine_dy = best_dx, best_dy
+    for dy in range(best_dy - 1, best_dy + 2):
+        for dx in range(best_dx - 1, best_dx + 2):
+            if dx == best_dx and dy == best_dy:
+                continue
+            score = 0.0
+            for centres in row_centres:
+                raw = [
+                    peak_in_disc(darkness, np, cx + dx, cy + dy, radius_px, search_px=1)
+                    for cx, cy in centres
+                ]
+                if len(raw) < 2:
+                    continue
+                ordered = sorted(raw, reverse=True)
+                score += ordered[0] - ordered[1]
+            if score > fine_best:
+                fine_best = score
+                fine_dx, fine_dy = dx, dy
+    return fine_dx, fine_dy
 
 
 # ---------------------------------------------------------------------------
@@ -399,13 +518,15 @@ def decode_version_code(binary, config):
 FULL_INK_DARKNESS = 0.4
 
 
-def analyze_answer_grid(darkness, np, config):
+def analyze_answer_grid(darkness, np, config, quality=None):
     """
     Read every answer row from the ink-darkness map.
 
-    A bubble's fill is how much darker its interior is than an unmarked
-    bubble on the same sheet (the printed letter inside every bubble sets
-    that baseline), scaled so FULL_INK_DARKNESS reads as 1.0.
+    A bubble's fill is how much darker its interior is than unmarked bubbles
+    on the same row (handles uneven lighting), scaled so FULL_INK_DARKNESS
+    reads as 1.0. On blurry / low-contrast / low-res photos we widen search,
+    lower the fill threshold slightly, and calibrate a global grid offset so
+    faint marks still register without inventing false multi-marks.
     """
     h, w = darkness.shape
     grid = config.get("answerGrid", DEFAULT_CONFIG["answerGrid"])
@@ -414,20 +535,30 @@ def analyze_answer_grid(darkness, np, config):
     y_step = grid.get("rowYStep", 0.03676)
     b_radius_norm = grid.get("bubbleRadius", 0.01302)
     # Slightly higher than PDF default so faint graphite rings are not "answered".
-    fill_thresh = grid.get("fillThreshold", 0.32)
+    fill_thresh = float(grid.get("fillThreshold", 0.32))
     # Stronger separation: a second mark must be clearly filled to count as multi.
-    diff_factor = grid.get("darknessDifferential", 1.45)
+    diff_factor = float(grid.get("darknessDifferential", 1.45))
+    quality = quality or {}
+    degraded = bool(quality.get("degraded"))
+    low_res = bool(quality.get("lowRes"))
+    if degraded or low_res:
+        fill_thresh = max(0.18, fill_thresh * 0.78)
+        diff_factor = max(1.28, diff_factor * 0.92)
 
     radius_px = max(4, int(b_radius_norm * w))
+    search_px = 5 if (degraded or low_res) else 3
+    # Clear single-mark margin: above this, accept the winner even if a neighbour
+    # is also above fill_thresh (adjacent bleed / printed letter noise).
+    clear_margin = 0.08 if (degraded or low_res) else 0.1
+    soft_margin = 0.045 if (degraded or low_res) else 0.035
 
-    rows = []
+    # Build nominal centres first so we can calibrate a global offset.
+    nominal_rows = []
     for col in grid.get("columns", []):
         start_q = col["startQuestion"]
         count = col["count"]
         bubble_ax = col["bubbleAX"]
         row_y_start = col["rowYStart"]
-        # ZipGrade-grid sheets carry per-block pitch and per-row labels
-        # (MCQ A-E vs True/False T-F); legacy sheets use the grid defaults.
         col_x_step = col.get("bubbleXStep", x_step)
         col_y_step = col.get("rowYStep", y_step)
         col_options = col.get("options") or options
@@ -436,27 +567,62 @@ def analyze_answer_grid(darkness, np, config):
         for row_i in range(count):
             q_num = start_q + row_i
             row_y_px = int((row_y_start + row_i * col_y_step) * h)
-            row_options = row_labels[row_i] if row_i < len(row_labels) and row_labels[row_i] else col_options
-
-            raw = [
-                mean_in_disc(
-                    darkness, np,
-                    int((bubble_ax + opt_i * col_x_step) * w), row_y_px, radius_px,
-                )
+            row_options = (
+                row_labels[row_i]
+                if row_i < len(row_labels) and row_labels[row_i]
+                else col_options
+            )
+            centres = [
+                (int((bubble_ax + opt_i * col_x_step) * w), row_y_px)
                 for opt_i in range(len(row_options))
             ]
-            rows.append((q_num, row_options, raw))
+            nominal_rows.append((q_num, row_options, centres))
 
-    # Unmarked bubbles dominate the lower quartile (each row has at most one
-    # intended mark and at least two options).
+    # Global offset search helps tiny/blurry captures, but on sharp well-framed
+    # sheets it can lock onto neighbour-bleed and invent false multi-marks.
+    offset_dx, offset_dy = 0, 0
+    if degraded or low_res:
+        offset_dx, offset_dy = _calibrate_answer_offset(
+            darkness, np,
+            [centres for _, _, centres in nominal_rows],
+            radius_px,
+            search_px=4,
+        )
+
+    rows = []
+    for q_num, row_options, centres in nominal_rows:
+        raw = [
+            peak_in_disc(
+                darkness, np,
+                cx + offset_dx, cy + offset_dy, radius_px,
+                search_px=search_px,
+            )
+            for cx, cy in centres
+        ]
+        rows.append((q_num, row_options, raw))
+
+    # Global floor from unmarked bubbles (sheet-wide lighting).
     all_raw = sorted(v for _, _, raw in rows for v in raw)
-    baseline = all_raw[len(all_raw) // 4] if all_raw else 0.0
+    global_baseline = all_raw[len(all_raw) // 4] if all_raw else 0.0
+
+    # On degraded sheets, filled ink may be flatter — scale so the typical
+    # strongest mark still sits near 1.0 without forcing blanks upward.
+    peaks_above = []
+    for _, _, raw in rows:
+        base = max(global_baseline, _row_empty_baseline(raw))
+        peaks_above.append(max(raw) - base if raw else 0.0)
+    peaks_above.sort()
+    typical_peak = peaks_above[int(len(peaks_above) * 0.75)] if peaks_above else FULL_INK_DARKNESS
+    ink_scale = FULL_INK_DARKNESS
+    if (degraded or low_res) and typical_peak > 0.08:
+        ink_scale = max(0.20, min(FULL_INK_DARKNESS, typical_peak * 0.9))
 
     answers = {}
     details = []
     for q_num, row_options, raw in rows:
+        row_base = max(global_baseline * 0.85, _row_empty_baseline(raw))
         fills = [
-            min(1.0, max(0.0, (v - baseline) / FULL_INK_DARKNESS)) for v in raw
+            min(1.0, max(0.0, (v - row_base) / ink_scale)) for v in raw
         ]
         max_fill = max(fills) if fills else 0.0
         # List keeps the printed option order (JSON objects may be re-sorted).
@@ -476,24 +642,46 @@ def analyze_answer_grid(darkness, np, config):
             continue
 
         best_idx = fills.index(max_fill)
+        second = sorted(fills, reverse=True)[1] if len(fills) > 1 else 0.0
+        margin = max_fill - second
+        detected = row_options[best_idx]
 
-        # Multiple-answer check: any other bubble within (max/diff_factor)
+        # Clear winner → single answer (ignore light neighbour bleed).
+        if margin >= clear_margin:
+            answers[str(q_num)] = detected
+            details.append({
+                "question": q_num,
+                "detected": detected,
+                "status": "answered",
+                **fill_info,
+            })
+            continue
+
+        # Multiple-answer: another bubble is above threshold and close to the best.
         heavy = [
             i for i, f in enumerate(fills)
             if i != best_idx
             and f >= fill_thresh
             and f >= max_fill / diff_factor
         ]
-
-        detected = row_options[best_idx]
         if heavy:
-            # Multi-mark rows earn no credit and must not look like a single answer.
             answers[str(q_num)] = ""
             details.append({
                 "question": q_num,
                 "detected": None,
                 "status": "multiple",
                 "candidates": [row_options[best_idx]] + [row_options[i] for i in heavy],
+                **fill_info,
+            })
+            continue
+
+        # Soft ambiguous mark on degraded / low-res photos → blank, not a guess.
+        if (degraded or low_res) and margin < soft_margin and max_fill < fill_thresh * 1.35:
+            answers[str(q_num)] = ""
+            details.append({
+                "question": q_num,
+                "detected": None,
+                "status": "blank",
                 **fill_info,
             })
             continue
@@ -506,7 +694,15 @@ def analyze_answer_grid(darkness, np, config):
             **fill_info,
         })
 
-    return answers, details, {"baseline": round(baseline, 3)}
+    return answers, details, {
+        "baseline": round(global_baseline, 3),
+        "inkScale": round(ink_scale, 3),
+        "fillThreshold": round(fill_thresh, 3),
+        "searchPx": search_px,
+        "gridOffset": [offset_dx, offset_dy],
+        "clearMargin": clear_margin,
+        "quality": quality,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -579,8 +775,201 @@ def detect_assessment_code(cv2, gray_img, np):
 # Handwritten Name / Section (Name header capsule on the sheet)
 # ---------------------------------------------------------------------------
 
-def _ocr_roi_text(cv2, gray_img, x0, y0, x1, y1, psm=7):
-    """Run tesseract on a ROI; return cleaned text or ''."""
+# Strip printed EN/AR field labels that OCR sometimes glues onto handwriting.
+_NAME_LABEL_RE = re.compile(
+    r"(?i)\b(name|section|sec|اسم|الاسم|الشعبة|شعبة|القسم|قسم)\s*:?\s*",
+    re.UNICODE,
+)
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
+_TESS_LANGS_TRIED: list[str] | None = None
+
+
+def _tesseract_langs():
+    """Prefer ara+eng when Arabic tessdata is installed; else eng only."""
+    global _TESS_LANGS_TRIED
+    if _TESS_LANGS_TRIED is not None:
+        return _TESS_LANGS_TRIED
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        available = set((proc.stdout or proc.stderr or "").split())
+        if "ara" in available and "eng" in available:
+            _TESS_LANGS_TRIED = ["ara+eng", "ara", "eng"]
+        elif "ara" in available:
+            _TESS_LANGS_TRIED = ["ara", "eng"]
+        else:
+            _TESS_LANGS_TRIED = ["eng"]
+    except Exception:
+        _TESS_LANGS_TRIED = ["eng"]
+    return _TESS_LANGS_TRIED
+
+
+def _clean_ocr_field(text: str) -> str:
+    text = (text or "").replace("\u200f", "").replace("\u200e", "").replace("\ufeff", "")
+    text = _NAME_LABEL_RE.sub("", text)
+    text = re.sub(r"[|_•·]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .-_:،,;\"'`~")
+    return text
+
+
+def _script_counts(text: str):
+    arabic = len(_ARABIC_RE.findall(text or ""))
+    latin = sum(1 for c in (text or "") if ("A" <= c <= "Z") or ("a" <= c <= "z"))
+    digits = sum(1 for c in (text or "") if c.isdigit())
+    letters = sum(1 for c in (text or "") if c.isalpha())
+    weird = sum(
+        1
+        for c in (text or "")
+        if not (c.isalnum() or c.isspace() or c in ".-'،ـ ")
+    )
+    return arabic, latin, digits, letters, weird
+
+
+def _ocr_text_score(text: str, kind: str = "name") -> float:
+    """
+    Rank OCR candidates. Do NOT boost Arabic counts — that made ara-garbage
+    beat correct English (e.g. 'Ahmed Hassan'). Prefer clean letters for names
+    and short alphanumerics for sections.
+    """
+    text = (text or "").strip()
+    if not text:
+        return -1.0
+    arabic, latin, digits, letters, weird = _script_counts(text)
+    if kind == "section":
+        alnum = letters + digits
+        if alnum < 1 or len(text) > 24:
+            return -1.0
+        score = float(alnum * 4 - weird * 5 - max(0, len(text) - 4) * 2)
+        # Classroom codes are usually letter+digit (A1, B2, أ1, ٢ب).
+        if letters and digits:
+            score += 5.0
+        if latin and digits:
+            score += 2.0
+        return score
+
+    if letters < 2:
+        return -1.0
+    # Digits / symbols in a person name are almost always OCR noise.
+    score = float(letters * 4 - digits * 6 - weird * 5)
+    # Slight preference for a dominant script (EN or AR), still allow mixed names.
+    if arabic and latin:
+        dominant = max(arabic, latin)
+        score += dominant * 0.25
+    else:
+        score += letters * 0.25
+    return score
+
+
+def _ocr_roi_variants(cv2, roi):
+    """Upscaled preprocess variants for faint / handwritten EN+AR text."""
+    scale = 4
+    big = cv2.resize(
+        roi,
+        (max(1, roi.shape[1] * scale), max(1, roi.shape[0] * scale)),
+        interpolation=cv2.INTER_CUBIC,
+    )
+    variants = [big]
+    try:
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(big)
+        variants.append(enhanced)
+        _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        variants.append(otsu)
+    except Exception:
+        _, otsu = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        variants.append(otsu)
+    return variants
+
+
+def _normalize_arabic_candidate(text: str) -> list[str]:
+    """
+    Tesseract sometimes emits Arabic in visual order on shaped print.
+    Keep original and a full reverse so scoring can pick the readable one.
+    """
+    text = _clean_ocr_field(text)
+    if not text:
+        return []
+    arabic, latin, _, _, _ = _script_counts(text)
+    out = [text]
+    if arabic >= 2 and arabic > latin:
+        rev = text[::-1].strip()
+        if rev and rev != text:
+            out.append(rev)
+        # Also try reversing word order only (common RTL OCR artifact).
+        words = text.split()
+        if len(words) > 1:
+            swapped = " ".join(reversed(words))
+            if swapped not in out:
+                out.append(swapped)
+    return out
+
+
+def _pick_best_ocr_candidate(
+    candidates: list[tuple[float, str]],
+    kind: str = "name",
+) -> str:
+    """
+    Choose among scored OCR strings.
+
+    Names: English and Arabic can both hallucinate on the other script. Keep
+    the best Arabic-heavy and Latin-heavy candidates, then pick with a margin
+    so 'isle sare' does not beat 'محمد علي', and ara-digit garbage does not
+    beat 'Ahmed Hassan'.
+
+    Sections: short codes — just take the highest section score (no script
+    preference), otherwise Arabic noise like 'كم' beats 'A1'.
+    """
+    if not candidates:
+        return ""
+    if kind == "section":
+        return max(candidates, key=lambda item: item[0])[1]
+
+    best_ar = ("", -1.0)
+    best_lat = ("", -1.0)
+    best_any = ("", -1.0)
+    for score, text in candidates:
+        if score > best_any[1]:
+            best_any = (text, score)
+        arabic, latin, digits, letters, weird = _script_counts(text)
+        if letters < 1 and digits < 1:
+            continue
+        # Ignore digit-heavy junk when classifying script winners.
+        if digits > letters and letters < 3:
+            continue
+        if arabic >= 2 and arabic >= latin:
+            if score > best_ar[1]:
+                best_ar = (text, score)
+        elif latin >= 2 and latin > arabic:
+            if score > best_lat[1]:
+                best_lat = (text, score)
+    if best_ar[0] and best_lat[0]:
+        if best_lat[1] > best_ar[1] * 1.35:
+            return best_lat[0]
+        if best_ar[1] > best_lat[1] * 1.35:
+            return best_ar[0]
+        # Close scores: fewer digits / weird chars wins.
+        def cleanliness(t: str) -> tuple:
+            _a, _l, digits, letters, weird = _script_counts(t)
+            return (-digits - weird, letters)
+
+        return best_ar[0] if cleanliness(best_ar[0]) >= cleanliness(best_lat[0]) else best_lat[0]
+    if best_ar[0]:
+        return best_ar[0]
+    if best_lat[0]:
+        return best_lat[0]
+    return best_any[0]
+
+
+def _ocr_roi_text(cv2, gray_img, x0, y0, x1, y1, psm=7, kind: str = "name"):
+    """
+    Run tesseract on a ROI with Arabic + English when available.
+    Tries several preprocess variants and language packs; returns best text.
+    """
     h, w = gray_img.shape[:2]
     x0, y0 = max(0, x0), max(0, y0)
     x1, y1 = min(w, x1), min(h, y1)
@@ -591,70 +980,135 @@ def _ocr_roi_text(cv2, gray_img, x0, y0, x1, y1, psm=7):
         import subprocess
         import tempfile
         import os
-        scale = 3
-        big = cv2.resize(
-            roi,
-            (max(1, roi.shape[1] * scale), max(1, roi.shape[0] * scale)),
-            interpolation=cv2.INTER_CUBIC,
-        )
-        _, thr = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        fd, tmp = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        try:
-            cv2.imwrite(tmp, thr)
-            proc = subprocess.run(
-                ["tesseract", tmp, "stdout", f"--psm", str(psm)],
-                capture_output=True,
-                text=True,
-                timeout=6,
-            )
-            text = (proc.stdout or "").strip()
-            # Drop the printed labels if OCR picked them up.
-            text = re.sub(r"(?i)\b(name|section|sec)\s*:?\s*", "", text).strip()
-            text = re.sub(r"\s+", " ", text)
-            return text
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
     except Exception:
         return ""
+
+    candidates: list[tuple[float, str]] = []
+    langs = _tesseract_langs()
+    # Keep the search small: raw+CLAHE cover most handwriting; extra PSMs
+    # mainly help short section codes.
+    psms = (psm, 8) if kind == "section" else (psm, 6)
+    try:
+        for variant in _ocr_roi_variants(cv2, roi):
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            try:
+                cv2.imwrite(tmp, variant)
+                for lang in langs:
+                    for mode in psms:
+                        try:
+                            proc = subprocess.run(
+                                [
+                                    "tesseract", tmp, "stdout",
+                                    "-l", lang,
+                                    "--psm", str(mode),
+                                ],
+                                capture_output=True,
+                                text=True,
+                                timeout=8,
+                            )
+                        except Exception:
+                            continue
+                        for text in _normalize_arabic_candidate(proc.stdout or ""):
+                            score = _ocr_text_score(text, kind=kind)
+                            if score > 0:
+                                candidates.append((score, text))
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+    except Exception:
+        return _pick_best_ocr_candidate(candidates, kind=kind)
+    return _pick_best_ocr_candidate(candidates, kind=kind)
 
 
 def detect_name_and_section(cv2, gray_img, np):
     """
     OCR the Name / Section capsule printed at the top of GradX sheets
     (NAME_HEADER: x=24,y=14,w=162,h=12 mm on A4; sectionWidth=44mm on the right).
+    Supports handwritten Arabic and English names / sections.
     """
     h, w = gray_img.shape[:2]
     # Capsule bounds (normalised from mm / page).
     hx0, hy0 = int(24 / 210 * w), int(14 / 297 * h)
     hx1, hy1 = int((24 + 162) / 210 * w), int((14 + 12) / 297 * h)
     section_w = int(44 / 210 * w)
-    # Leave room for the printed "Name:" / "section:" labels.
+    # Skip printed "Name:" / "section:" labels (section: is wider ~18–20mm).
     name_x0 = hx0 + int(18 / 210 * w)
     name_x1 = hx1 - section_w - int(4 / 210 * w)
-    sec_x0 = hx1 - section_w + int(10 / 210 * w)
+    sec_x0 = hx1 - section_w + int(20 / 210 * w)
     sec_x1 = hx1 - int(2 / 210 * w)
     pad_y = max(1, int(0.004 * h))
-    name = _ocr_roi_text(cv2, gray_img, name_x0, hy0 + pad_y, name_x1, hy1 - pad_y, psm=7)
-    section = _ocr_roi_text(cv2, gray_img, sec_x0, hy0 + pad_y, sec_x1, hy1 - pad_y, psm=7)
-    # Reject garbage that is mostly digits/symbols.
+    name = _ocr_roi_text(
+        cv2, gray_img, name_x0, hy0 + pad_y, name_x1, hy1 - pad_y, psm=7, kind="name",
+    )
+    section = _ocr_roi_text(
+        cv2, gray_img, sec_x0, hy0 + pad_y, sec_x1, hy1 - pad_y, psm=8, kind="section",
+    )
+
     def clean_person(value: str) -> str | None:
-        v = (value or "").strip(" .-_|")
+        v = _clean_ocr_field(value or "")
         if len(v) < 2:
             return None
+        # Drop OCR script noise glued onto real names:
+        # 'isle محمد' → 'محمد', 'HULL عمر' → 'عمر', but keep 'Omar عمر'.
+        tokens = v.split()
+        if len(tokens) > 1:
+            ar_tokens = [t for t in tokens if _ARABIC_RE.search(t)]
+            if ar_tokens:
+                kept = []
+                for t in tokens:
+                    if _ARABIC_RE.search(t):
+                        kept.append(t)
+                        continue
+                    if not re.search(r"[A-Za-z]", t):
+                        kept.append(t)
+                        continue
+                    # Keep real Latin name tokens (Title Case); drop ALLCAPS /
+                    # alllower fragments that usually come from bad eng OCR.
+                    if t.isupper() and len(t) <= 5:
+                        continue
+                    if t.islower():
+                        continue
+                    kept.append(t)
+                if kept:
+                    v = " ".join(kept)
         letters = sum(1 for c in v if c.isalpha())
+        digits = sum(1 for c in v if c.isdigit())
         if letters < 2:
+            return None
+        # Names should not be mostly digits (Arabic/Latin OCR noise).
+        if digits >= letters:
+            return None
+        if re.fullmatch(r"(?i)name|section|sec|اسم|الاسم|الشعبة|شعبة", v):
             return None
         return v
 
     def clean_section(value: str) -> str | None:
-        v = (value or "").strip(" .-_|")
+        v = _clean_ocr_field(value or "")
         if not v or len(v) > 24:
             return None
-        if re.fullmatch(r"(?i)section|sec|name", v):
+        if re.fullmatch(r"(?i)section|sec|name|اسم|الشعبة|شعبة|القسم|قسم", v):
+            return None
+        # Drop long zero-runs OCR often pads onto short codes ("000أ1", "8200").
+        v = re.sub(r"0{2,}", "", v)
+        v = v.strip(" 0.-")
+        arabic, latin, digits, letters, _weird = _script_counts(v)
+        # Latin short codes: O/l/I confusions (A1→Al, B2→82…).
+        if latin and not arabic and len(v) <= 6:
+            fixed = (
+                v.replace("l", "1")
+                .replace("I", "1")
+                .replace("|", "1")
+                .replace("O", "0")
+                .replace("o", "0")
+            )
+            # If we still have a letter+digit pattern, keep it; if OCR read
+            # only digits (B→8), leave as-is for the user to edit.
+            if re.search(r"[A-Za-z]", fixed):
+                v = fixed
+        if not v or not any(c.isalnum() for c in v):
             return None
         return v
 
@@ -663,6 +1117,7 @@ def detect_name_and_section(cv2, gray_img, np):
         "detectedStudentSection": clean_section(section),
         "rawName": name,
         "rawSection": section,
+        "ocrLangs": _tesseract_langs(),
     }
 
 
@@ -1054,12 +1509,27 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
     # Phase 1: Perspective correction
     warped, warp_conf, warp_applied, anchor_debug = perspective_warp(cv2, np, image, config)
 
-    # Phase 2: Preprocessing
+    # Phase 2: Preprocessing + quality estimate (blur / flat lighting / tiny capture)
+    # Low-res is judged on the *source* photo — warp always stretches to ~1000px,
+    # which would hide thumbnail / far-away phone captures.
+    source_quality = estimate_sheet_quality(cv2, np, image)
     binary = preprocess(cv2, np, warped)
     darkness = ink_darkness_map(cv2, np, warped)
+    sheet_quality = estimate_sheet_quality(cv2, np, warped)
+    if source_quality.get("lowRes"):
+        sheet_quality = {
+            **sheet_quality,
+            "lowRes": True,
+            "degraded": True,
+            "sourceWidth": source_quality.get("width"),
+            "sourceHeight": source_quality.get("height"),
+            "sourceLaplacian": source_quality.get("laplacian"),
+        }
 
-    # Phase 3: Bubble analysis
-    answers, details, answer_debug = analyze_answer_grid(darkness, np, config)
+    # Phase 3: Bubble analysis (adapts when the photo is soft or low-contrast)
+    answers, details, answer_debug = analyze_answer_grid(
+        darkness, np, config, quality=sheet_quality,
+    )
 
     # Phase 4: Student ID detection. Locate the ID block via bubble circles /
     # "Student ID" text when possible. Also compare against a plain resize —
@@ -1108,7 +1578,18 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
             warped = resized
             darkness = darkness_resize
             binary = preprocess(cv2, np, warped)
-            answers, details, answer_debug = analyze_answer_grid(darkness, np, config)
+            sheet_quality = estimate_sheet_quality(cv2, np, warped)
+            if source_quality.get("lowRes"):
+                sheet_quality = {
+                    **sheet_quality,
+                    "lowRes": True,
+                    "degraded": True,
+                    "sourceWidth": source_quality.get("width"),
+                    "sourceHeight": source_quality.get("height"),
+                }
+            answers, details, answer_debug = analyze_answer_grid(
+                darkness, np, config, quality=sheet_quality,
+            )
             warp_applied = False
             anchor_debug = {**anchor_debug, "idFallback": "resize_better_student_id"}
     else:
@@ -1161,7 +1642,9 @@ def grade_sheet(cv2, np, image_path: str, config: dict):
             "nameSection": {
                 "rawName": name_section.get("rawName"),
                 "rawSection": name_section.get("rawSection"),
+                "ocrLangs": name_section.get("ocrLangs"),
             },
+            "sheetQuality": sheet_quality,
             "answerGrid": answer_debug,
         },
     }

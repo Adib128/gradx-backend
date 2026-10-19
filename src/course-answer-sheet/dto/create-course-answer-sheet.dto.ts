@@ -2,7 +2,6 @@ import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 import {
   AssessmentPaperSize,
-  AssessmentType,
   CourseAnswerSheetAnswerType,
   CourseAnswerSheetQuestionType,
 } from 'generated/prisma/enums';
@@ -11,9 +10,7 @@ import { prismaEnumToZod } from 'src/common/helpers/zod.enum.helper';
 const QuestionSchema = z.object({
   sortOrder: z.number().int().min(0).default(0),
   name: z.string().min(1),
-  type: prismaEnumToZod(CourseAnswerSheetQuestionType).default(
-    'MCQ',
-  ),
+  type: prismaEnumToZod(CourseAnswerSheetQuestionType).default('MCQ'),
   labels: z.string().default('ABCD'),
 });
 
@@ -33,9 +30,15 @@ const VersionSchema = z.object({
   answers: z.array(VersionAnswerSchema).default([]),
 });
 
+const CloSchema = z.object({
+  code: z.string().trim().min(1).max(40),
+  description: z.string().trim().max(2000).optional().default(''),
+  sortOrder: z.number().int().min(0).optional().default(0),
+});
+
 export const CreateCourseAnswerSheetSchema = z.object({
   name: z.string().min(1),
-  assessmentType: prismaEnumToZod(AssessmentType).default('FINAL_EXAM'),
+  assessmentType: z.string().trim().min(1).max(120).default('Final Exam'),
   points: z.number().int().positive().default(100),
   showMarksPerQuestion: z.boolean().default(false),
   numberOfQuestions: z.number().int().positive().default(50),
@@ -54,6 +57,10 @@ export const CreateCourseAnswerSheetSchema = z.object({
   numberOfKeyVersions: z.number().int().positive().default(3),
   keyVersionLetters: z.string().default('ABCD'),
   keyVersionLabel: z.string().nullable().optional(),
+  /** Optional course link — omit / null for standalone sheets. */
+  courseId: z.number().int().positive().nullable().optional(),
+  /** Standalone CLO definitions (ignored when linked to a course). */
+  clos: z.array(CloSchema).optional().default([]),
   questions: z.array(QuestionSchema).default([]),
   versions: z.array(VersionSchema).default([]),
 });
