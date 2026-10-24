@@ -33,8 +33,20 @@ export class GradingController {
     @Param('assessmentId', ParseIntPipe) assessmentId: number,
     @UploadedFile() file: Express.Multer.File,
     @Body('anchors') anchors?: string,
+    /** Mobile first step: student ID + roster only (skip full bubble grade). */
+    @Body('detectOnly') detectOnly?: string,
   ) {
-    return this.gradingService.createScan(user, assessmentId, file, anchors);
+    const idOnly =
+      detectOnly === '1' ||
+      detectOnly === 'true' ||
+      detectOnly === 'yes';
+    return this.gradingService.createScan(
+      user,
+      assessmentId,
+      file,
+      anchors,
+      { detectOnly: idOnly },
+    );
   }
 
   @Get('assessments/:assessmentId/scans')
@@ -45,12 +57,48 @@ export class GradingController {
     return this.gradingService.listScansByAssessment(user, assessmentId);
   }
 
+  @Get('assessments/:assessmentId/grading-overview')
+  getAssessmentGradingOverview(
+    @GetUser() user: JwtUser,
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+  ) {
+    return this.gradingService.getAssessmentGradingOverview(user, assessmentId);
+  }
+
   @Get('scans/:scanId')
   getScan(
     @GetUser() user: JwtUser,
     @Param('scanId', ParseIntPipe) scanId: number,
   ) {
     return this.gradingService.getScan(user, scanId);
+  }
+
+  /** OCR the printed Name / Section (for adding a student missing from the roster). */
+  @Post('scans/:scanId/student-info')
+  detectScanStudentInfo(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+  ) {
+    return this.gradingService.detectScanStudentInfo(user, scanId);
+  }
+
+  /** Teacher-entered Student ID for an unsaved draft (ambiguous / unreadable bubbles). */
+  @Patch('scans/:scanId/student-id')
+  setScanStudentId(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+    @Body() body: { studentId?: string },
+  ) {
+    return this.gradingService.setScanStudentId(user, scanId, body?.studentId ?? '');
+  }
+
+  /** Optional AI cross-check of the detected Student ID against the hand-written boxes. */
+  @Post('scans/:scanId/verify-student-id')
+  verifyScanStudentId(
+    @GetUser() user: JwtUser,
+    @Param('scanId', ParseIntPipe) scanId: number,
+  ) {
+    return this.gradingService.verifyScanStudentId(user, scanId);
   }
 
   @Get('scans/:scanId/clo-breakdown')

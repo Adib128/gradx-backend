@@ -435,14 +435,15 @@ export function assessmentMatchesMethod(assessmentTitle: string, method: string)
 }
 
 /**
- * CLO marks on the course-weight scale.
+ * CLO marks on the raw question-marks scale.
  *
- * Question q of assessment a is worth w_q = points_q / Σ points_a × weight_a,
- * split evenly across its CLOs (question CLO links, otherwise its topic's
- * CLOs). CLO max T = Σ shares. A student earns the share of every question
- * answered correctly; results without per-question details (Excel imports)
- * earn score/max of every share. Without any question links, assessments are
- * matched to CLOs through the CLO assessment methods instead.
+ * Question q is worth its own points, split evenly across its CLOs (question
+ * CLO links, otherwise its topic's CLOs). CLO max T = sum of those shares over
+ * every assessment in scope, so the target is "threshold % of T" (70% of 10 =
+ * 7 / 10). A student earns the share of every question answered correctly;
+ * results without per-question details (Excel imports) earn score/max of every
+ * share. Without any question links, assessments are matched to CLOs through
+ * the CLO assessment methods instead (weight-based fallback).
  */
 export function computeCloScores(options: {
   clos: Array<{ id: number; assessmentMethods: string[] }>;
@@ -499,10 +500,11 @@ export function computeCloScores(options: {
     }),
   );
 
+  // Raw question marks: a CLO's maximum is the sum of the marks of the questions
+  // mapped to it across the assessments, independent of the assessment weights.
   const questionWeight = (assessmentId: number, question: CloQuestion) => {
     const model = models.get(assessmentId);
-    const weight = options.weights.get(assessmentId) ?? 0;
-    return model && model.pointsTotal > 0 ? (question.points / model.pointsTotal) * weight : 0;
+    return model && model.pointsTotal > 0 ? question.points : 0;
   };
 
   for (const { assessment, master } of models.values()) {

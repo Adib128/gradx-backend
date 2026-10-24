@@ -7,9 +7,11 @@ import {
 } from '@nestjs/common';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { PrismaService } from 'prisma/prisma.service';
-import { OpenCvGradingService } from './opencv-grading.service';
+import { OpenCvGradingService, ScanQuality } from './opencv-grading.service';
 import { NodeGraderService } from './node-grader.service';
+import { StudentInfoVisionService } from './student-info-vision.service';
 import { SHEET_CONFIG } from './sheet-config';
 import {
   buildGraderSheetConfigForQuestions,
@@ -17,6 +19,7 @@ import {
   orderQuestionsForSheet,
   resolvePrintedIdDigits,
 } from './answer-sheet-layout';
+import { ErrorMessageKey } from '../common/constants/error-message';
 import * as XLSX from 'xlsx';
 
 type RequestUser = {
@@ -98,6 +101,7 @@ export class GradingService {
     private readonly prisma: PrismaService,
     private readonly openCvService: OpenCvGradingService,
     private readonly nodeGrader: NodeGraderService,
+    private readonly studentInfoVision: StudentInfoVisionService,
   ) {}
 
   async createScan(
@@ -105,10 +109,12 @@ export class GradingService {
     assessmentId: number,
     file: Express.Multer.File,
     anchorHintsRaw?: unknown,
+    opts?: { detectOnly?: boolean },
   ) {
     if (!file) {
       throw new InternalServerErrorException('Scan image is required.');
     }
+    const detectOnly = !!opts?.detectOnly;
 
     const assessment = await this.prisma.assessment.findFirst({
       where: { id: assessmentId, tenantId: user.tenantId },
@@ -138,7 +144,7 @@ export class GradingService {
     // Persist image to disk
     const uploadDir = join(process.cwd(), 'tmp', 'grading-scans');
     await mkdir(uploadDir, { recursive: true });
-    const fileName = `scan-${assessmentId}-${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`;
+    const fileName = `scan-${assessmentId}-${Date.now()}-${randomBytes(4).toString('hex')}-${file.originalname.replace(/\s+/g, '-')}`;
     const imagePath = join(uploadDir, fileName);
     await writeFile(imagePath, file.buffer);
 
@@ -189,7 +195,9 @@ export class GradingService {
       ...SHEET_CONFIG,
       ...(sheetLayout ?? {}),
       numIdDigits,
+      studentIdPosition: assessment.studentIdPosition ?? 'TOP_LEFT',
       ...(anchorHints ? { anchorHints } : {}),
+      ...(detectOnly ? { mode: 'idOnly', qualityGate: true } : {}),
     };
 
     // Try Python OpenCV first
@@ -198,8 +206,20 @@ export class GradingService {
         imagePath,
         JSON.stringify(graderConfig),
       );
+      if (pyResult?.error === 'sheet_not_straight') {
+        await this.prisma.gradingScan
+          .delete({ where: { id: created.id } })
+          .catch(() => undefined);
+        throw new BadRequestException({
+          message: ErrorMessageKey.SHEET_NOT_STRAIGHT,
+          detail: String((pyResult as { alignmentReason?: string }).alignmentReason || 'skew'),
+        });
+      }
       if (pyResult && !pyResult.error) {
         processResult = pyResult;
+        if (detectOnly) {
+          await this.rejectUnclearScan(created.id, pyResult.scanQuality);
+        }
         const sidDebug = (pyResult as any).debug?.studentIdDebug;
         this.logger.log(
           `Python grader used (conf=${pyResult.confidence}, studentId=${pyResult.detectedStudentId}, blanks=${sidDebug?.blanks ?? '?'})`,
@@ -209,13 +229,17 @@ export class GradingService {
         }
       }
     } catch (err) {
+      if (err instanceof BadRequestException) throw err;
       this.logger.warn(
         `Python grader failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
-    // Fallback: Node.js sharp grader
-    if (!processResult || (processResult.confidence ?? 0) < 0.2) {
+    // Fallback: Node.js sharp grader (full grade only — no idOnly mode yet).
+    if (
+      !detectOnly &&
+      (!processResult || (processResult.confidence ?? 0) < 0.2)
+    ) {
       try {
         const nodeResult = await this.nodeGrader.gradeSheet(imagePath, numIdDigits, {
           answerGrid: sheetLayout?.answerGrid,
@@ -228,12 +252,101 @@ export class GradingService {
           err instanceof Error ? err.message : 'Grading processing failed';
         processResult = { answers: {}, confidence: 0, decodedFormId: null, questionDetails: [], detectedStudentId: null };
       }
+    } else if (detectOnly && !processResult) {
+      processError = 'Student ID detection failed';
+      processResult = {
+        answers: {},
+        confidence: 0,
+        decodedFormId: null,
+        questionDetails: [],
+        detectedStudentId: null,
+      };
     }
 
     // Score against the answer key for the machine-detected paper version.
     // The marker stores a one-based version index (A=1, B=2, ...), matching
     // assessmentVersions' creation/id order. Old sheets without a marker keep
     // the previous Version A fallback.
+    // Match a fully-read student ID against this course's roster only.
+    const rawStudentId = (processResult!.detectedStudentId ?? '').trim() || null;
+    const matchedStudent = await this.findCourseStudent(
+      assessment.courseId,
+      rawStudentId,
+    );
+    if (rawStudentId && !isCompleteStudentId(rawStudentId)) {
+      this.logger.warn(
+        `Student ID incomplete for scan ${created.id}: detected="${rawStudentId}"`,
+      );
+    } else if (rawStudentId && !matchedStudent) {
+      this.logger.warn(
+        `Student ID not in course ${assessment.courseId} roster: detected="${rawStudentId}"`,
+      );
+    }
+
+    const detectedAssessmentCode = (
+      processResult!.detectedAssessmentCode ?? ''
+    )
+      .trim()
+      .toUpperCase() || null;
+    const expectedAssessmentCode = String(assessment.code || '')
+      .trim()
+      .toUpperCase();
+    if (
+      detectedAssessmentCode &&
+      expectedAssessmentCode &&
+      detectedAssessmentCode !== expectedAssessmentCode
+    ) {
+      await this.prisma.gradingScan
+        .delete({ where: { id: created.id } })
+        .catch(() => undefined);
+      throw new BadRequestException({
+        message: ErrorMessageKey.ASSESSMENT_CODE_MISMATCH,
+        detail: `${detectedAssessmentCode}|${expectedAssessmentCode}`,
+      });
+    }
+
+    const detectedStudentName = (
+      processResult!.detectedStudentName ?? ''
+    ).trim() || null;
+    const detectedStudentSection = (
+      processResult!.detectedStudentSection ?? ''
+    ).trim() || null;
+
+    // Fast path: mobile detect-only — store ID/roster match; full grade on confirm.
+    if (detectOnly) {
+      const scan = await this.prisma.gradingScan.update({
+        where: { id: created.id },
+        data: {
+          status: processError ? 'FAILED' : 'PENDING',
+          confidence: processResult!.confidence,
+          decodedFormId: null,
+          detectedAnswers: undefined,
+          questionDetails: undefined,
+          score: null,
+          maxScore: null,
+          errorMessage: processError,
+          detectedStudentId: rawStudentId,
+          matchedStudentCode: matchedStudent?.studentId ?? null,
+          ...(matchedStudent ? { studentId: matchedStudent.id } : {}),
+        },
+        include: {
+          student: {
+            select: { id: true, name: true, studentId: true, section: true },
+          },
+          assessment: {
+            select: { id: true, title: true, code: true, type: true },
+          },
+        },
+      });
+      return {
+        ...scan,
+        detectedAssessmentCode,
+        detectedStudentName,
+        detectedStudentSection,
+        detectOnly: true,
+      };
+    }
+
     const decodedVersionIndex =
       processResult!.decodedFormId != null
         ? processResult!.decodedFormId - 1
@@ -320,43 +433,6 @@ export class GradingService {
       };
     });
 
-    // Match a fully-read student ID against this course's roster only.
-    const rawStudentId = (processResult!.detectedStudentId ?? '').trim() || null;
-    const matchedStudent = await this.findCourseStudent(
-      assessment.courseId,
-      rawStudentId,
-    );
-    if (rawStudentId && !isCompleteStudentId(rawStudentId)) {
-      this.logger.warn(
-        `Student ID incomplete for scan ${created.id}: detected="${rawStudentId}"`,
-      );
-    } else if (rawStudentId && !matchedStudent) {
-      this.logger.warn(
-        `Student ID not in course ${assessment.courseId} roster: detected="${rawStudentId}"`,
-      );
-    }
-
-    const detectedAssessmentCode = (
-      processResult!.detectedAssessmentCode ?? ''
-    )
-      .trim()
-      .toUpperCase() || null;
-    const expectedAssessmentCode = String(assessment.code || '')
-      .trim()
-      .toUpperCase();
-    if (
-      detectedAssessmentCode &&
-      expectedAssessmentCode &&
-      detectedAssessmentCode !== expectedAssessmentCode
-    ) {
-      await this.prisma.gradingScan
-        .delete({ where: { id: created.id } })
-        .catch(() => undefined);
-      throw new BadRequestException(
-        `This paper is for assessment ${detectedAssessmentCode}, but you selected ${expectedAssessmentCode}.`,
-      );
-    }
-
     // PENDING = graded for review only; COMPLETED + confirmedAt = saved.
     const scan = await this.prisma.gradingScan.update({
       where: { id: created.id },
@@ -383,19 +459,444 @@ export class GradingService {
       },
     });
 
-    const detectedStudentName = (
-      processResult!.detectedStudentName ?? ''
-    ).trim() || null;
-    const detectedStudentSection = (
-      processResult!.detectedStudentSection ?? ''
-    ).trim() || null;
-
     return {
       ...scan,
       detectedAssessmentCode,
       detectedStudentName,
       detectedStudentSection,
     };
+  }
+
+  /**
+   * Finish bubble grading for a detect-only draft (mobile confirm step).
+   */
+  /**
+   * Stop a photo the grader cannot read reliably (blur, page not fully
+   * visible, bad light, misaligned grid) so the teacher rescans instead of
+   * saving a wrong ID / wrong answers. Drops the draft; `detail` carries the
+   * issue codes (most important first) for the app to explain.
+   */
+  private async rejectUnclearScan(
+    scanId: number | null,
+    quality: ScanQuality | undefined,
+  ) {
+    const blocking = quality?.blocking ?? [];
+    if (blocking.length === 0) return;
+    if (scanId != null) {
+      await this.prisma.gradingScan
+        .delete({ where: { id: scanId } })
+        .catch(() => undefined);
+    }
+    this.logger.warn(
+      `Scan rejected as unclear (${blocking.join(',')}): ${JSON.stringify(quality?.metrics ?? {})}`,
+    );
+    throw new BadRequestException({
+      message: ErrorMessageKey.SCAN_UNCLEAR,
+      detail: blocking.join(','),
+    });
+  }
+
+  /**
+   * Name + section printed on a scanned sheet (handwritten, Arabic or English).
+   * Used by the mobile app when the detected student ID is not on the roster,
+   * so the teacher can add the student. Runs OCR only — no ID / answer work.
+   */
+  async detectScanStudentInfo(user: RequestUser, scanId: number) {
+    const scan = await this.prisma.gradingScan.findFirst({
+      where: { id: scanId, tenantId: user.tenantId },
+      select: { imagePath: true, assessmentId: true },
+    });
+    if (!scan?.imagePath || !scan.assessmentId) {
+      throw new NotFoundException('Scan not found.');
+    }
+    // The grader reports whether each field holds any handwriting at all. An
+    // empty field must come back empty: neither the vision model nor Tesseract
+    // is asked to read blank paper (they invent characters from it).
+    // 1) Vision model on the cropped name/section box (reads cursive Arabic far
+    //    better than Tesseract). 2) Tesseract as the fallback when the model is
+    //    unavailable or fails.
+    let nameWritten = true;
+    let sectionWritten = true;
+    if (this.studentInfoVision.enabled) {
+      try {
+        const cropResult = await this.openCvService.processAnswerSheet(
+          scan.imagePath,
+          JSON.stringify({ ...SHEET_CONFIG, mode: 'nameCrop' }),
+        );
+        const debug = cropResult?.debug as
+          | { nameCrop?: string; nameWritten?: boolean; sectionWritten?: boolean }
+          | undefined;
+        nameWritten = debug?.nameWritten !== false;
+        sectionWritten = debug?.sectionWritten !== false;
+        if (!nameWritten && !sectionWritten) {
+          return { detectedStudentName: null, detectedStudentSection: null };
+        }
+        const crop = debug?.nameCrop;
+        if (typeof crop === 'string' && crop) {
+          const read = await this.studentInfoVision.read(crop, {
+            userId: user.userId,
+            tenantId: user.tenantId,
+          });
+          if (read) {
+            // The model answered (possibly "empty"): trust it, no OCR fallback.
+            return {
+              detectedStudentName: nameWritten ? read.name : null,
+              detectedStudentSection: sectionWritten ? read.section : null,
+            };
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Vision name/section detection failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    try {
+      const result = await this.openCvService.processAnswerSheet(
+        scan.imagePath,
+        JSON.stringify({ ...SHEET_CONFIG, mode: 'nameOnly' }),
+      );
+      return {
+        detectedStudentName: (result?.detectedStudentName ?? '').trim() || null,
+        detectedStudentSection:
+          (result?.detectedStudentSection ?? '').trim() || null,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Name/section detection failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { detectedStudentName: null, detectedStudentSection: null };
+    }
+  }
+
+  /**
+   * The teacher typed the Student ID because the bubbles could not give a full
+   * one (double mark, smudge, faint ink) or read it wrongly. Stored on the
+   * unsaved draft and matched against the roster exactly like a detected ID.
+   * `MANUAL_ID` in errorMessage tells the save step not to second-guess it with
+   * a fresh bubble read.
+   */
+  async setScanStudentId(user: RequestUser, scanId: number, rawCode: string) {
+    const scan = await this.prisma.gradingScan.findFirst({
+      where: { id: scanId, tenantId: user.tenantId },
+      include: {
+        assessment: { select: { courseId: true, numberOfStudentIdDigits: true } },
+      },
+    });
+    if (!scan) throw new NotFoundException('Grading scan not found.');
+    if (scan.confirmedAt) {
+      throw new BadRequestException('This grading is already saved.');
+    }
+    const code = String(rawCode ?? '').replace(/\s+/g, '');
+    const expected = resolvePrintedIdDigits(scan.assessment?.numberOfStudentIdDigits);
+    if (!/^\d+$/.test(code) || code.length !== expected) {
+      throw new BadRequestException(
+        `The Student ID must be exactly ${expected} digits.`,
+      );
+    }
+    const courseId = scan.assessment?.courseId ?? null;
+    const matched = courseId != null ? await this.findCourseStudent(courseId, code) : null;
+    const updated = await this.prisma.gradingScan.update({
+      where: { id: scan.id },
+      data: {
+        detectedStudentId: code,
+        matchedStudentCode: matched?.studentId ?? null,
+        studentId: matched?.id ?? null,
+        errorMessage: 'MANUAL_ID',
+      },
+      include: {
+        student: {
+          select: { id: true, name: true, studentId: true, section: true },
+        },
+        assessment: {
+          select: { id: true, title: true, code: true, type: true },
+        },
+      },
+    });
+    this.logger.log(`Student ID set manually on scan ${scanId}: ${code}`);
+    return { ...updated, detectOnly: true };
+  }
+
+  /**
+   * Optional second check on the Student ID. The OpenCV bubble read stays the
+   * source of truth; a vision model looks at the hand-written ID boxes printed
+   * above the grid and says how many clearly contradict it. Handwriting is a
+   * weak signal (0/o, 9/q ...), so one or two doubtful boxes are ignored and
+   * the result is advisory only — it never blocks or changes a grade.
+   *
+   *   match        no clear contradiction
+   *   mismatch     several boxes clearly show different digits
+   *   unavailable  model off, boxes unreadable, or any error
+   */
+  async verifyScanStudentId(user: RequestUser, scanId: number) {
+    const unavailable = { status: 'unavailable' as const };
+    if (
+      !this.studentInfoVision.enabled ||
+      process.env.ID_AI_CHECK === '0' ||
+      process.env.ID_AI_CHECK === 'false'
+    ) {
+      return unavailable;
+    }
+    const scan = await this.prisma.gradingScan.findFirst({
+      where: { id: scanId, tenantId: user.tenantId },
+      select: {
+        imagePath: true,
+        detectedStudentId: true,
+        assessment: { select: { studentIdPosition: true } },
+      },
+    });
+    if (!scan?.imagePath) throw new NotFoundException('Scan not found.');
+    const bubbled = (scan.detectedStudentId ?? '').trim();
+    if (!bubbled || !/^\d+$/.test(bubbled)) return unavailable;
+    try {
+      const cropResult = await this.openCvService.processAnswerSheet(
+        scan.imagePath,
+        JSON.stringify({
+          ...SHEET_CONFIG,
+          numIdDigits: bubbled.length,
+          studentIdPosition: scan.assessment?.studentIdPosition ?? 'TOP_LEFT',
+          mode: 'idOnly',
+          idCrop: true,
+        }),
+      );
+      const crop = (cropResult as { debug?: { idCrop?: string } })?.debug?.idCrop;
+      if (typeof crop !== 'string' || !crop) return unavailable;
+      const differing = await this.studentInfoVision.countClearlyDifferentIdBoxes(
+        crop,
+        bubbled,
+        { userId: user.userId, tenantId: user.tenantId },
+      );
+      if (differing === null) return unavailable;
+      const threshold = Math.max(3, Math.ceil(bubbled.length * 0.34));
+      const mismatch = differing >= threshold;
+      this.logger.log(
+        `ID cross-check scan ${scanId}: bubbles=${bubbled} differingBoxes=${differing} (alert at ${threshold}) -> ${mismatch ? 'mismatch' : 'match'}`,
+      );
+      return mismatch
+        ? { status: 'mismatch' as const, differing, bubbled }
+        : { status: 'match' as const, differing, bubbled };
+    } catch (err) {
+      this.logger.warn(
+        `ID cross-check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return unavailable;
+    }
+  }
+
+  private async gradeDetectOnlyScan(user: RequestUser, scanId: number) {
+    const existing = await this.prisma.gradingScan.findFirst({
+      where: { id: scanId, tenantId: user.tenantId },
+    });
+    if (!existing?.imagePath || !existing.assessmentId) {
+      throw new BadRequestException('Scan image is missing.');
+    }
+
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: existing.assessmentId, tenantId: user.tenantId },
+      include: {
+        questions: {
+          include: { questionOptions: { orderBy: { order: 'asc' } } },
+          orderBy: { id: 'asc' },
+        },
+        assessmentVersions: {
+          orderBy: { id: 'asc' },
+          include: {
+            versionQuestions: {
+              orderBy: { order: 'asc' },
+              include: {
+                question: {
+                  include: { questionOptions: { orderBy: { order: 'asc' } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!assessment) throw new NotFoundException('Assessment not found.');
+
+    const numIdDigits = resolvePrintedIdDigits(assessment.numberOfStudentIdDigits);
+    const layoutVersion = assessment.assessmentVersions.find(
+      (version) => version.versionQuestions.length > 0,
+    );
+    const sheetLayout = buildGraderSheetConfigForQuestions({
+      questions: layoutVersion
+        ? layoutVersion.versionQuestions.map((vq) => vq.question)
+        : assessment.questions,
+      numberOfStudentIdDigits: assessment.numberOfStudentIdDigits,
+      studentIdPosition: assessment.studentIdPosition,
+    });
+    const graderConfig = {
+      ...SHEET_CONFIG,
+      ...(sheetLayout ?? {}),
+      numIdDigits,
+      studentIdPosition: assessment.studentIdPosition ?? 'TOP_LEFT',
+      // The mobile review never uses the OCR'd name here (it is read on demand
+      // for unknown IDs), and Tesseract is by far the slowest step.
+      skipName: true,
+      qualityGate: true,
+    };
+
+    let processResult: {
+      answers: Record<string, string>;
+      confidence: number;
+      decodedFormId: number | null;
+      questionDetails?: unknown[];
+      detectedStudentId?: string | null;
+      detectedStudentName?: string | null;
+      detectedStudentSection?: string | null;
+    } | null = null;
+    let processError: string | null = null;
+
+    try {
+      const pyResult = await this.openCvService.processAnswerSheet(
+        existing.imagePath,
+        JSON.stringify(graderConfig),
+      );
+      if (pyResult && !pyResult.error) processResult = pyResult;
+    } catch (err) {
+      this.logger.warn(
+        `Full grade after detect failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Fresh detection of this exact photo (nothing carried over from the
+    // review step): refuse it if it is unreliable, or if the ID read now
+    // disagrees with the ID the teacher reviewed.
+    if (processResult) {
+      const quality = (processResult as { scanQuality?: ScanQuality }).scanQuality;
+      const reviewed = (existing.detectedStudentId ?? '').trim();
+      const now = (processResult.detectedStudentId ?? '').trim();
+      if (
+        existing.errorMessage !== 'MANUAL_ID' &&
+        isCompleteStudentId(reviewed) &&
+        isCompleteStudentId(now) &&
+        reviewed !== now
+      ) {
+        await this.rejectUnclearScan(scanId, {
+          ok: false,
+          issues: ['id_unstable'],
+          blocking: ['id_unstable'],
+        });
+      }
+      await this.rejectUnclearScan(scanId, quality);
+    }
+
+    if (!processResult || (processResult.confidence ?? 0) < 0.2) {
+      try {
+        processResult = await this.nodeGrader.gradeSheet(
+          existing.imagePath,
+          numIdDigits,
+          {
+            answerGrid: sheetLayout?.answerGrid,
+            studentIdGrid: sheetLayout?.studentIdGrid,
+          },
+        );
+      } catch (err) {
+        processError =
+          err instanceof Error ? err.message : 'Grading processing failed';
+        processResult = {
+          answers: {},
+          confidence: 0,
+          decodedFormId: null,
+          questionDetails: [],
+        };
+      }
+    }
+
+    const decodedVersionIndex =
+      processResult!.decodedFormId != null
+        ? processResult!.decodedFormId - 1
+        : 0;
+    const detectedVersion =
+      decodedVersionIndex >= 0
+        ? assessment.assessmentVersions[decodedVersionIndex]
+        : undefined;
+    const scoringVersion =
+      detectedVersion ?? assessment.assessmentVersions[0];
+    const orderedQuestions = orderQuestionsForSheet(
+      scoringVersion?.versionQuestions?.length
+        ? scoringVersion.versionQuestions.map((vq) => vq.question)
+        : assessment.questions,
+    );
+    const masterNumberById = new Map(
+      orderQuestionsForSheet(assessment.questions).map(
+        (question, index) => [question.id, index + 1] as const,
+      ),
+    );
+    const scoringVersionNumber = scoringVersion
+      ? assessment.assessmentVersions.indexOf(scoringVersion) + 1
+      : null;
+
+    const scoredAnswers = { ...processResult!.answers };
+    const detailsRaw =
+      (processResult!.questionDetails as Array<Record<string, unknown>>) ?? [];
+    for (const detail of detailsRaw) {
+      const qNum = Number(detail['question']);
+      const question = orderedQuestions[qNum - 1];
+      const multiAllowed = this.questionAllowsMultipleCorrect(question);
+      if (detail['status'] === 'multiple') {
+        if (multiAllowed) {
+          const candidates = Array.isArray(detail['candidates'])
+            ? (detail['candidates'] as unknown[])
+                .map((value) => String(value || '').trim().toUpperCase())
+                .filter(Boolean)
+            : [];
+          const joined = candidates.join(',');
+          scoredAnswers[String(qNum)] = joined;
+          detail['detected'] = joined || null;
+          detail['status'] = joined ? 'answered' : 'blank';
+        } else {
+          scoredAnswers[String(qNum)] = '';
+        }
+      }
+    }
+    const { score, maxScore, questionResults } = this.gradeAnswers(
+      scoredAnswers,
+      orderedQuestions,
+    );
+    const enrichedDetails = detailsRaw.map((qd) => {
+      const printedNumber = qd['question'] as number;
+      const status = String(qd['status'] ?? '');
+      const qr = questionResults.find((r) => r.question === printedNumber);
+      const question = orderedQuestions[printedNumber - 1];
+      const isAnswered = status === 'answered';
+      return {
+        ...qd,
+        isCorrect: isAnswered ? (qr?.isCorrect ?? false) : null,
+        correctAnswer: qr?.correctAnswer ?? null,
+        earnedPoints: isAnswered ? (qr?.earnedPoints ?? 0) : null,
+        maxPoints: question?.points ?? null,
+        questionId: question?.id ?? null,
+        masterNumber: question
+          ? (masterNumberById.get(question.id) ?? null)
+          : null,
+        versionNumber: scoringVersionNumber,
+      };
+    });
+
+    // Keep the student ID from the fast detect step unless full grade found one.
+    const rawStudentId =
+      existing.errorMessage === 'MANUAL_ID'
+        ? existing.detectedStudentId
+        : (processResult!.detectedStudentId ?? '').trim() ||
+          existing.detectedStudentId ||
+          null;
+
+    await this.prisma.gradingScan.update({
+      where: { id: scanId },
+      data: {
+        status: processError ? 'FAILED' : 'PENDING',
+        confidence: processResult!.confidence,
+        decodedFormId: processResult!.decodedFormId,
+        detectedAnswers: processResult!.answers,
+        questionDetails: enrichedDetails,
+        score,
+        maxScore,
+        errorMessage: processError,
+        detectedStudentId: rawStudentId,
+      },
+    });
   }
 
   /**
@@ -496,6 +997,75 @@ export class GradingService {
     return scan;
   }
 
+  /**
+   * Every scan of an assessment with its grading state (confirmed, awaiting
+   * confirmation, processing, failed) plus summary counts. Unlike
+   * `listScansByAssessment` this is not limited to confirmed results.
+   */
+  async getAssessmentGradingOverview(user: RequestUser, assessmentId: number) {
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, tenantId: user.tenantId },
+      select: { id: true },
+    });
+    if (!assessment) throw new NotFoundException('Assessment not found.');
+
+    const rows = await this.prisma.gradingScan.findMany({
+      where: { tenantId: user.tenantId, assessmentId },
+      select: {
+        id: true,
+        status: true,
+        score: true,
+        maxScore: true,
+        confidence: true,
+        detectedStudentId: true,
+        matchedStudentCode: true,
+        confirmedAt: true,
+        createdAt: true,
+        student: { select: { id: true, name: true, studentId: true, section: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    type State = 'confirmed' | 'pending' | 'processing' | 'failed';
+    const scans = rows.map((row) => {
+      const state: State = row.confirmedAt
+        ? 'confirmed'
+        : row.status === 'FAILED'
+          ? 'failed'
+          : row.status === 'PROCESSING'
+            ? 'processing'
+            : 'pending';
+      return { ...row, state };
+    });
+
+    const confirmed = scans.filter((scan) => scan.state === 'confirmed');
+    const confidences = scans
+      .map((scan) => Number(scan.confidence))
+      .filter((value) => Number.isFinite(value));
+    const percents = confirmed
+      .map((scan) =>
+        scan.maxScore && scan.score != null ? (scan.score / scan.maxScore) * 100 : null,
+      )
+      .filter((value): value is number => value != null);
+    const average = (values: number[]) =>
+      values.length
+        ? Math.round((values.reduce((sum, v) => sum + v, 0) / values.length) * 10) / 10
+        : null;
+
+    return {
+      summary: {
+        total: scans.length,
+        confirmed: confirmed.length,
+        pending: scans.filter((scan) => scan.state === 'pending').length,
+        processing: scans.filter((scan) => scan.state === 'processing').length,
+        failed: scans.filter((scan) => scan.state === 'failed').length,
+        averageConfidence: average(confidences),
+        averagePercent: average(percents),
+      },
+      scans,
+    };
+  }
+
   listScansByAssessment(user: RequestUser, assessmentId: number) {
     return this.prisma.gradingScan.findMany({
       where: {
@@ -534,13 +1104,28 @@ export class GradingService {
     scanId: number,
     opts?: { studentId?: number | null },
   ) {
-    const scan = await this.prisma.gradingScan.findFirst({
+    let scan = await this.prisma.gradingScan.findFirst({
       where: { id: scanId, tenantId: user.tenantId },
       include: { assessment: { select: { courseId: true } } },
     });
     if (!scan) throw new NotFoundException('Grading scan not found.');
     if (scan.status === 'FAILED') {
       throw new BadRequestException('Cannot save a failed grading scan.');
+    }
+
+    // Detect-only drafts grade bubbles here so the first mobile step stays fast.
+    if (scan.questionDetails == null && scan.imagePath && scan.assessmentId) {
+      await this.gradeDetectOnlyScan(user, scan.id);
+      scan = await this.prisma.gradingScan.findFirst({
+        where: { id: scanId, tenantId: user.tenantId },
+        include: { assessment: { select: { courseId: true } } },
+      });
+      if (!scan) throw new NotFoundException('Grading scan not found.');
+      if (scan.status === 'FAILED') {
+        throw new BadRequestException(
+          scan.errorMessage || 'Grading failed while saving.',
+        );
+      }
     }
 
     // Resolve the student FK: explicit body wins, then existing link, then roster lookup.

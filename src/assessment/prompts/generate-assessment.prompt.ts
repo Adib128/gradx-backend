@@ -152,7 +152,11 @@ ${(tg.closDetails || [])
   .map((c: any) => `  * [${c.code}] (${c.category || 'Skill'}): ${c.description}`)
   .join('\n')}
 
-Pick ONE CLO code from the list above for this question and include it as "cloCode" (example: "1.1").
+${
+  (tg.closDetails || []).length === 1
+    ? `This question must assess ONLY the CLO [${tg.closDetails[0].code}] above. Do not target or mix in any other CLO. Set "cloCode" to "${tg.closDetails[0].code}".`
+    : 'Pick ONE CLO code from the list above for this question, assess only that CLO, and include it as "cloCode" (example: "1.1").'
+}
 ${sourceSection(source)}
 
 ========================================================================

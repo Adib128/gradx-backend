@@ -10,8 +10,9 @@
  *
  * Source: jsPDF answer-sheet generator
  *   Page: 210 × 297 mm
- *   Registration marks (top-left corner of 4.5 × 4.5 mm squares):
- *     TL (8, 12)  TR (197.5, 12)  BL (8, 216)  BR (197.5, 216)
+ *   Registration marks (6.5 × 6.5 mm squares centred on these points; sheets printed before the
+ *   enlargement used 4.5 mm squares on the same centres):
+ *     centres: TL (10.25, 14.25)  TR (199.75, 14.25)  BL (10.25, 218.25)  BR (199.75, 218.25)
  *   Version strip centre x = left mark centre = 10.25 mm
  */
 

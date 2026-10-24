@@ -30,6 +30,7 @@ import { CreateTopicDto } from './dto/create-topic.dto';
 import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
+import { normalizeCloAnalysisLanguage } from './prompts/clo-analysis-stream.prompt';
 import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
 
@@ -268,6 +269,42 @@ export class CourseController {
           assessmentSources: row.assessmentSources ?? [],
           assessmentSourcesSummary,
         }),
+    );
+  }
+
+  @Get(':id/reports/clo-student-details')
+  getCloStudentDetailsReport(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
+  ) {
+    return this.courseReportsService.getCloStudentDetailsReport(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
+  }
+
+  /** SSE: streams the plain-text AI analysis in the requested language. */
+  @Post(':id/reports/clo-analysis-stream')
+  streamCloAnalysis(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { assessmentId?: number | string; language?: string },
+    @Res() res: Response,
+  ) {
+    return this.courseReportsService.streamCloAnalysis(
+      tenantId,
+      id,
+      {
+        assessmentId: this.parseOptionalAssessmentId(
+          body?.assessmentId != null ? String(body.assessmentId) : undefined,
+        ),
+        language: normalizeCloAnalysisLanguage(body?.language),
+        userId,
+      },
+      res,
     );
   }
 

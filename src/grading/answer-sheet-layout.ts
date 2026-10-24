@@ -1246,7 +1246,7 @@ export function buildGraderSheetConfig(layout: LayoutPlan, digits: number) {
     answerGrid: {
       columns,
       bubbleRadius: nx(layout.bubbleRadius * 0.72),
-      fillThreshold: 0.3,
+      fillThreshold: 0.34,
       // Slightly stricter multi separation reduces false doubles from neighbour bleed.
       darknessDifferential: 1.55,
     },
@@ -1257,7 +1257,8 @@ export function buildGraderSheetConfig(layout: LayoutPlan, digits: number) {
       rowGap: ny(layout.rowGap),
       bubbleRadius: nx(layout.idBubbleRadius * 0.72),
       rowDigits: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
-      fillThreshold: 0.15,
+      fillThreshold: 0.18,
+      position: layout.studentIdPosition,
       exact: true,
       roi: {
         x0: nx(layout.idStartX - 1.5),

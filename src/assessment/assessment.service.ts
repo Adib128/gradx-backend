@@ -51,6 +51,10 @@ const topicSourceOf = (
 ): TopicSource =>
   tg.source ?? { type: 'COURSE_SPECIFICATION', references: [] };
 
+/** A topic is configured once per CLO, so source material is keyed per (topic, CLOs). */
+const topicMaterialKey = (tg: { topicId: number; cloIds?: number[] }) =>
+  `${tg.topicId}:${[...(tg.cloIds ?? [])].sort((a, b) => a - b).join(',')}`;
+
 const toPrismaJson = (
   value: unknown,
 ): Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined => {
@@ -428,43 +432,45 @@ export class AssessmentService {
         type: nextQuestion.type || unit.questionType,
       };
 
-      const cloCodesFromTopic = Array.from(
-        new Set(
-          [
-            ...(Array.isArray(unit.topicGeneration.closDetails)
-              ? unit.topicGeneration.closDetails.map((clo: any) =>
-                  String(clo?.code || '').trim(),
-                )
-              : []),
-            ...(Array.isArray(unit.topicGeneration.cloCodes)
-              ? unit.topicGeneration.cloCodes.map((code: any) =>
-                  String(code || '').trim(),
-                )
-              : []),
-          ].filter(Boolean),
-        ),
-      );
-      const preferredCloCode = String(
-        normalizedQuestion.cloCode || cloCodesFromTopic[0] || '',
-      ).trim();
-      const cloCodes = preferredCloCode
-        ? [
-            preferredCloCode,
-            ...cloCodesFromTopic.filter((code) => code !== preferredCloCode),
-          ]
-        : cloCodesFromTopic;
-
-      // Prefer matching cloId for the chosen code when available.
-      const cloIdsForQuestion = (() => {
+      // Every question is tied to exactly ONE CLO. Topics are configured per CLO,
+      // so the unit normally carries a single CLO and the model's own "cloCode"
+      // must never override it. Only a legacy multi-CLO unit lets the model pick,
+      // and then only among that unit's CLOs.
+      const unitClos: Array<{ id: number | null; code: string }> = (() => {
         const details = Array.isArray(unit.topicGeneration.closDetails)
-          ? unit.topicGeneration.closDetails
+          ? (unit.topicGeneration.closDetails as any[])
           : [];
-        const matched = details.find(
-          (clo: any) => String(clo?.code || '').trim() === preferredCloCode,
-        );
-        if (matched?.id != null) return [Number(matched.id)];
-        return (unit.topicGeneration.cloIds as number[] | undefined) || [];
+        const fromDetails = details
+          .map((clo: any) => ({
+            id: clo?.id != null ? Number(clo.id) : null,
+            code: String(clo?.code || '').trim(),
+          }))
+          .filter((clo) => clo.code);
+        if (fromDetails.length > 0) return fromDetails;
+        const codes = Array.isArray(unit.topicGeneration.cloCodes)
+          ? (unit.topicGeneration.cloCodes as any[])
+              .map((code) => String(code || '').trim())
+              .filter(Boolean)
+          : [];
+        return codes.map((code) => ({ id: null, code }));
       })();
+      const requestedCode = String(normalizedQuestion.cloCode ?? '').trim();
+      const chosenClo =
+        unitClos.length === 1
+          ? unitClos[0]
+          : (unitClos.find(
+              (clo) => clo.code.toLowerCase() === requestedCode.toLowerCase(),
+            ) ?? unitClos[0]);
+      const preferredCloCode = chosenClo?.code ?? '';
+      const cloCodes = preferredCloCode ? [preferredCloCode] : [];
+      const cloIdsForQuestion: number[] =
+        chosenClo?.id != null && Number.isFinite(chosenClo.id)
+          ? [chosenClo.id]
+          : (() => {
+              const ids = (unit.topicGeneration.cloIds as number[] | undefined) || [];
+              return ids.length > 0 ? [Number(ids[0])] : [];
+            })();
+      normalizedQuestion.cloCode = preferredCloCode || normalizedQuestion.cloCode;
 
       const saved = await this.saveGeneratedQuestion(
         data.tenantId,
@@ -549,8 +555,11 @@ export class AssessmentService {
       topicGeneration: (typeof topicGenerations)[number];
     }> = [];
 
+    // A topic may appear several times (one entry per CLO), so the source chunk
+    // rotation is tracked per topic rather than per entry.
+    const topicUnitCounters = new Map<number, number>();
     for (const topicGeneration of topicGenerations) {
-      let topicUnitIndex = 0;
+      let topicUnitIndex = topicUnitCounters.get(topicGeneration.topicId) ?? 0;
       for (const questionType of topicGeneration.questionTypes || []) {
         const count = Math.max(0, Number(questionType.questionTypeNumber) || 0);
         for (let i = 0; i < count; i++) {
@@ -562,6 +571,7 @@ export class AssessmentService {
           });
         }
       }
+      topicUnitCounters.set(topicGeneration.topicId, topicUnitIndex);
     }
 
     return units;
@@ -602,24 +612,44 @@ export class AssessmentService {
       select: { id: true, numberOfVersions: true },
     });
 
+    // One topic can be configured once per CLO; its AssessmentTopic row carries
+    // the combined question counts.
+    const topicShells = new Map<
+      number,
+      {
+        source: ReturnType<typeof topicSourceOf>;
+        mcqCount: number;
+        trueFalseCount: number;
+      }
+    >();
     for (const tg of dto.topicGenerations) {
       const countOf = (type: string) =>
         tg.questionTypes
           .filter((config) => config.questionType === type)
           .reduce((total, config) => total + config.questionTypeNumber, 0);
-      const source = topicSourceOf(tg);
+      const shell = topicShells.get(tg.topicId) ?? {
+        source: topicSourceOf(tg),
+        mcqCount: 0,
+        trueFalseCount: 0,
+      };
+      shell.mcqCount += countOf('MCQ');
+      shell.trueFalseCount += countOf('TRUE_FALSE');
+      topicShells.set(tg.topicId, shell);
+    }
+
+    for (const [topicId, shell] of topicShells) {
       const sourceFields = {
-        sourceType: source.type,
+        sourceType: shell.source.type,
         referenceChapters:
-          source.type === 'REFERENCE'
-            ? (source.references as Prisma.InputJsonValue)
+          shell.source.type === 'REFERENCE'
+            ? (shell.source.references as Prisma.InputJsonValue)
             : Prisma.JsonNull,
-        mcqCount: countOf('MCQ'),
-        trueFalseCount: countOf('TRUE_FALSE'),
+        mcqCount: shell.mcqCount,
+        trueFalseCount: shell.trueFalseCount,
       };
       await this.prisma.assessmentTopic.upsert({
-        where: { assessmentId_topicId: { assessmentId, topicId: tg.topicId } },
-        create: { assessmentId, topicId: tg.topicId, ...sourceFields },
+        where: { assessmentId_topicId: { assessmentId, topicId } },
+        create: { assessmentId, topicId, ...sourceFields },
         update: sourceFields,
       });
     }
@@ -653,7 +683,7 @@ export class AssessmentService {
     courseId: number,
     dto: GenerateAssessmentDto,
     options: { retrieve?: boolean } = {},
-  ): Promise<Map<number, TopicSourceMaterial>> {
+  ): Promise<Map<string, TopicSourceMaterial>> {
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
       select: {
@@ -687,7 +717,7 @@ export class AssessmentService {
         })
       : [];
 
-    const materials = new Map<number, TopicSourceMaterial>();
+    const materials = new Map<string, TopicSourceMaterial>();
     for (const tg of dto.topicGenerations) {
       const topic = course.topics.find((item) => item.id === tg.topicId);
       if (!topic) {
@@ -703,7 +733,7 @@ export class AssessmentService {
             ErrorMessageKey.ASSESSMENT_SOURCE_SLIDES_UNAVAILABLE,
           );
         }
-        materials.set(tg.topicId, {
+        materials.set(topicMaterialKey(tg), {
           type: 'SLIDES',
           label: `Slides of topic "${topic.title}"`,
           chunks: chunkSourceText(slides.map((text, index) => `Slide ${index + 1}:\n${text}`)),
@@ -732,7 +762,7 @@ export class AssessmentService {
               ),
             })
           : null;
-        materials.set(tg.topicId, {
+        materials.set(topicMaterialKey(tg), {
           type: 'REFERENCE',
           label: labels.join('; '),
           chunks: chunkSourceText(retrieved ?? sections),
@@ -740,7 +770,7 @@ export class AssessmentService {
         continue;
       }
 
-      materials.set(tg.topicId, {
+      materials.set(topicMaterialKey(tg), {
         type: 'COURSE_SPECIFICATION',
         label: 'Course specification',
         chunks: [
@@ -1030,7 +1060,7 @@ export class AssessmentService {
           topicTitle: topic?.title ?? 'Unknown Topic',
           topicNumber: topic?.topicNumber ?? 0,
           closDetails,
-          sourceMaterial: sourceMaterials.get(topicGen.topicId),
+          sourceMaterial: sourceMaterials.get(topicMaterialKey(topicGen)),
         };
       }),
     );
@@ -1229,10 +1259,9 @@ export class AssessmentService {
 
         // Step B: Bind chosen scope to AssessmentTopics layout
         await tx.assessmentTopic.createMany({
-          data: dto.topicGenerations.map((tg) => ({
-            assessmentId,
-            topicId: tg.topicId,
-          })),
+          data: Array.from(
+            new Set(dto.topicGenerations.map((tg) => tg.topicId)),
+          ).map((topicId) => ({ assessmentId, topicId })),
         });
 
         // Step C: Save generated questions and concrete configurations

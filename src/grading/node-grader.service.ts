@@ -25,9 +25,21 @@ interface BubbleResult {
   options: string[];
   /** Marked option letters when status is multiple (for multi-correct partial credit). */
   candidates?: string[];
+  /** Options the student crossed out with an X; they are ignored when grading. */
+  crossedOut?: string[];
 }
 
 const FULL_INK_DARKNESS = 0.4;
+
+// A hand-drawn "X" over a bubble cancels it. Its strokes cross the printed ring
+// and stick out into the corners, so we look for ink in the ring-shaped zone
+// around the bubble, split into four quadrants (mirrors opencv_grader.py).
+const CROSS_ZONE_INNER = 1.4; // × bubble radius
+const CROSS_ZONE_OUTER = 2.1;
+const CROSS_NEIGHBOUR_CLEAR = 1.6; // ignore pixels on a neighbour's ring
+const CROSS_INK = 0.3; // darkness a stroke must reach to count as ink
+const CROSS_QUADRANTS_NEEDED = 3;
+const CROSS_MAX_SHARE = 0.35; // more than this → dirty photo, ignore
 
 type AnswerColumn = {
   startQuestion: number;
@@ -146,7 +158,13 @@ export class NodeGraderService {
     const answers: Record<string, string> = {};
     const details: BubbleResult[] = [];
 
-    const rows: { qNum: number; opts: readonly string[]; darkness: number[] }[] = [];
+    const rows: {
+      qNum: number;
+      opts: readonly string[];
+      darkness: number[];
+      centres: [number, number][];
+      crossed: string[];
+    }[] = [];
     for (const col of cfg.columns) {
       const xStep = col.bubbleXStep ?? cfg.bubbleXStep ?? 0;
       const yStep = col.rowYStep ?? cfg.rowYStep ?? 0;
@@ -154,14 +172,45 @@ export class NodeGraderService {
         const rowY = Math.round((col.rowYStart + rowIdx * yStep) * h);
         const opts =
           col.rowLabels?.[rowIdx] ?? col.options ?? cfg.options ?? ['A', 'B', 'C', 'D', 'E'];
-        const darkness = opts.map((_, optIdx) => {
-          const bx = Math.round((col.bubbleAX + optIdx * xStep) * w);
-          const mean = this.samplePeakMean(grayBuf, w, h, bx, rowY, radiusPx, searchPx);
+        const centres = opts.map(
+          (_, optIdx): [number, number] => [
+            Math.round((col.bubbleAX + optIdx * xStep) * w),
+            rowY,
+          ],
+        );
+        const darkness = centres.map(([bx, by]) => {
+          const mean = this.samplePeakMean(grayBuf, w, h, bx, by, radiusPx, searchPx);
           return Math.max(0, (globalMean - mean) / globalMean);
         });
-        rows.push({ qNum: col.startQuestion + rowIdx, opts, darkness });
+        rows.push({
+          qNum: col.startQuestion + rowIdx,
+          opts,
+          darkness,
+          centres,
+          crossed: [],
+        });
       }
     }
+
+    // Bubbles crossed out with an X are cancelled: treat them as empty.
+    const crossedSet = this.detectCrossedBubbles(
+      grayBuf as Buffer,
+      w,
+      h,
+      globalMean,
+      rows.map((r) => r.centres),
+      radiusPx,
+    );
+    rows.forEach((row, rowIdx) => {
+      const idxs = row.opts
+        .map((_, i) => i)
+        .filter((i) => crossedSet.has(`${rowIdx}:${i}`));
+      if (idxs.length === 0) return;
+      const kept = row.darkness.filter((_, i) => !idxs.includes(i));
+      const empty = kept.length ? Math.min(...kept) : 0;
+      row.darkness = row.darkness.map((d, i) => (idxs.includes(i) ? empty : d));
+      row.crossed = idxs.map((i) => row.opts[i]);
+    });
 
     // Same scale as the OpenCV grader: darkness above an unmarked bubble
     // (printed ring + letter), where FULL_INK_DARKNESS reads as fully filled.
@@ -180,7 +229,7 @@ export class NodeGraderService {
       inkScale = Math.max(0.2, Math.min(FULL_INK_DARKNESS, typicalPeak * 0.9));
     }
 
-    for (const { qNum, opts, darkness } of rows) {
+    for (const { qNum, opts, darkness, crossed } of rows) {
       const rowBase = Math.max(globalBaseline * 0.85, this.rowEmptyBaseline(darkness));
       const fills = darkness.map((d) =>
         Math.max(0, Math.min(1, (d - rowBase) / inkScale)),
@@ -265,6 +314,12 @@ export class NodeGraderService {
         fills: this.zipFills(opts, fills),
         options: [...opts],
       });
+    }
+
+    for (const row of rows) {
+      if (row.crossed.length === 0) continue;
+      const detail = details.find((d) => d.question === row.qNum);
+      if (detail) detail.crossedOut = row.crossed;
     }
 
     const answeredCount = details.filter((d) => d.status === 'answered').length;
@@ -656,6 +711,62 @@ export class NodeGraderService {
     }
 
     return count > 0 ? sum / count : 255;
+  }
+
+  /**
+   * Find bubbles crossed out with an X. Returns "rowIndex:optionIndex" keys of
+   * bubbles whose strokes stick out of the printed ring in at least three of
+   * the four corners.
+   */
+  private detectCrossedBubbles(
+    gray: Buffer,
+    w: number,
+    h: number,
+    globalMean: number,
+    rowCentres: [number, number][][],
+    radius: number,
+  ): Set<string> {
+    const crossed = new Set<string>();
+    const all = rowCentres.flat();
+    if (all.length === 0 || globalMean <= 0) return crossed;
+
+    const inner2 = (CROSS_ZONE_INNER * radius) ** 2;
+    const outer = Math.ceil(CROSS_ZONE_OUTER * radius);
+    const outer2 = (CROSS_ZONE_OUTER * radius) ** 2;
+    const clear2 = (CROSS_NEIGHBOUR_CLEAR * radius) ** 2;
+    const nearLimit2 = ((CROSS_ZONE_OUTER + CROSS_NEIGHBOUR_CLEAR) * radius) ** 2;
+    const minPx = Math.max(4, Math.round(0.6 * radius));
+
+    rowCentres.forEach((centres, rowIdx) => {
+      centres.forEach(([cx, cy], optIdx) => {
+        const neighbours = all.filter(([nx, ny]) => {
+          const d2 = (nx - cx) ** 2 + (ny - cy) ** 2;
+          return d2 > 0 && d2 <= nearLimit2;
+        });
+        const quadrants = [0, 0, 0, 0];
+        for (let dy = -outer; dy <= outer; dy++) {
+          const py = cy + dy;
+          if (py < 0 || py >= h) continue;
+          for (let dx = -outer; dx <= outer; dx++) {
+            const px = cx + dx;
+            if (px < 0 || px >= w) continue;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < inner2 || d2 > outer2) continue;
+            if ((globalMean - gray[py * w + px]) / globalMean < CROSS_INK) continue;
+            if (neighbours.some(([nx, ny]) => (px - nx) ** 2 + (py - ny) ** 2 <= clear2)) {
+              continue;
+            }
+            quadrants[(dy >= 0 ? 2 : 0) + (dx >= 0 ? 1 : 0)]++;
+          }
+        }
+        if (quadrants.filter((n) => n >= minPx).length >= CROSS_QUADRANTS_NEEDED) {
+          crossed.add(`${rowIdx}:${optIdx}`);
+        }
+      });
+    });
+
+    if (crossed.size > CROSS_MAX_SHARE * all.length) return new Set();
+    return crossed;
   }
 
   private zipFills(opts: readonly string[], fills: number[]): Record<string, number> {

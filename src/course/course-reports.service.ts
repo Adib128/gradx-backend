@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import type { Response } from 'express';
 import { PrismaService } from 'prisma/prisma.service';
 import { CourseAIService } from './course-ai.service';
 import { Prisma } from 'generated/prisma/client';
@@ -279,6 +280,190 @@ export class CourseReportsService {
     courseId: number,
     assessmentId?: number,
   ) {
+    return (await this.buildCloAchievement(tenantId, courseId, assessmentId)).report;
+  }
+
+  /**
+   * Per-student CLO marks behind the achievement report: one row per assessed
+   * student with the marks earned in every CLO, plus the per-CLO achievement
+   * target and the achieved / not achieved counts (same scope as the report).
+   */
+  async getCloStudentDetailsReport(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
+    const { report, course, assessedKeys, studentCloScores } =
+      await this.buildCloAchievement(tenantId, courseId, assessmentId);
+
+    const clos = report.rows.map((row) => ({
+      id: row.id,
+      code: row.code,
+      maxScore: row.maxScore,
+      thresholdScore: row.thresholdScore,
+      studentsMet: row.studentsMet,
+      studentsNotMet: row.hasGradingData ? row.totalStudents - row.studentsMet : 0,
+      totalStudents: row.totalStudents,
+      achievementRate: row.achievementRate,
+      notAchievedRate:
+        row.achievementRate != null ? round2(100 - row.achievementRate) : null,
+      hasGradingData: row.hasGradingData,
+    }));
+
+    // Rostered students first (by student id), then scanned students that are
+    // not enrolled in the course, identified by their scanned ID code.
+    const rosterByKey = new Map(
+      course.students.map((student) => [rosterKey(student), student]),
+    );
+    const unmatchedKeys = assessedKeys.filter((key) => !rosterByKey.has(key));
+    const knownCodes = unmatchedKeys.filter(
+      (key) => !key.startsWith('scan-') && !key.startsWith('student-'),
+    );
+    const knownStudents = knownCodes.length
+      ? await this.prisma.student.findMany({
+          where: { studentId: { in: knownCodes } },
+          select: { studentId: true, name: true },
+        })
+      : [];
+    const nameByCode = new Map(knownStudents.map((row) => [row.studentId, row.name]));
+
+    const assessed = new Set(assessedKeys);
+    const ordered = [
+      ...course.students.filter((student) => assessed.has(rosterKey(student))).map((student) => ({
+        key: rosterKey(student),
+        studentId: student.studentId as string | null,
+        name: student.name as string | null,
+      })),
+      ...[...unmatchedKeys].sort().map((key) => ({
+        key,
+        studentId: knownCodes.includes(key) ? key : null,
+        name: nameByCode.get(key) ?? null,
+      })),
+    ];
+    const students = ordered.map((entry, index) => {
+      const scores = clos.map((clo) =>
+        round2(studentCloScores.get(clo.id)?.get(entry.key) ?? 0),
+      );
+      return {
+        index: index + 1,
+        studentId: entry.studentId,
+        name: entry.name,
+        scores,
+        total: round2(scores.reduce((sum, score) => sum + score, 0)),
+      };
+    });
+
+    return {
+      thresholdPercent: report.thresholdPercent,
+      clos,
+      students,
+      totalMax: round2(clos.reduce((sum, clo) => sum + clo.maxScore, 0)),
+      hasGradingData: report.hasGradingData,
+    };
+  }
+
+  /**
+   * Streams (SSE) a plain-text AI analysis of the CLO report in the requested
+   * language. Events: `delta` {text}, `done` {text}, `error` {message}.
+   */
+  async streamCloAnalysis(
+    tenantId: number,
+    courseId: number,
+    options: {
+      assessmentId?: number;
+      language: 'en' | 'ar';
+      userId?: number;
+    },
+    res: Response,
+  ): Promise<void> {
+    // Validate before opening the stream so failures are normal HTTP errors.
+    const report = await this.getCloAchievementReport(
+      tenantId,
+      courseId,
+      options.assessmentId,
+    );
+    if (!report.rows.length) {
+      throw new NotFoundException('No CLO data available for analysis.');
+    }
+    const scopeTitle = options.assessmentId
+      ? ((
+          await this.prisma.assessment.findFirst({
+            where: { id: options.assessmentId, courseId, tenantId },
+            select: { title: true },
+          })
+        )?.title ?? null)
+      : null;
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
+
+    const controller = new AbortController();
+    let closed = false;
+    res.on('close', () => {
+      closed = true;
+      controller.abort();
+    });
+    const emit = (event: string, data: unknown) => {
+      if (closed || res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const payload = {
+      passRatePercent: report.thresholdPercent,
+      scope: scopeTitle
+        ? `Only the assessment "${scopeTitle}"`
+        : 'All assessments of the course',
+      clos: report.rows.map((row) => ({
+        code: row.code,
+        description: row.description,
+        achievementRate: row.achievementRate,
+        thresholdScore: row.thresholdScore,
+        maxScore: row.maxScore,
+        studentsMet: row.studentsMet,
+        totalStudents: row.totalStudents,
+        avgScoreLabel: row.avgScoreLabel,
+        achieved: row.achieved,
+        statusLabel: row.statusLabel,
+        hasGradingData: row.hasGradingData,
+        assessmentSourcesSummary: this.formatAssessmentSourcesSummary(
+          row.assessmentSources ?? [],
+        ),
+      })),
+    };
+
+    try {
+      const text = await runWithAiContext(
+        { userId: options.userId, tenantId, purpose: 'clo_analysis_stream' },
+        () =>
+          this.courseAIService.streamCloAnalysisText(payload, options.language, {
+            signal: controller.signal,
+            onDelta: (delta) => emit('delta', { text: delta }),
+          }),
+      );
+      emit('done', { text });
+    } catch (error) {
+      if (!closed) {
+        emit('error', {
+          message:
+            error instanceof Error ? error.message : 'Failed to generate AI analysis.',
+        });
+      }
+    } finally {
+      if (!res.writableEnded) res.end();
+    }
+  }
+
+  private async buildCloAchievement(
+    tenantId: number,
+    courseId: number,
+    assessmentId?: number,
+  ) {
     const course = await this.loadCloCourse(tenantId, courseId);
     const passRatePercent = resolvePassRate(course.passRate);
     const assessments = await this.loadCloAssessments(tenantId, courseId, assessmentId);
@@ -289,10 +474,19 @@ export class CourseReportsService {
       assessments.map((assessment) => assessment.id),
       course.students,
     );
+    // General report (no assessment picked): only assessments that already have
+    // confirmed results count. An ungraded assessment would add marks nobody
+    // could have earned and drag every CLO towards 0%. Weights are still
+    // resolved from the full list so they keep their real course weight.
+    const gradedAssessmentIds = new Set(scans.map((scan) => scan.assessmentId));
+    const scoringAssessments =
+      !assessmentId && gradedAssessmentIds.size > 0
+        ? assessments.filter((assessment) => gradedAssessmentIds.has(assessment.id))
+        : assessments;
     const { cloTotals, cloSources, studentCloScores } = computeCloScores({
       clos: course.clos,
       topics: course.topics,
-      assessments,
+      assessments: scoringAssessments,
       weights,
       scans,
     });
@@ -359,12 +553,17 @@ export class CourseReportsService {
       null;
 
     return {
-      thresholdPercent: passRatePercent,
-      rows,
-      focusCloId,
-      enrolledCount: course.students.length,
-      assessedCount: totalStudents,
-      hasGradingData: rows.some((row) => row.hasGradingData),
+      course,
+      assessedKeys,
+      studentCloScores,
+      report: {
+        thresholdPercent: passRatePercent,
+        rows,
+        focusCloId,
+        enrolledCount: course.students.length,
+        assessedCount: totalStudents,
+        hasGradingData: rows.some((row) => row.hasGradingData),
+      },
     };
   }
 
@@ -450,10 +649,15 @@ export class CourseReportsService {
       return {
         cloId: clo.id,
         cloCode: clo.code,
-        mappings: ploCodes.map((ploCode) => ({
-          ploCode,
-          mapped: mappedPlos.has(ploCode),
-        })),
+        achievementRate: clo.achievementRate ?? null,
+        mappings: ploCodes.map((ploCode) => {
+          const mapped = mappedPlos.has(ploCode);
+          return {
+            ploCode,
+            mapped,
+            rate: mapped ? (clo.achievementRate ?? null) : null,
+          };
+        }),
       };
     });
 

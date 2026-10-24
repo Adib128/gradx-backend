@@ -14,7 +14,14 @@ import { inflateRawSync } from 'zlib';
 import { createHash } from 'crypto';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { OPENROUTER_MAX_OUTPUT_TOKENS } from 'src/common/constants/openrouter';
-import { createChatCompletion } from 'src/common/helpers/openrouter-chat.helper';
+import {
+  createChatCompletion,
+  streamChatCompletion,
+} from 'src/common/helpers/openrouter-chat.helper';
+import {
+  buildCloAnalysisStreamPrompt,
+  type CloAnalysisLanguage,
+} from './prompts/clo-analysis-stream.prompt';
 import { extractPdfText } from 'src/topic-content/utils/extract-pdf-text.util';
 import { extractTextFromWordXml } from './utils/word-document-text.util';
 import { applyCourseSpecDocumentFallbacks } from './utils/course-spec-document.util';
@@ -739,6 +746,38 @@ ${JSON.stringify(payload, null, 2)}`,
     } catch {
       return fallback;
     }
+  }
+
+  /**
+   * Streams a plain-text analysis of the given CLO statistics in `language`.
+   * `onDelta` receives every chunk as the model writes it.
+   */
+  async streamCloAnalysisText(
+    payload: Record<string, unknown>,
+    language: CloAnalysisLanguage,
+    options: { signal?: AbortSignal; onDelta: (delta: string) => void },
+  ): Promise<string> {
+    const { text } = await streamChatCompletion(
+      this.client,
+      {
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: `${buildCloAnalysisStreamPrompt(language)}
+
+Course CLO achievement data:
+${JSON.stringify(payload, null, 2)}`,
+          },
+        ],
+      },
+      {
+        signal: options.signal,
+        context: { purpose: 'clo_analysis_stream' },
+        onDelta: (delta) => options.onDelta(delta),
+      },
+    );
+    return text.trim();
   }
 
   buildCloAnalysisFingerprint(

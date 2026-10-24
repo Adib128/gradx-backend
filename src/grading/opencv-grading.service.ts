@@ -4,6 +4,15 @@ import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 
+export type ScanQuality = {
+  ok: boolean;
+  /** Every issue found, most important first (includes id_* issues). */
+  issues: string[];
+  /** Issues that make the photo unreliable to grade (never id_*). */
+  blocking: string[];
+  metrics?: Record<string, unknown>;
+};
+
 export type OpenCvProcessResult = {
   confidence: number;
   decodedFormId: number | null;
@@ -13,6 +22,8 @@ export type OpenCvProcessResult = {
   detectedAssessmentCode?: string | null;
   detectedStudentName?: string | null;
   detectedStudentSection?: string | null;
+  /** Photo-quality verdict from the grader (blur, page, lighting, grid fit). */
+  scanQuality?: ScanQuality;
   error?: string;
   debug?: Record<string, unknown>;
 };
