@@ -34,6 +34,8 @@ import {
   type MatchableClo,
   type MatchableTopic,
 } from './utils/clo-topic-matching.util';
+import { buildCourseReportNarrativePrompt } from './prompts/course-report-narrative.prompt';
+import type { ReportLanguage } from './utils/course-report-document.util';
 import { buildMatchCloTopicsMessage } from './prompts/match-clo-topics.prompt';
 import { primitiveText } from './utils/course-spec-fields.util';
 
@@ -745,6 +747,90 @@ ${JSON.stringify(payload, null, 2)}`,
       };
     } catch {
       return fallback;
+    }
+  }
+
+  /**
+   * AI-written sections of the Course Report document. Never throws for model
+   * problems: `failed` tells the caller to let the instructor write the texts.
+   */
+  async generateCourseReportNarrative(
+    payload: Record<string, unknown>,
+    language: ReportLanguage,
+  ): Promise<{
+    gradeComment: string;
+    recommendations: string;
+    overallEvaluation: string;
+    improvementPlan: Array<{ recommendation: string; action: string; support: string }>;
+    failed: boolean;
+  }> {
+    const empty = {
+      gradeComment: '',
+      recommendations: '',
+      overallEvaluation: '',
+      improvementPlan: [] as Array<{
+        recommendation: string;
+        action: string;
+        support: string;
+      }>,
+      failed: true,
+    };
+
+    try {
+      const response = await createChatCompletion(
+        this.client,
+        {
+          model: this.model,
+          max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: `${buildCourseReportNarrativePrompt(language)}
+
+Course report data:
+${JSON.stringify(payload, null, 2)}`,
+            },
+          ],
+          response_format: { type: 'json_object' },
+        },
+        { purpose: 'course_report_narrative' },
+      );
+
+      const parsed = this.parseResponse(response.choices[0]?.message?.content ?? '') as {
+        gradeComment?: unknown;
+        recommendations?: unknown;
+        overallEvaluation?: unknown;
+        improvementPlan?: unknown;
+      };
+      const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+      const plan = (Array.isArray(parsed.improvementPlan) ? parsed.improvementPlan : [])
+        .map((item) => {
+          const row = (item ?? {}) as Record<string, unknown>;
+          return {
+            recommendation: text(row.recommendation),
+            action: text(row.action),
+            support: text(row.support),
+          };
+        })
+        .filter((row) => row.recommendation || row.action)
+        .slice(0, 6);
+
+      const result = {
+        gradeComment: text(parsed.gradeComment),
+        recommendations: text(parsed.recommendations),
+        overallEvaluation: text(parsed.overallEvaluation),
+        improvementPlan: plan,
+        failed: false,
+      };
+      if (!result.gradeComment && !result.recommendations && plan.length === 0) {
+        return empty;
+      }
+      return result;
+    } catch (error) {
+      this.logger.warn(
+        `Course report narrative failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return empty;
     }
   }
 

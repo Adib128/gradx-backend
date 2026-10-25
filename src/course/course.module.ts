@@ -5,6 +5,7 @@ import { CourseAIService } from './course-ai.service';
 import { BullModule } from '@nestjs/bullmq';
 import { CourseProcessors } from './processors/course-extraction.processors';
 import { TopicService } from './topic.service';
+import { DocxPdfService } from './docx-pdf.service';
 import { CourseReportsService } from './course-reports.service';
 import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.module';
 
@@ -22,6 +23,7 @@ import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.mod
     CourseProcessors,
     TopicService,
     CourseReportsService,
+    DocxPdfService,
   ],
 })
 export class CourseModule {}

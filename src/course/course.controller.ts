@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Patch,
+  Put,
   Param,
   Delete,
   UseGuards,
@@ -30,6 +31,8 @@ import { CreateTopicDto } from './dto/create-topic.dto';
 import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
+import { DocxPdfService } from './docx-pdf.service';
+import { normalizeReportLanguage } from './utils/course-report-document.util';
 import { normalizeCloAnalysisLanguage } from './prompts/clo-analysis-stream.prompt';
 import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
@@ -43,6 +46,7 @@ export class CourseController {
     private readonly topicService: TopicService,
     private readonly courseReportsService: CourseReportsService,
     private readonly referenceVectorService: ReferenceVectorService,
+    private readonly docxPdfService: DocxPdfService,
   ) {}
 
   @Get()
@@ -216,6 +220,92 @@ export class CourseController {
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+    );
+  }
+
+  /** Computed data of the Course Report document (student counts, grades, CLOs, topics). */
+  @Get(':id/reports/course-report-data')
+  getCourseReportData(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
+    @Query('language') language?: string,
+  ) {
+    return this.courseReportsService.getCourseReportData(tenantId, id, {
+      assessmentId: this.parseOptionalAssessmentId(assessmentId),
+      language: normalizeReportLanguage(language),
+    });
+  }
+
+  /** AI-written sections of the Course Report document. */
+  @Post(':id/reports/course-report-narrative')
+  generateCourseReportNarrative(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { assessmentId?: number | string; language?: string },
+  ) {
+    return this.courseReportsService.generateCourseReportNarrative(tenantId, id, {
+      assessmentId: this.parseOptionalAssessmentId(
+        body?.assessmentId != null ? String(body.assessmentId) : undefined,
+      ),
+      language: normalizeReportLanguage(body?.language),
+      userId,
+    });
+  }
+
+  /** Converts the filled course-report .docx to PDF (headless LibreOffice). */
+  @Post(':id/reports/course-report-pdf')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  async convertCourseReportToPdf(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('A .docx file is required.');
+    }
+    if (file.buffer.length > 8 * 1024 * 1024) {
+      throw new BadRequestException('The report file is too large.');
+    }
+    await this.courseService.findOne(tenantId, id);
+    const pdf = await this.docxPdfService.convert(file.buffer);
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: 'attachment; filename="course-report.pdf"',
+    });
+  }
+
+  @Get(':id/reports/course-report-draft')
+  getCourseReportDraft(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('assessmentId') assessmentId?: string,
+  ) {
+    return this.courseReportsService.getCourseReportDraft(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(assessmentId),
+    );
+  }
+
+  @Put(':id/reports/course-report-draft')
+  saveCourseReportDraft(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { assessmentId?: number | string | null; report?: unknown },
+  ) {
+    if (!body?.report || typeof body.report !== 'object') {
+      throw new BadRequestException('A report is required.');
+    }
+    return this.courseReportsService.saveCourseReportDraft(
+      tenantId,
+      id,
+      this.parseOptionalAssessmentId(
+        body.assessmentId != null ? String(body.assessmentId) : undefined,
+      ),
+      body.report,
     );
   }
 

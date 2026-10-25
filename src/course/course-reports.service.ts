@@ -24,6 +24,14 @@ import {
   type RosterStudent,
   type SelectedScan,
 } from './utils/course-report-scoring.util';
+import {
+  buildAchievementComment,
+  cloCategoryGroup,
+  normalizeReportLanguage,
+  orderSections,
+  sectionKeyOf,
+  type ReportLanguage,
+} from './utils/course-report-document.util';
 
 const QUESTION_SELECT = {
   id: true,
@@ -244,7 +252,7 @@ export class CourseReportsService {
       include: {
         clos: { orderBy: { id: 'asc' } },
         students: {
-          select: { id: true, studentId: true, name: true },
+          select: { id: true, studentId: true, name: true, section: true },
           orderBy: { studentId: 'asc' },
         },
         topics: TOPIC_CLO_SELECT,
@@ -554,6 +562,10 @@ export class CourseReportsService {
 
     return {
       course,
+      assessments,
+      weights,
+      scans,
+      cloTotals,
       assessedKeys,
       studentCloScores,
       report: {
@@ -565,6 +577,283 @@ export class CourseReportsService {
         hasGradingData: rows.some((row) => row.hasGradingData),
       },
     };
+  }
+
+  /**
+   * Computed (non-AI) data of the Course Report document: student counts per
+   * section (starting / completed), grade distribution per section, CLO
+   * achievement per section and the topics no assessment covers.
+   * "Completed" = enrolled students graded on every assessment in scope.
+   */
+  async getCourseReportData(
+    tenantId: number,
+    courseId: number,
+    options: { assessmentId?: number; language?: ReportLanguage } = {},
+  ) {
+    const language = options.language ?? 'en';
+    const { course, assessments, weights, scans, cloTotals, assessedKeys, studentCloScores, report } =
+      await this.buildCloAchievement(tenantId, courseId, options.assessmentId);
+
+    const passRatePercent = report.thresholdPercent;
+    const gradeBands = resolveGradeBands(course.gradeBands);
+
+    const sectionByKey = new Map<string, string>();
+    for (const student of course.students) {
+      sectionByKey.set(rosterKey(student), sectionKeyOf(student.section));
+    }
+    const sectionOf = (key: string) => sectionByKey.get(key) ?? '';
+
+    const startingKeys =
+      course.students.length > 0
+        ? course.students.map((student) => rosterKey(student))
+        : assessedKeys;
+
+    const assessmentIds = assessments.map((assessment) => assessment.id);
+    const gradedByKey = new Map<string, Set<number>>();
+    for (const scan of scans) {
+      const set = gradedByKey.get(scan.studentKey) ?? new Set<number>();
+      set.add(scan.assessmentId);
+      gradedByKey.set(scan.studentKey, set);
+    }
+    const completedKeys =
+      assessmentIds.length === 0
+        ? []
+        : startingKeys.filter((key) => {
+            const graded = gradedByKey.get(key);
+            return !!graded && assessmentIds.every((id) => graded.has(id));
+          });
+
+    const sections = orderSections(startingKeys.map(sectionOf));
+    const inSection = (keys: string[], section: string) =>
+      keys.filter((key) => sectionOf(key) === section);
+    const countBySection = (keys: string[]) =>
+      sections.map((section) => ({
+        section,
+        count: inSection(keys, section).length,
+      }));
+
+    const totals = computeStudentTotals(scans, weights);
+    const percentOf = (count: number, whole: number) =>
+      whole > 0 ? round1((count / whole) * 100) : null;
+
+    const gradeDistribution = sections.map((section) => {
+      const keys = inSection(completedKeys, section);
+      const completed = keys.length;
+      const bandCounts = new Map<string, number>(
+        gradeBands.map((band) => [band.grade, 0]),
+      );
+      let passed = 0;
+      let totalSum = 0;
+      for (const key of keys) {
+        const total = totals.get(key) ?? 0;
+        totalSum += total;
+        const band = scoreToGradeBand(total, gradeBands);
+        bandCounts.set(band.grade, (bandCounts.get(band.grade) ?? 0) + 1);
+        if (isPassingTotal(total, passRatePercent)) passed += 1;
+      }
+      const incomplete = inSection(startingKeys, section).length - completed;
+      return {
+        section,
+        completed,
+        incomplete,
+        averageScore: completed > 0 ? round1(totalSum / completed) : null,
+        grades: gradeBands.map((band) => {
+          const count = bandCounts.get(band.grade) ?? 0;
+          return { grade: band.grade, count, percent: percentOf(count, completed) };
+        }),
+        passed,
+        failed: completed - passed,
+        passPercent: percentOf(passed, completed),
+        failPercent: percentOf(completed - passed, completed),
+      };
+    });
+
+    const assessedBySection = (section: string) => inSection(assessedKeys, section);
+    const clos = report.rows.map((row) => {
+      const rawThreshold = (cloTotals.get(row.id) ?? 0) * (passRatePercent / 100);
+      const scoresMap = studentCloScores.get(row.id) ?? new Map<string, number>();
+      const actual = sections.map((section) => {
+        const keys = assessedBySection(section);
+        if (!row.hasGradingData || keys.length === 0) {
+          return { section, percent: null as number | null, achieved: null as boolean | null };
+        }
+        const met = keys.filter(
+          (key) => (scoresMap.get(key) ?? 0) + 1e-9 >= rawThreshold,
+        ).length;
+        const percent = round2((met / keys.length) * 100);
+        return { section, percent, achieved: percent >= passRatePercent };
+      });
+      const methods = Array.from(
+        new Set((row.assessmentSources ?? []).map((source) => source.title).filter(Boolean)),
+      );
+      return {
+        id: row.id,
+        code: row.code,
+        categoryGroup: cloCategoryGroup(row.category),
+        category: row.category,
+        description: row.description,
+        programCLOCode: row.programCLOCode,
+        assessmentMethods: methods,
+        targetPercent: passRatePercent,
+        overallPercent: row.achievementRate,
+        actual,
+        comment: buildAchievementComment(
+          language,
+          actual.map((entry) => ({ section: entry.section, achieved: entry.achieved })),
+        ),
+      };
+    });
+
+    const topics = await this.prisma.topic.findMany({
+      where: { courseId },
+      select: { id: true, topicNumber: true, title: true },
+      orderBy: { topicNumber: 'asc' },
+    });
+    const coveredTopicIds = new Set<number>();
+    for (const assessment of assessments) {
+      const questions = [
+        ...assessment.questions,
+        ...assessment.assessmentVersions.flatMap((version) =>
+          version.versionQuestions.map((entry) => entry.question),
+        ),
+      ];
+      for (const question of questions) {
+        if (question.topicId != null) coveredTopicIds.add(question.topicId);
+      }
+    }
+    if (assessmentIds.length > 0) {
+      const links = await this.prisma.assessmentTopic.findMany({
+        where: { assessmentId: { in: assessmentIds } },
+        select: { topicId: true },
+      });
+      for (const link of links) coveredTopicIds.add(link.topicId);
+    }
+    const topicsNotCovered = topics
+      .filter((topic) => !coveredTopicIds.has(topic.id))
+      .map((topic) => ({
+        id: topic.id,
+        number: topic.topicNumber,
+        title: topic.title,
+      }));
+
+    return {
+      scope: {
+        assessmentId: options.assessmentId ?? null,
+        assessmentCount: assessments.length,
+      },
+      passRatePercent,
+      hasGradingData: assessedKeys.length > 0,
+      sections,
+      students: {
+        starting: { total: startingKeys.length, bySection: countBySection(startingKeys) },
+        completed: { total: completedKeys.length, bySection: countBySection(completedKeys) },
+      },
+      gradeBands: gradeBands.map((band) => ({ grade: band.grade, markRange: band.markRange })),
+      gradeDistribution,
+      clos,
+      topicsNotCovered,
+      topicCount: topics.length,
+    };
+  }
+
+  /** AI-written sections of the Course Report (grades comment, recommendations, ...). */
+  async generateCourseReportNarrative(
+    tenantId: number,
+    courseId: number,
+    options: { assessmentId?: number; language?: ReportLanguage; userId?: number } = {},
+  ) {
+    const language = options.language ?? 'en';
+    const data = await this.getCourseReportData(tenantId, courseId, {
+      assessmentId: options.assessmentId,
+      language,
+    });
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId },
+      select: { title: true, code: true },
+    });
+    const sectionLabel = (section: string) => section || 'all students';
+
+    const payload = {
+      course: { title: course?.title ?? null, code: course?.code ?? null },
+      cloAchievementTargetPercent: data.passRatePercent,
+      hasGradingData: data.hasGradingData,
+      students: {
+        starting: data.students.starting.total,
+        completed: data.students.completed.total,
+        completedBySection: data.students.completed.bySection.map((entry) => ({
+          section: sectionLabel(entry.section),
+          count: entry.count,
+        })),
+      },
+      gradeDistributionBySection: data.gradeDistribution.map((entry) => ({
+        section: sectionLabel(entry.section),
+        completedStudents: entry.completed,
+        averageScore: entry.averageScore,
+        grades: entry.grades.filter((grade) => grade.count > 0),
+        passed: entry.passed,
+        failed: entry.failed,
+      })),
+      clos: data.clos.map((clo) => ({
+        code: clo.code,
+        description: clo.description,
+        assessmentMethods: clo.assessmentMethods,
+        targetPercent: clo.targetPercent,
+        actualBySection: clo.actual.map((entry) => ({
+          section: sectionLabel(entry.section),
+          percent: entry.percent,
+        })),
+        comment: clo.comment,
+      })),
+      topicsNotCovered: data.topicsNotCovered.map((topic) => topic.title),
+    };
+
+    return runWithAiContext(
+      { userId: options.userId, tenantId, purpose: 'course_report_narrative' },
+      () => this.courseAIService.generateCourseReportNarrative(payload, language),
+    );
+  }
+
+  private courseReportScopeKey(assessmentId?: number) {
+    return assessmentId ? String(assessmentId) : 'all';
+  }
+
+  async getCourseReportDraft(tenantId: number, courseId: number, assessmentId?: number) {
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId },
+      select: { courseReportDrafts: true },
+    });
+    if (!course) throw new NotFoundException('Course not found.');
+    const drafts = (course.courseReportDrafts ?? {}) as Record<
+      string,
+      { report?: unknown; updatedAt?: string }
+    >;
+    const draft = drafts[this.courseReportScopeKey(assessmentId)];
+    return draft?.report
+      ? { report: draft.report, updatedAt: draft.updatedAt ?? null }
+      : { report: null, updatedAt: null };
+  }
+
+  async saveCourseReportDraft(
+    tenantId: number,
+    courseId: number,
+    assessmentId: number | undefined,
+    report: unknown,
+  ) {
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, tenantId },
+      select: { courseReportDrafts: true },
+    });
+    if (!course) throw new NotFoundException('Course not found.');
+    const drafts = {
+      ...((course.courseReportDrafts ?? {}) as Record<string, unknown>),
+    };
+    const updatedAt = new Date().toISOString();
+    drafts[this.courseReportScopeKey(assessmentId)] = { report, updatedAt };
+    await this.prisma.course.update({
+      where: { id: courseId },
+      data: { courseReportDrafts: drafts as unknown as Prisma.InputJsonValue },
+    });
+    return { updatedAt };
   }
 
   async getPloAlignmentReport(

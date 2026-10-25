@@ -286,6 +286,8 @@ model Course {
   references        Json?
   /// Cached AI CLO achievement analyses keyed by report fingerprint
   cloAnalysisCache  Json?
+  /// Editable course-report drafts keyed by scope ("all" or an assessment id): { [scope]: { report, updatedAt } }
+  courseReportDrafts Json?
   /// Syllabus assessment plan (type/percentage) — not real Assessment rows
   assessmentPlan    Json?
   /// "Assessment of Course Quality" rows: [{ area, assessor, methods }]
