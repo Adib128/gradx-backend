@@ -443,6 +443,8 @@ model Question {
   text        String
   explanation String?
   points      Int          @default(1)
+  /// Per-question band: Easy | Medium | Hard (from the assessment difficulty profile).
+  difficulty  String?
 
   /// Letter key(s), e.g. "A" or "A,C" when several MCQ options are correct.
   correctAnswer  String?

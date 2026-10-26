@@ -22,6 +22,10 @@ import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
+import {
+  allocateQuestionDifficulties,
+  normalizeQuestionDifficulty,
+} from './config/difficulty-distribution.config';
 import { Prisma } from 'generated/prisma/client';
 import { requireTenantId } from 'src/common/helpers/require-tenant.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
@@ -207,6 +211,14 @@ export class AssessmentService {
       throw new NotFoundException(ErrorMessageKey.ASSESSMENT_SHELL_NOT_FOUND);
     }
 
+    dto.assessment = {
+      ...dto.assessment,
+      difficulty:
+        targetAssessment.difficulty ||
+        dto.assessment?.difficulty ||
+        'BALANCED',
+    };
+
     await this.resolveTopicSources(tenantId, courseId, dto);
 
     const jobPayload: AssessmentGenerationJob = {
@@ -306,6 +318,23 @@ export class AssessmentService {
       : [];
 
     const units = this.buildGenerationUnits(promptPayload.topicGenerations);
+    const difficultyProfile =
+      promptPayload.assessment?.difficulty ||
+      data.dto.assessment?.difficulty ||
+      'BALANCED';
+    promptPayload.assessment = {
+      ...promptPayload.assessment,
+      difficulty: difficultyProfile,
+    };
+    const allocatedDifficulties = allocateQuestionDifficulties(
+      units.length,
+      difficultyProfile,
+      append ? existingQuestions.map((question) => question.difficulty) : [],
+    );
+    const unitsWithDifficulty = units.map((unit, index) => ({
+      ...unit,
+      targetDifficulty: allocatedDifficulties[index] || 'Medium',
+    }));
     const accumulatedQuestions: any[] = existingQuestions.map((question) => {
       const cloCodes = (question.questionClos || [])
         .map((link) => String(link.Clo?.code || '').trim())
@@ -320,6 +349,7 @@ export class AssessmentService {
         cloCode: cloCodes[0] || null,
         cloCodes,
         clo: cloCodes[0] || null,
+        difficulty: question.difficulty,
         questionClos: question.questionClos,
         questionOptions: question.questionOptions,
         options:
@@ -336,11 +366,11 @@ export class AssessmentService {
     const existingQuestionTexts = accumulatedQuestions.map((q) =>
       String(q?.text || ''),
     );
-    const totalUnits = units.length || expectedQuestionCount || 1;
+    const totalUnits = unitsWithDifficulty.length || expectedQuestionCount || 1;
     const baselineCount = accumulatedQuestions.length;
 
-    for (let index = 0; index < units.length; index++) {
-      const unit = units[index];
+    for (let index = 0; index < unitsWithDifficulty.length; index++) {
+      const unit = unitsWithDifficulty[index];
       const questionNumber = index + 1;
       const percent = Math.min(
         92,
@@ -373,6 +403,7 @@ export class AssessmentService {
             questionType: unit.questionType,
             questionIndex: questionNumber,
             totalQuestions: totalUnits,
+            targetDifficulty: unit.targetDifficulty,
             source: sourceMaterial
               ? {
                   type: sourceMaterial.type,
@@ -426,10 +457,12 @@ export class AssessmentService {
         );
       }
 
+      const targetDifficulty = unit.targetDifficulty || 'Medium';
       const normalizedQuestion = {
         ...nextQuestion,
         topicId: nextQuestion.topicId ?? unit.topicId,
         type: nextQuestion.type || unit.questionType,
+        difficulty: targetDifficulty,
       };
 
       // Every question is tied to exactly ONE CLO. Topics are configured per CLO,
@@ -862,6 +895,7 @@ export class AssessmentService {
         type: question.type,
         explanation: question.explanation,
         points: question.points ?? 1,
+        difficulty: normalizeQuestionDifficulty(question.difficulty),
         correctAnswer:
           correctLetters.join(',') || question.correctAnswer || null,
         allowMultipleCorrect,
@@ -1114,6 +1148,7 @@ export class AssessmentService {
     questionIndex: number;
     totalQuestions: number;
     existingQuestionTexts: string[];
+    targetDifficulty: 'Easy' | 'Medium' | 'Hard';
     source: { type: string; label: string; excerpt: string } | null;
   }): Promise<string> {
     try {
@@ -1267,8 +1302,12 @@ export class AssessmentService {
         // Step C: Save generated questions and concrete configurations
         const savedQuestions: { id: number }[] = [];
         const totalQuestions = generatedData.questions.length;
+        const allocatedDifficulties = allocateQuestionDifficulties(
+          totalQuestions,
+          dto.assessment?.difficulty,
+        );
 
-        for (const q of generatedData.questions) {
+        for (const [index, q] of generatedData.questions.entries()) {
           const options = Array.isArray(q.options) ? q.options : [];
           const correctLetters = options
             .map((opt: any, index: number) =>
@@ -1283,6 +1322,9 @@ export class AssessmentService {
               type: q.type,
               explanation: q.explanation,
               points: q.points ?? 1,
+              difficulty:
+                allocatedDifficulties[index] ||
+                normalizeQuestionDifficulty(q.difficulty),
               correctAnswer: correctLetters.join(',') || null,
               allowMultipleCorrect,
               assessmentId,

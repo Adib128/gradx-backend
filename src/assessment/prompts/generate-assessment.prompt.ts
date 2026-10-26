@@ -22,6 +22,7 @@ EXPECTED OUTPUT JSON CONTRACT
       "type": "MCQ or TRUE_FALSE",
       "text": "The exam question statement.",
       "explanation": "Step-by-step solution / verification.",
+      "difficulty": "Easy or Medium or Hard",
       "points": 5,
       "options": [
         { "text": "Option text", "isCorrect": true, "order": 1 },
@@ -73,7 +74,7 @@ ${tg.questionTypes.map((q: any) => `  * Generate exactly ${q.questionTypeNumber}
   .join('\n')}
 
 ${sharedRules}
-5. **Distribution Fidelity & Difficulty Calibration:** The final item tally must equal the sum of all required question counts. Calibrate complexity to: ${difficultyStrategy}.
+5. **Distribution Fidelity & Difficulty Calibration:** The final item tally must equal the sum of all required question counts. Assign each item Easy, Medium, or Hard so the full set matches ${difficultyStrategy}. Set JSON "difficulty" on every item.
 
 ${outputContract}
 `.trim();
@@ -107,6 +108,7 @@ export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
   questionIndex: number;
   totalQuestions: number;
   existingQuestionTexts: string[];
+  targetDifficulty: 'Easy' | 'Medium' | 'Hard';
   source?: { type: string; label: string; excerpt: string } | null;
 }): string => {
   const {
@@ -116,10 +118,17 @@ export const GENERATE_SINGLE_QUESTION_PROMPT = (payload: {
     questionIndex,
     totalQuestions,
     existingQuestionTexts,
+    targetDifficulty,
     source,
   } = payload;
   const difficultyStrategy = getDifficultyRuleString(assessment.difficulty);
   const tg = topicGeneration;
+  const difficultyGuide =
+    targetDifficulty === 'Easy'
+      ? 'recall or recognition; one-step; straightforward wording; no trick options'
+      : targetDifficulty === 'Hard'
+        ? 'multi-step analysis, transfer to a new context, or a subtle but fair discriminator'
+        : 'apply a standard method; about two reasoning steps';
 
   const avoidList =
     existingQuestionTexts.length > 0
@@ -141,6 +150,8 @@ ASSESSMENT CONTEXT
 - **Assessment Type:** ${assessment.type}
 - **Language:** ${assessment.language}
 - **Difficulty Profile:** ${assessment.difficulty ?? 'BALANCED'} (${difficultyStrategy})
+- **THIS QUESTION'S REQUIRED DIFFICULTY:** ${targetDifficulty} (${difficultyGuide})
+  Write this item at ${targetDifficulty} level only. Set JSON "difficulty" to "${targetDifficulty}" exactly. Do not choose another band.
 
 ========================================================================
 TOPIC TARGET
@@ -171,6 +182,7 @@ ${sharedRules}
 7. Set "type" exactly to "${questionType}".
 8. For TRUE_FALSE provide exactly 2 options (True/False) with exactly one correct.
 9. For MCQ provide 4 options. Most items have exactly one correct option (allowMultipleCorrect=false). When the learning objective needs selecting all that apply, set allowMultipleCorrect=true and mark every correct option with isCorrect=true (2+ options).
+10. Set "difficulty" exactly to "${targetDifficulty}".
 
 ${outputContract}
 `.trim();
