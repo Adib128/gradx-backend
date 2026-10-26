@@ -782,6 +782,7 @@ function planZipGradeGrid(
   blockCount: number,
   digits: number,
   maxOptions: number,
+  minBands = 1,
 ): ZipGradeGridPlan | null {
   const gridW = GRID_RIGHT - GRID_LEFT;
   const gridH = GRID_BOTTOM - GRID_TOP;
@@ -809,7 +810,7 @@ function planZipGradeGrid(
     }
     if (idSpan === 0) continue;
 
-    for (let bands = 1; bands <= 6; bands += 1) {
+    for (let bands = Math.max(1, minBands); bands <= 6; bands += 1) {
       const empty = cols * bands - idSpan - blockCount;
       if (empty < 0) continue;
 
@@ -899,7 +900,16 @@ function tryZipGradeLayout(
     2,
     ...rows.map((row) => row.labels.length),
   );
-  const plan = planZipGradeGrid(Math.max(1, chunks.length), digits, maxOptions);
+  const isLeft = position === 'TOP_LEFT' || position === 'BOTTOM_LEFT';
+  const isTop = position === 'TOP_LEFT' || position === 'TOP_RIGHT';
+  // Bottom corners need a second band so the ID is not trapped in the same
+  // (top) row as TOP_LEFT / TOP_RIGHT on short exams.
+  const plan = planZipGradeGrid(
+    Math.max(1, chunks.length),
+    digits,
+    maxOptions,
+    isTop ? 1 : 2,
+  );
   if (!plan) {
     return tryPackingLayout(rows, digits, position, zoom);
   }
@@ -918,10 +928,15 @@ function tryZipGradeLayout(
     digitGap,
   } = plan;
   const cellX = (col: number) => GRID_LEFT + col * (colW + GRID_COL_GUTTER);
-  const bandY = (band: number) => GRID_TOP + band * (bandH + bandGutter);
-
-  const isLeft = position === 'TOP_LEFT' || position === 'BOTTOM_LEFT';
-  const isTop = position === 'TOP_LEFT' || position === 'TOP_RIGHT';
+  const bandY = (band: number) => {
+    const natural = GRID_TOP + band * (bandH + bandGutter);
+    if (isTop || band < bands - 1) return natural;
+    const pinned = GRID_BOTTOM - bandH;
+    if (bands === 1) return Math.max(natural, pinned);
+    const previousBottom =
+      GRID_TOP + (bands - 2) * (bandH + bandGutter) + bandH;
+    return Math.max(previousBottom + GRID_BAND_GUTTER, pinned);
+  };
   const idBand = isTop ? 0 : bands - 1;
   const idFirstCol = isLeft ? 0 : cols - idSpan;
   const isIdCell = (col: number, band: number) =>
