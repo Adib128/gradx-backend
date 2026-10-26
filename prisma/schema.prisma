@@ -445,6 +445,8 @@ model Question {
   points      Int          @default(1)
   /// Per-question band: Easy | Medium | Hard (from the assessment difficulty profile).
   difficulty  String?
+  /// Display / teacher order on the generated-questions page (1-based).
+  sortOrder   Int          @default(0)
 
   /// Letter key(s), e.g. "A" or "A,C" when several MCQ options are correct.
   correctAnswer  String?
@@ -517,6 +519,8 @@ model Assessment {
   passMark                                Int?
   language                                Language?
   difficulty                              DifficultyDistribution?
+  /// When true, generated MCQs may have more than one correct option.
+  allowMultipleCorrect                    Boolean                   @default(false)
   isPublished                             Boolean                   @default(true)
   numberOfVersions                        Int                       @default(2)
   paperSize                               AssessmentPaperSize       @default(A4)

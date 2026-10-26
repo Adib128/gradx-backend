@@ -17,10 +17,19 @@ import {
 import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
-import { GENERATE_COURSE_PROMPT, GENERATE_SINGLE_QUESTION_PROMPT } from './prompts/generate-assessment.prompt';
+import {
+  ENHANCE_QUESTION_PROMPT,
+  GENERATE_COURSE_PROMPT,
+  GENERATE_SINGLE_QUESTION_PROMPT,
+} from './prompts/generate-assessment.prompt';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
-import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
+import {
+  AddQuestionDto,
+  EnhanceQuestionDto,
+  ReorderQuestionsDto,
+  UpdateQuestionDto,
+} from './dto/question.dto';
 import { ACTIVE_GENERATION_QUESTION_TYPES } from './config/question-types.config';
 import {
   allocateQuestionDifficulties,
@@ -147,6 +156,7 @@ export class AssessmentService {
           paperStyles: toPrismaJson(dto.paperStyles),
           language: dto.language,
           difficulty: dto.difficulty,
+          allowMultipleCorrect: Boolean(dto.allowMultipleCorrect),
           tenantId: tid,
           courseId,
         },
@@ -217,6 +227,10 @@ export class AssessmentService {
         targetAssessment.difficulty ||
         dto.assessment?.difficulty ||
         'BALANCED',
+      allowMultipleCorrect:
+        dto.assessment?.allowMultipleCorrect ??
+        targetAssessment.allowMultipleCorrect ??
+        false,
     };
 
     await this.resolveTopicSources(tenantId, courseId, dto);
@@ -313,7 +327,7 @@ export class AssessmentService {
               },
             },
           },
-          orderBy: { id: 'asc' },
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         })
       : [];
 
@@ -509,8 +523,12 @@ export class AssessmentService {
         data.tenantId,
         data.courseId,
         data.assessmentId,
-        normalizedQuestion,
+        {
+          ...normalizedQuestion,
+          sortOrder: accumulatedQuestions.length + 1,
+        },
         cloIdsForQuestion,
+        Boolean(promptPayload.assessment?.allowMultipleCorrect),
       );
 
       savedQuestionIds.push({ id: saved.id });
@@ -871,6 +889,7 @@ export class AssessmentService {
     assessmentId: number,
     question: any,
     cloIds: number[] = [],
+    allowMultipleCorrectMcq = false,
   ) {
     const uniqueCloIds = Array.from(
       new Set(
@@ -880,14 +899,25 @@ export class AssessmentService {
       ),
     );
 
-    const options = Array.isArray(question.options) ? question.options : [];
+    let options = Array.isArray(question.options) ? question.options : [];
+    const isMcq = String(question.type || '').toUpperCase() !== 'TRUE_FALSE';
+    if (isMcq && !allowMultipleCorrectMcq) {
+      let kept = false;
+      options = options.map((opt: any) => {
+        if (!opt?.isCorrect) return { ...opt, isCorrect: false };
+        if (kept) return { ...opt, isCorrect: false };
+        kept = true;
+        return { ...opt, isCorrect: true };
+      });
+    }
     const correctLetters = options
       .map((opt: any, index: number) =>
         opt?.isCorrect ? String.fromCharCode(65 + index) : null,
       )
       .filter(Boolean) as string[];
     const allowMultipleCorrect =
-      Boolean(question.allowMultipleCorrect) || correctLetters.length > 1;
+      allowMultipleCorrectMcq &&
+      (Boolean(question.allowMultipleCorrect) || correctLetters.length > 1);
 
     return this.prisma.question.create({
       data: {
@@ -896,6 +926,7 @@ export class AssessmentService {
         explanation: question.explanation,
         points: question.points ?? 1,
         difficulty: normalizeQuestionDifficulty(question.difficulty),
+        sortOrder: Number(question.sortOrder) || 0,
         correctAnswer:
           correctLetters.join(',') || question.correctAnswer || null,
         allowMultipleCorrect,
@@ -941,7 +972,7 @@ export class AssessmentService {
               },
             },
           },
-          orderBy: { id: 'asc' },
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         },
         assessmentVersions: {
           include: {
@@ -1548,6 +1579,13 @@ export class AssessmentService {
       throw new NotFoundException('Assessment not found');
     }
 
+    const last = await this.prisma.question.findFirst({
+      where: { assessmentId },
+      orderBy: [{ sortOrder: 'desc' }, { id: 'desc' }],
+      select: { sortOrder: true },
+    });
+    const nextSortOrder = (last?.sortOrder || 0) + 1;
+
     const { questionOptions, cloIds, ...questionFields } = dto;
     const correctLetters = (questionOptions ?? [])
       .map((option, index) =>
@@ -1563,6 +1601,7 @@ export class AssessmentService {
       const question = await tx.question.create({
         data: {
           ...questionFields,
+          sortOrder: questionFields.sortOrder || nextSortOrder,
           correctAnswer,
           allowMultipleCorrect,
           assessmentId,
@@ -1663,6 +1702,217 @@ export class AssessmentService {
       await this.rebuildAssessmentVersions(tx, assessmentId);
 
       return updatedQuestion;
+    });
+  }
+
+  async enhanceQuestion(
+    tenantId: number,
+    assessmentId: number,
+    questionId: number,
+    dto: EnhanceQuestionDto,
+  ) {
+    const instruction = String(dto.prompt || '').trim();
+    if (!instruction) {
+      throw new BadRequestException('Enhancement prompt is required');
+    }
+
+    const question = await this.prisma.question.findFirst({
+      where: { id: questionId, assessmentId, tenantId },
+      include: {
+        questionOptions: { orderBy: { order: 'asc' } },
+        questionClos: {
+          include: { Clo: { select: { id: true, code: true } } },
+        },
+        topic: { select: { id: true, title: true, topicNumber: true } },
+        assessment: {
+          select: {
+            title: true,
+            type: true,
+            language: true,
+            difficulty: true,
+            allowMultipleCorrect: true,
+          },
+        },
+      },
+    });
+
+    if (!question) {
+      throw new NotFoundException('Question not found');
+    }
+
+    const cloCode = String(question.questionClos?.[0]?.Clo?.code || '').trim();
+    const currentQuestion = {
+      topicId: question.topicId,
+      cloCode,
+      type: question.type,
+      text: question.text,
+      explanation: question.explanation,
+      points: question.points,
+      difficulty: question.difficulty || 'Medium',
+      allowMultipleCorrect: question.allowMultipleCorrect,
+      options: (question.questionOptions || []).map((option) => ({
+        text: option.text,
+        isCorrect: option.isCorrect,
+        order: option.order,
+      })),
+    };
+
+    let raw = '{}';
+    try {
+      const response = await createChatCompletion(
+        this.client,
+        {
+          model: this.model,
+          max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: ENHANCE_QUESTION_PROMPT({
+                assessment: question.assessment,
+                currentQuestion,
+                instruction,
+                targetDifficulty: normalizeQuestionDifficulty(question.difficulty),
+              }),
+            },
+          ],
+          response_format: { type: 'json_object' },
+        },
+        { purpose: 'assessment_enhance_question' },
+      );
+      raw = response.choices[0].message.content ?? '{}';
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (/402|credits|can only afford|max_tokens/i.test(message)) {
+        throw new InternalServerErrorException(
+          ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
+        );
+      }
+      throw new InternalServerErrorException(
+        ErrorMessageKey.GENERATION_AI_API_FAILED,
+      );
+    }
+
+    const generated = this.extractGeneratedQuestion(this.parseAiResponse(raw));
+    if (!generated || typeof generated !== 'object') {
+      throw new InternalServerErrorException(
+        ErrorMessageKey.ASSESSMENT_AI_QUESTION_FAILED,
+      );
+    }
+
+    const allowMultipleCorrectMcq = Boolean(
+      question.assessment?.allowMultipleCorrect,
+    );
+    let options = Array.isArray(generated.options) ? generated.options : [];
+    if (!options.length) {
+      options = (question.questionOptions || []).map((option) => ({
+        text: option.text,
+        isCorrect: option.isCorrect,
+        order: option.order,
+      }));
+    }
+    const nextType = String(generated.type || question.type || 'MCQ').toUpperCase();
+    if (nextType !== 'TRUE_FALSE' && !allowMultipleCorrectMcq) {
+      let kept = false;
+      options = options.map((opt: any) => {
+        if (!opt?.isCorrect) return { ...opt, isCorrect: false };
+        if (kept) return { ...opt, isCorrect: false };
+        kept = true;
+        return { ...opt, isCorrect: true };
+      });
+    }
+    if (options.length && !options.some((opt: any) => opt?.isCorrect)) {
+      options = options.map((opt: any, index: number) => ({
+        ...opt,
+        isCorrect: index === 0,
+      }));
+    }
+    const correctLetters = options
+      .map((opt: any, index: number) =>
+        opt?.isCorrect ? String.fromCharCode(65 + index) : null,
+      )
+      .filter(Boolean) as string[];
+    const allowMultipleCorrect =
+      allowMultipleCorrectMcq &&
+      (Boolean(generated.allowMultipleCorrect) || correctLetters.length > 1);
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.questionOption.deleteMany({ where: { questionId } });
+      const updated = await tx.question.update({
+        where: { id: questionId },
+        data: {
+          text: String(generated.text || question.text),
+          type: nextType === 'TRUE_FALSE' ? 'TRUE_FALSE' : question.type,
+          explanation:
+            generated.explanation != null
+              ? String(generated.explanation)
+              : question.explanation,
+          points: Number(generated.points) || question.points,
+          difficulty: normalizeQuestionDifficulty(
+            generated.difficulty || question.difficulty,
+          ),
+          correctAnswer: correctLetters.join(',') || question.correctAnswer,
+          allowMultipleCorrect,
+          questionOptions: {
+            create: options.map((opt: any, index: number) => ({
+              text: String(opt.text || ''),
+              isCorrect: Boolean(opt.isCorrect),
+              order: opt.order ?? index + 1,
+            })),
+          },
+        },
+        include: {
+          questionOptions: { orderBy: { order: 'asc' } },
+          questionClos: {
+            include: { Clo: { select: { id: true, code: true } } },
+          },
+          topic: { select: { id: true, title: true, topicNumber: true } },
+        },
+      });
+      await this.rebuildAssessmentVersions(tx, assessmentId);
+      return updated;
+    });
+  }
+
+  async reorderQuestions(
+    tenantId: number,
+    assessmentId: number,
+    dto: ReorderQuestionsDto,
+  ) {
+    const assessment = await this.prisma.assessment.findFirst({
+      where: { id: assessmentId, tenantId },
+      select: { id: true },
+    });
+    if (!assessment) {
+      throw new NotFoundException('Assessment not found');
+    }
+
+    const uniqueIds = Array.from(
+      new Set(
+        (dto.questionIds || [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+    const existing = await this.prisma.question.findMany({
+      where: { assessmentId, tenantId, id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    if (existing.length !== uniqueIds.length) {
+      throw new BadRequestException('One or more questions were not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await Promise.all(
+        uniqueIds.map((questionId, index) =>
+          tx.question.update({
+            where: { id: questionId },
+            data: { sortOrder: index + 1 },
+          }),
+        ),
+      );
+      await this.rebuildAssessmentVersions(tx, assessmentId);
+      return { ok: true, questionIds: uniqueIds };
     });
   }
 
@@ -1926,11 +2176,14 @@ export class AssessmentService {
         },
       });
 
-      const shuffledQuestions = this.shuffleQuestionsByType(typedQuestions);
+      const orderedQuestions =
+        versionNames.indexOf(versionName) === 0
+          ? typedQuestions
+          : this.shuffleQuestionsByType(typedQuestions);
 
-      if (shuffledQuestions.length) {
+      if (orderedQuestions.length) {
         await tx.assessmentVersionQuestion.createMany({
-          data: shuffledQuestions.map((question, index) => ({
+          data: orderedQuestions.map((question, index) => ({
             assessmentVersionId: version.id,
             questionId: question.id,
             order: index + 1,
@@ -1947,7 +2200,7 @@ export class AssessmentService {
         numberOfVersions: true,
         questions: {
           select: { id: true, type: true },
-          orderBy: { id: 'asc' },
+          orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         },
       },
     });

@@ -74,7 +74,11 @@ ${tg.questionTypes.map((q: any) => `  * Generate exactly ${q.questionTypeNumber}
   .join('\n')}
 
 ${sharedRules}
-5. **Distribution Fidelity & Difficulty Calibration:** The final item tally must equal the sum of all required question counts. Assign each item Easy, Medium, or Hard so the full set matches ${difficultyStrategy}. Set JSON "difficulty" on every item.
+5. **Distribution Fidelity & Difficulty Calibration:** The final item tally must equal the sum of all required question counts. Assign each item Easy, Medium, or Hard so the full set matches ${difficultyStrategy}. Set JSON "difficulty" on every item. ${
+  assessment.allowMultipleCorrect
+    ? 'MCQs may have one or more correct options when the objective requires it.'
+    : 'MCQs must have exactly one correct option. Set allowMultipleCorrect=false.'
+}
 
 ${outputContract}
 `.trim();
@@ -181,8 +185,61 @@ ${sharedRules}
 6. Set "topicId" to ${tg.topicId}.
 7. Set "type" exactly to "${questionType}".
 8. For TRUE_FALSE provide exactly 2 options (True/False) with exactly one correct.
-9. For MCQ provide 4 options. Most items have exactly one correct option (allowMultipleCorrect=false). When the learning objective needs selecting all that apply, set allowMultipleCorrect=true and mark every correct option with isCorrect=true (2+ options).
+9. For MCQ provide 4 options.
+${
+  payload.assessment?.allowMultipleCorrect
+    ? 'Multiple correct answers are allowed. Most items still have exactly one correct option (allowMultipleCorrect=false). When the learning objective needs selecting all that apply, set allowMultipleCorrect=true and mark every correct option with isCorrect=true (2+ options).'
+    : 'Multiple correct answers are NOT allowed. Every MCQ must have exactly one correct option. Set allowMultipleCorrect=false and mark only one option with isCorrect=true.'
+}
 10. Set "difficulty" exactly to "${targetDifficulty}".
+
+${outputContract}
+`.trim();
+};
+
+export const ENHANCE_QUESTION_PROMPT = (payload: {
+  assessment: any;
+  currentQuestion: any;
+  instruction: string;
+  targetDifficulty: string;
+}): string => {
+  const { assessment, currentQuestion, instruction, targetDifficulty } = payload;
+  const difficultyStrategy = getDifficultyRuleString(assessment.difficulty);
+  return `
+You are an elite university professor improving ONE existing exam question.
+
+Apply the teacher's instruction to rewrite the question. Keep it as the same question type, same topic, and same CLO. Return exactly ONE improved question.
+
+Teacher instruction:
+${instruction}
+
+========================================================================
+ASSESSMENT CONTEXT
+========================================================================
+- **Title:** ${assessment.title}
+- **Assessment Type:** ${assessment.type}
+- **Language:** ${assessment.language}
+- **Difficulty Profile:** ${difficultyStrategy}
+- **Required difficulty for this item:** ${targetDifficulty}
+
+========================================================================
+CURRENT QUESTION (JSON)
+========================================================================
+${JSON.stringify(currentQuestion)}
+
+${sharedRules}
+5. Return a "questions" array with exactly ONE item.
+6. Keep "type" exactly "${currentQuestion.type}".
+7. Keep "topicId" as ${currentQuestion.topicId ?? 'the same topic'}.
+8. Keep "cloCode" as "${currentQuestion.cloCode || ''}".
+9. For TRUE_FALSE provide exactly 2 options (True/False) with exactly one correct.
+10. For MCQ provide 4 options.
+${
+  assessment?.allowMultipleCorrect
+    ? 'Multiple correct answers are allowed only when the instruction or objective requires it.'
+    : 'Multiple correct answers are NOT allowed. Exactly one option must be correct. Set allowMultipleCorrect=false.'
+}
+11. Set "difficulty" to "${targetDifficulty}" unless the instruction explicitly asks to change the band.
 
 ${outputContract}
 `.trim();

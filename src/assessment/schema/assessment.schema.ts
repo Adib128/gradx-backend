@@ -125,6 +125,7 @@ export const AssessmentObjectSchema = z.object({
     DifficultyDistribution,
     V.ASSESSMENT_DIFFICULTY_INVALID,
   ).default('BALANCED'),
+  allowMultipleCorrect: z.boolean().default(false),
 });
 
 export const AssessmentSchema = z.preprocess(

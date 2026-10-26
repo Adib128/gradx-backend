@@ -101,6 +101,7 @@ export const UpdateAssessmentSchema = z.object({
     DifficultyDistribution,
     V.ASSESSMENT_DIFFICULTY_INVALID,
   ).optional(),
+  allowMultipleCorrect: z.boolean().optional(),
   topicIds: z.array(z.number()).optional(),
   cloIds: z.array(z.number()).optional(),
   questions: z.array(QuestionSchema).optional(),

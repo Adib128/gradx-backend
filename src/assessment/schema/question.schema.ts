@@ -8,6 +8,7 @@ export const QuestionSchema = z.object({
   explanation: z.string().optional(),
   points: z.number().optional(),
   difficulty: z.enum(['Easy', 'Medium', 'Hard']).optional(),
+  sortOrder: z.number().int().optional(),
   /** Single letter ("A") or multi ("A,C") when several MCQ options are correct. */
   correctAnswer: z.string(),
   allowMultipleCorrect: z.boolean().optional().default(false),

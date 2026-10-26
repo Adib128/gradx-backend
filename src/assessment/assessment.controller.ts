@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -17,7 +18,12 @@ import { GenerateAssessmentDto } from './dto/generate-assessment.dto';
 import { AssessmentService } from './assessment.service';
 import { UpdateAssessmentDto } from './dto/update-assessment.dto.ts';
 import { CreateAssessmentDto } from './dto/create-assessment.dto';
-import { AddQuestionDto, UpdateQuestionDto } from './dto/question.dto';
+import {
+  AddQuestionDto,
+  EnhanceQuestionDto,
+  ReorderQuestionsDto,
+  UpdateQuestionDto,
+} from './dto/question.dto';
 
 @UseGuards(JwtAuthGuard)
 @Controller('assessments')
@@ -181,6 +187,19 @@ export class AssessmentController {
     );
   }
 
+  @Put(':assessmentId/questions/order')
+  reorderQuestions(
+    @GetUser('tenantId') tenantId: number,
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @Body() reorderQuestionsDto: ReorderQuestionsDto,
+  ) {
+    return this.assessmentService.reorderQuestions(
+      tenantId,
+      assessmentId,
+      reorderQuestionsDto,
+    );
+  }
+
   @Post(':assessmentId/questions')
   addQuestion(
     @GetUser('tenantId') tenantId: number,
@@ -191,6 +210,21 @@ export class AssessmentController {
       tenantId,
       assessmentId,
       addQuestionDto,
+    );
+  }
+
+  @Post(':assessmentId/questions/:questionId/enhance')
+  enhanceQuestion(
+    @GetUser('tenantId') tenantId: number,
+    @Param('assessmentId', ParseIntPipe) assessmentId: number,
+    @Param('questionId', ParseIntPipe) questionId: number,
+    @Body() enhanceQuestionDto: EnhanceQuestionDto,
+  ) {
+    return this.assessmentService.enhanceQuestion(
+      tenantId,
+      assessmentId,
+      questionId,
+      enhanceQuestionDto,
     );
   }
 
