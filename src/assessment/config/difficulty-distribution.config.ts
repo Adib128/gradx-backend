@@ -24,13 +24,13 @@ export const DIFFICULTY_DISTRIBUTION_PERCENTAGES: Record<
   EXPERT: [10, 10, 80],
 };
 
-export const DIFFICULTY_DISTRIBUTION_RULES: Record<DifficultyProfile, string> = {
-  BEGINNER: '80% Easy, 10% Medium, 10% Hard questions',
-  EASY: '60% Easy, 20% Medium, 20% Hard questions',
-  BALANCED: '20% Easy, 60% Medium, 20% Hard questions',
-  MIXED: '33% Easy, 34% Medium, 33% Hard questions',
-  ADVANCED: '20% Easy, 20% Medium, 60% Hard questions',
-  EXPERT: '10% Easy, 10% Medium, 80% Hard questions',
+const DIFFICULTY_PROFILE_TITLES: Record<DifficultyProfile, string> = {
+  BEGINNER: 'Beginner',
+  EASY: 'Easy',
+  BALANCED: 'Balanced',
+  MIXED: 'Mixed',
+  ADVANCED: 'Advanced',
+  EXPERT: 'Expert',
 };
 
 const resolveProfile = (
@@ -42,6 +42,23 @@ const resolveProfile = (
     : 'BALANCED';
 };
 
+/** Same labels as create/edit assessment, used in AI generation prompts. */
+export const getDifficultyDistributionLabel = (
+  difficulty?: string | null,
+): string => {
+  const key = resolveProfile(difficulty);
+  const [easy, medium, hard] = DIFFICULTY_DISTRIBUTION_PERCENTAGES[key];
+  return `${DIFFICULTY_PROFILE_TITLES[key]} (easy: ${easy}%, medium: ${medium}%, hard: ${hard}%)`;
+};
+
+export const DIFFICULTY_DISTRIBUTION_RULES: Record<DifficultyProfile, string> =
+  Object.fromEntries(
+    DIFFICULTY_PROFILES.map((profile) => [
+      profile,
+      getDifficultyDistributionLabel(profile),
+    ]),
+  ) as Record<DifficultyProfile, string>;
+
 export const getDifficultyPercentages = (
   difficulty?: string | null,
 ): [number, number, number] =>
@@ -50,8 +67,9 @@ export const getDifficultyPercentages = (
 /**
  * Helper to safely retrieve the textual distribution rules with a fallback
  */
-export const getDifficultyRuleString = (difficulty?: string | null): string =>
-  DIFFICULTY_DISTRIBUTION_RULES[resolveProfile(difficulty)];
+export const getDifficultyRuleString = (
+  difficulty?: string | null,
+): string => getDifficultyDistributionLabel(difficulty);
 
 export const normalizeQuestionDifficulty = (
   value?: string | null,

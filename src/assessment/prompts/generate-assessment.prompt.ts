@@ -52,7 +52,7 @@ CONTEXTUAL INPUT METADATA
 - **Title:** ${assessment.title}
 - **Assessment Type:** ${assessment.type}
 - **Language:** ${assessment.language}
-- **Target Difficulty Profile:** ${assessment.difficulty ?? 'BALANCED'} (${difficultyStrategy})
+- **Target Difficulty Profile:** ${difficultyStrategy}
 - **Target Duration:** ${assessment.duration ? `${assessment.duration} minutes` : 'Standard exam block'}
 - **Total Marks:** ${assessment.totalMarks ?? 'Distributed proportionally based on question weights'}
 - **Passing Mark:** ${assessment.passMark ?? 'Standard institutional threshold'}
@@ -149,7 +149,7 @@ ASSESSMENT CONTEXT
 - **Title:** ${assessment.title}
 - **Assessment Type:** ${assessment.type}
 - **Language:** ${assessment.language}
-- **Difficulty Profile:** ${assessment.difficulty ?? 'BALANCED'} (${difficultyStrategy})
+- **Difficulty Profile:** ${difficultyStrategy}
 - **THIS QUESTION'S REQUIRED DIFFICULTY:** ${targetDifficulty} (${difficultyGuide})
   Write this item at ${targetDifficulty} level only. Set JSON "difficulty" to "${targetDifficulty}" exactly. Do not choose another band.
 

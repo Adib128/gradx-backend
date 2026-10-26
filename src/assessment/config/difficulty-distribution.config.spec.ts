@@ -1,5 +1,6 @@
 import {
   allocateQuestionDifficulties,
+  getDifficultyDistributionLabel,
   getDifficultyPercentages,
   normalizeQuestionDifficulty,
 } from './difficulty-distribution.config';
@@ -34,5 +35,11 @@ describe('allocateQuestionDifficulties', () => {
     expect(getDifficultyPercentages('balanced')).toEqual([20, 60, 20]);
     expect(normalizeQuestionDifficulty('Balanced')).toBe('Medium');
     expect(normalizeQuestionDifficulty('HARD')).toBe('Hard');
+    expect(getDifficultyDistributionLabel('BEGINNER')).toBe(
+      'Beginner (easy: 80%, medium: 10%, hard: 10%)',
+    );
+    expect(getDifficultyDistributionLabel('EXPERT')).toBe(
+      'Expert (easy: 10%, medium: 10%, hard: 80%)',
+    );
   });
 });
