@@ -5,7 +5,6 @@ import { AssessmentObjectSchema } from '../schema/assessment.schema';
 import {
   AssessmentAnswerSheetMode,
   AssessmentPaperSize,
-  AssessmentStudentIdLabel,
   DifficultyDistribution,
   Language,
 } from 'generated/prisma/enums';
@@ -63,10 +62,6 @@ export const UpdateAssessmentSchema = z.object({
   ).optional(),
   showMarksPerQuestion: z.boolean().optional(),
   includeStudentInfoHeader: z.boolean().optional(),
-  studentIdLabel: prismaEnumToZod(
-    AssessmentStudentIdLabel,
-    V.INVALID_ENUM_VALUE,
-  ).optional(),
   numberOfStudentIdDigits: z
     .number({ message: V.ASSESSMENT_STUDENT_ID_DIGITS_INVALID })
     .int()

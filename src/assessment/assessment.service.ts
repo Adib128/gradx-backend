@@ -76,6 +76,16 @@ const toPrismaJson = (
   return value as Prisma.InputJsonValue;
 };
 
+/** Question payload used for paper PDFs / version downloads (options + CLO codes). */
+const questionPaperInclude = {
+  questionOptions: { orderBy: { order: 'asc' as const } },
+  questionClos: {
+    include: {
+      Clo: { select: { id: true, code: true, description: true } },
+    },
+  },
+};
+
 const withPrismaJsonFields = <T extends Record<string, unknown>>(data: T) => {
   if (!('headerConfig' in data) && !('generationConfig' in data)) {
     return data;
@@ -139,7 +149,6 @@ export class AssessmentService {
           answerSheetMode: dto.answerSheetMode,
           showMarksPerQuestion: dto.showMarksPerQuestion,
           includeStudentInfoHeader: dto.includeStudentInfoHeader,
-          studentIdLabel: dto.studentIdLabel,
           numberOfStudentIdDigits: dto.numberOfStudentIdDigits,
           studentIdPosition: dto.studentIdPosition,
           includeAssessmentInstructionsSection:
@@ -964,14 +973,7 @@ export class AssessmentService {
       include: {
         assessmentTopics: true,
         questions: {
-          include: {
-            questionOptions: { orderBy: { order: 'asc' } },
-            questionClos: {
-              include: {
-                Clo: { select: { id: true, code: true } },
-              },
-            },
-          },
+          include: questionPaperInclude,
           orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
         },
         assessmentVersions: {
@@ -980,14 +982,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                    questionClos: {
-                      include: {
-                        Clo: { select: { id: true, code: true } },
-                      },
-                    },
-                  },
+                  include: questionPaperInclude,
                 },
               },
             },
@@ -1404,9 +1399,7 @@ export class AssessmentService {
                   orderBy: { order: 'asc' },
                   include: {
                     question: {
-                      include: {
-                        questionOptions: { orderBy: { order: 'asc' } },
-                      },
+                      include: questionPaperInclude,
                     },
                   },
                 },
@@ -1579,6 +1572,22 @@ export class AssessmentService {
       throw new NotFoundException('Assessment not found');
     }
 
+    const cloIds = Array.from(new Set(dto.cloIds || []));
+    if (cloIds.length === 0) {
+      throw new BadRequestException(
+        'At least one CLO is required for each question',
+      );
+    }
+    const validClos = await this.prisma.clo.findMany({
+      where: { id: { in: cloIds }, courseId: assessment.courseId },
+      select: { id: true },
+    });
+    if (validClos.length !== cloIds.length) {
+      throw new BadRequestException(
+        'One or more CLO ids do not belong to this course',
+      );
+    }
+
     const last = await this.prisma.question.findFirst({
       where: { assessmentId },
       orderBy: [{ sortOrder: 'desc' }, { id: 'desc' }],
@@ -1586,7 +1595,7 @@ export class AssessmentService {
     });
     const nextSortOrder = (last?.sortOrder || 0) + 1;
 
-    const { questionOptions, cloIds, ...questionFields } = dto;
+    const { questionOptions, cloIds: _cloIds, ...questionFields } = dto;
     const correctLetters = (questionOptions ?? [])
       .map((option, index) =>
         option.isCorrect ? String.fromCharCode(65 + index) : null,
@@ -1611,7 +1620,7 @@ export class AssessmentService {
             create: cloIds.map((cloId) => ({ cloId })),
           },
           questionOptions: {
-            create: questionOptions.map((option) => ({
+            create: (questionOptions || []).map((option) => ({
               text: option.text,
               isCorrect: option.isCorrect,
               order: option.order,
@@ -1638,7 +1647,7 @@ export class AssessmentService {
   ) {
     const question = await this.prisma.question.findFirst({
       where: { id: questionId, assessmentId, tenantId },
-      select: { id: true },
+      select: { id: true, courseId: true },
     });
 
     if (!question) {
@@ -1646,6 +1655,23 @@ export class AssessmentService {
     }
 
     const { questionOptions, cloIds, ...questionFields } = dto;
+    if (cloIds) {
+      const uniqueCloIds = Array.from(new Set(cloIds));
+      if (uniqueCloIds.length === 0) {
+        throw new BadRequestException(
+          'At least one CLO is required for each question',
+        );
+      }
+      const validClos = await this.prisma.clo.findMany({
+        where: { id: { in: uniqueCloIds }, courseId: question.courseId },
+        select: { id: true },
+      });
+      if (validClos.length !== uniqueCloIds.length) {
+        throw new BadRequestException(
+          'One or more CLO ids do not belong to this course',
+        );
+      }
+    }
     const correctLetters = (questionOptions ?? [])
       .map((option, index) =>
         option.isCorrect ? String.fromCharCode(65 + index) : null,
@@ -1664,10 +1690,11 @@ export class AssessmentService {
 
     return await this.prisma.$transaction(async (tx) => {
       if (cloIds) {
+        const uniqueCloIds = Array.from(new Set(cloIds));
         await tx.questionClo.deleteMany({ where: { questionId } });
-        if (cloIds.length) {
+        if (uniqueCloIds.length) {
           await tx.questionClo.createMany({
-            data: cloIds.map((cloId) => ({ questionId, cloId })),
+            data: uniqueCloIds.map((cloId) => ({ questionId, cloId })),
           });
         }
       }
@@ -2705,9 +2732,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionPaperInclude,
                 },
               },
             },
@@ -2739,9 +2764,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionPaperInclude,
                 },
               },
             },
@@ -2799,9 +2822,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionPaperInclude,
                 },
               },
             },
@@ -3089,14 +3110,7 @@ export class AssessmentService {
           },
         },
         questions: {
-          include: {
-            questionOptions: { orderBy: { order: 'asc' } },
-            questionClos: {
-              include: {
-                Clo: { select: { id: true, code: true } },
-              },
-            },
-          },
+          include: questionPaperInclude,
           orderBy: { id: 'asc' },
         },
         assessmentVersions: {
@@ -3105,9 +3119,7 @@ export class AssessmentService {
               orderBy: { order: 'asc' },
               include: {
                 question: {
-                  include: {
-                    questionOptions: { orderBy: { order: 'asc' } },
-                  },
+                  include: questionPaperInclude,
                 },
               },
             },
@@ -3158,14 +3170,7 @@ export class AssessmentService {
 
   findAll(tenantId: number, courseId: number) {
     const tid = requireTenantId(tenantId);
-    const questionCloInclude = {
-      questionClos: {
-        include: {
-          Clo: { select: { id: true, code: true } },
-        },
-      },
-      questionOptions: { orderBy: { order: 'asc' as const } },
-    };
+    const questionCloInclude = questionPaperInclude;
 
     return this.prisma.assessment.findMany({
       where: { tenantId: tid, courseId },

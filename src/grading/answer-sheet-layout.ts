@@ -72,7 +72,9 @@ export type AnswerSheetPdfConfig = {
   sideText?: string;
   numberOfStudentIdDigits: number;
   includeStudentInfoHeader: boolean;
+  includeName?: boolean;
   includeSection?: boolean;
+  includeDepartment?: boolean;
   includeKeyVersionSection: boolean;
   studentIdPosition?: StudentIdPosition | string;
   selectedVersionLetter?: string;
@@ -150,15 +152,20 @@ export const STUDENT_ID_ROW_DIGITS = [
 /** Max questions per answer column (block 1: 1–10, block 2: 11–20, …). */
 export const ANSWER_BLOCK_MAX_ROWS = 10;
 
-/** Name / Section capsule (stadium bar). Section sits on the right with a divider. */
+/**
+ * Name / Section / Department capsule (stadium bar).
+ * Outer box geometry is fixed for grading; Section then Department sit on the right.
+ */
 export const NAME_HEADER = {
   x: 24,
   y: 14,
   w: 162,
   h: 12,
   radius: 6,
-  /** Width reserved on the right for the Section field. */
-  sectionWidth: 44,
+  /** Width reserved for the Section field (left of Department when both shown). */
+  sectionWidth: 36,
+  /** Width reserved on the far right for the Department field. */
+  departmentWidth: 40,
 } as const;
 
 /**

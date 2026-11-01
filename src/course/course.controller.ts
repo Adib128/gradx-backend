@@ -32,7 +32,10 @@ import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
 import { DocxPdfService } from './docx-pdf.service';
-import { normalizeReportLanguage } from './utils/course-report-document.util';
+import {
+  normalizeReportLanguage,
+  normalizeReportStudentFilter,
+} from './utils/course-report-document.util';
 import { normalizeCloAnalysisLanguage } from './prompts/clo-analysis-stream.prompt';
 import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
@@ -176,11 +179,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getCloAchievementReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -189,11 +196,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getGradeDistributionReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -202,11 +213,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getAssessmentsReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -215,11 +230,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getPloAlignmentReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -230,10 +249,16 @@ export class CourseController {
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
     @Query('language') language?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getCourseReportData(tenantId, id, {
       assessmentId: this.parseOptionalAssessmentId(assessmentId),
       language: normalizeReportLanguage(language),
+      section,
+      departement,
+      department,
     });
   }
 
@@ -243,7 +268,14 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @GetUser('userId') userId: number,
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { assessmentId?: number | string; language?: string },
+    @Body()
+    body: {
+      assessmentId?: number | string;
+      language?: string;
+      section?: string;
+      departement?: string;
+      department?: string;
+    },
   ) {
     return this.courseReportsService.generateCourseReportNarrative(tenantId, id, {
       assessmentId: this.parseOptionalAssessmentId(
@@ -251,6 +283,9 @@ export class CourseController {
       ),
       language: normalizeReportLanguage(body?.language),
       userId,
+      section: body?.section,
+      departement: body?.departement,
+      department: body?.department,
     });
   }
 
@@ -314,11 +349,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getStudentResultsReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -367,11 +406,15 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @Param('id', ParseIntPipe) id: number,
     @Query('assessmentId') assessmentId?: string,
+    @Query('section') section?: string,
+    @Query('departement') departement?: string,
+    @Query('department') department?: string,
   ) {
     return this.courseReportsService.getCloStudentDetailsReport(
       tenantId,
       id,
       this.parseOptionalAssessmentId(assessmentId),
+      this.parseStudentFilter(section, departement, department),
     );
   }
 
@@ -381,7 +424,14 @@ export class CourseController {
     @GetUser('tenantId') tenantId: number,
     @GetUser('userId') userId: number,
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { assessmentId?: number | string; language?: string },
+    @Body()
+    body: {
+      assessmentId?: number | string;
+      language?: string;
+      section?: string;
+      departement?: string;
+      department?: string;
+    },
     @Res() res: Response,
   ) {
     return this.courseReportsService.streamCloAnalysis(
@@ -393,6 +443,9 @@ export class CourseController {
         ),
         language: normalizeCloAnalysisLanguage(body?.language),
         userId,
+        section: body?.section,
+        departement: body?.departement,
+        department: body?.department,
       },
       res,
     );
@@ -428,6 +481,14 @@ export class CourseController {
     if (value == null || value === '') return undefined;
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  private parseStudentFilter(
+    section?: string,
+    departement?: string,
+    department?: string,
+  ) {
+    return normalizeReportStudentFilter({ section, departement, department });
   }
 
   private formatAssessmentSourcesSummary(

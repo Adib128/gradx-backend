@@ -31,21 +31,41 @@ meticulous professor: accurate, precise, visually clean and ready to project wit
 /** Shared standard for everything students read (outline titles, slides, rewrites). */
 const PROFESSIONAL_STYLE = `Professional standard (assertion-evidence slide design):
 - Headline = the slide's claim: a specific, complete statement of 5-10 words in sentence case, no final period
-  ("Pipes connect one program's output to the next"), never a topic label ("Pipes", "Overview", "Introduction").
+  ("Pipes connect one program's output to the next"), never a topic label ("Pipes", "Overview", "Introduction",
+  "Background", "Key concepts", "Mathematical foundations").
 - The body is the evidence for that claim: a figure, diagram, worked example, table or tight bullets — show, then tell.
 - One idea per slide. If the idea needs more than ~60 words of on-slide text, it belongs on two slides.
 - Bullets: parallel grammar, start with the key noun or verb, one **key term** in bold at most, either all fragments
   (no periods) or all full sentences on a slide. No filler ("It is important to note", "In this slide").
+- Depth over breadth: each bullet teaches a mechanism, condition, trade-off, result or decision rule — not a catalogue
+  of topic names. Prefer "why / when / how / so what" over "what is covered".
 - Precision: concrete values with units, named cases and the reference's own terminology; define a term the first
-  time it appears; never vague quantifiers ("many", "various") when the reference gives a number.
+  time it appears; never vague quantifiers ("many", "various", "several", "some") when the reference gives a number
+  or a named set.
 - Every line earns its place: a bullet states a fact, mechanism, cause, consequence or number — never only a topic
-  name ("Process states") or a promise ("We will see how…").
-- No hedging or meta-commentary about the slide itself ("not a complete list", "varies by system", "this slide shows").
-  State a limit only when the reference does, and then precisely (which systems, which condition).
+  name ("Process states") or a promise ("We will see how…", "Students will learn…").
+- No hedging or meta-commentary about the slide itself ("not a complete list", "varies by system", "this slide shows",
+  "as mentioned earlier"). State a limit only when the reference does, and then precisely (which systems, which condition).
 - Show each idea in one form: a comparison is either two columns or a table, a process either a diagram or numbered
   bullets — never the same content twice on one slide.
+- Expert voice: write as the course instructor, not as a textbook summary or AI overview. Prefer the field's standard
+  notation and the reference's wording over paraphrase that softens meaning.
 - Academic tone: neutral and confident; no hype words, exclamation marks or emojis.
 - Accessibility: meaning never depends on colour alone; diagram labels ≤ 4 words.`;
+
+/** Extra content-quality bar for writer / optimizer (keeps decks lecture-ready). */
+const CONTENT_DEPTH = `Content depth (university lecture, not study notes):
+- Teach the hard part: for every core concept, state the definition OR the governing rule, then the condition under
+  which it holds, then one consequence students can use.
+- Prefer reference-backed specificity: symbols, named theorems/algorithms, orders of growth, units, edge cases and
+  common failure modes from the excerpts — never invent numbers or citations.
+- Worked content beats description: when the CLO is Apply/Analyze, prefer EXAMPLE / FORMULA / CODE / COMPARISON over
+  another plain CONTENT bullet slide.
+- Visuals must earn the slide: bullets beside a figure/diagram say what to notice and why it matters for the claim,
+  not "see the diagram".
+- Speaker notes add teaching moves the slide omits (analogy, misconception, cold-call question, transition) — never
+  a restatement of the bullets.
+- Stay inside the section CLOs and the CLO-scoped excerpts; do not pad with neighbouring chapter topics.`;
 
 /** Style exemplars from another field, so they shape form without leaking content. */
 const EXEMPLARS = `Style exemplars (different course — copy the form, never the content):
@@ -171,9 +191,9 @@ export function plannerPrompt(
 You are the PLANNER agent (lead instructional designer). Design the teaching plan for a deck of EXACTLY ${input.slideCount} slides.
 
 Output NDJSON: one JSON object per line, no prose, no code fences, no array brackets.
-Line 1: {"type":"meta","title":string,"approach":string /* pedagogy in 1-2 sentences */,"learningGoals":string[] /* 3-5, measurable, Bloom verbs */}
+Line 1: {"type":"meta","title":string /* assertion about the lecture, not "Lecture on X" */,"approach":string /* pedagogy in 1-2 sentences */,"learningGoals":string[] /* 3-5 measurable outcomes with Bloom verbs + object, e.g. "Compute the Jacobian of a vector mapping" */}
 Then one line per section, in teaching order:
-{"type":"section","title":string,"goal":string,"cloCodes":string[],"slideCount":integer,"keyPoints":string[] /* 2-5 */,"visuals":string[]}
+{"type":"section","title":string,"goal":string /* what students can do after the section */,"cloCodes":string[],"slideCount":integer,"keyPoints":string[] /* 2-5 assertion claims */,"visuals":string[]}
 
 Rules:
 - The sum of slideCount over all sections MUST equal ${input.slideCount}.
@@ -182,16 +202,28 @@ Rules:
   a checkpoint question, then a CONCLUSION slide with the key takeaways. The CONCLUSION is the lecture's only recap:
   never plan a separate SUMMARY slide as well.
 - Usually 4-8 sections; every core section maps to at least one CLO code from the list.
-- Ground key points in the reference excerpts; use their terminology and examples.
+- ONLY use CLO codes from the provided topic-linked list — never invent or pick unrelated course CLOs.
+- Stay inside those CLOs: do not expand into neighbouring chapter topics that the CLO descriptions do not cover.
+- Section titles are teachable units ("The Hessian measures local curvature"), not catalogue headings
+  ("Mathematical foundations", "Part 1", "Background").
+- keyPoints are assertion claims the later slides must prove (mechanism, condition, result or misconception),
+  8-16 words each — never topic labels ("Gradients", "Overview of Jacobians").
+- Ground key points in the reference excerpts that relate to the CLO descriptions; use their terminology and examples,
+  and ignore excerpt material that is off-CLO.
 - Think like an expert professor: sequence from prerequisites to the hardest idea, and where students commonly
   hold a misconception about a key point, make correcting it one of that section's key points.
+- Budget slides for depth: after a hard concept, allocate room for an EXAMPLE / FORMULA / DIAGRAM / CODE slide before
+  moving on; avoid long runs of "overview" sections.
 - When reference excerpts are provided, the closing section also contains one REFERENCES slide (its list of sources
   is filled automatically) — count it in that section's slideCount.
-- visuals entries are "figure:<figure key>" (ONLY keys from the figure list, pick the most instructive ones) or "mermaid:<short description of a diagram to draw>".
+- visuals entries are "figure:<figure key>" (ONLY keys from the figure list, pick the most instructive ones) or
+  "mermaid:<prompt describing the diagram to draw from the section CLOs and related chapter concepts>".
+  You may attach several mermaid prompts per section when multiple diagrams teach distinct CLO ideas.
 - Prefer reference figures when one directly shows the concept; use mermaid for processes, flows, hierarchies, states and comparisons.
 - Plan the field's own evidence too: "code:<what the snippet shows>", "formula:<equation>", "example:<worked case>" or
   "table:<what it compares>" entries in visuals.
 ${disciplineBlock(disciplineProfile(analysis?.profile))}
+${PROFESSIONAL_STYLE}
 ${contentLanguageGuidance(input.language)}`,
     user: `${courseBlock(input)}
 
@@ -268,7 +300,8 @@ Rules:
   The CONCLUSION is the only recap: never add a SUMMARY slide next to it.
 - Insert a CHECKPOINT or ACTIVITY roughly every 6-8 slides; every key concept is followed within 2 slides by an
   EXAMPLE, a visual or a COMPARISON.
-- Titles are assertion headlines (see the standard below); no two slides share a title.
+- Titles are assertion headlines (see the standard below); no two slides share a title; intent states the student
+  takeaway as a measurable outcome ("compute the Jacobian of F", not "introduce Jacobians").
 - Use COMPARISON for contrasts, FORMULA for equations the students must use, CODE (layout BULLETS, visual none) for
   source code, commands or queries the students must read or write, DEFINITION for formal terms.
 - Planned "code:", "formula:", "example:" and "table:" visuals become CODE, FORMULA, EXAMPLE and COMPARISON slides.
@@ -276,6 +309,8 @@ Rules:
 - Use the planned visuals; a figure key may appear at most once; only keys from the list. Never repeat a diagram idea.
 - Show, don't only tell: at least half of the core content slides carry a figure, a diagram, a worked example, a
   table or a comparison. A diagram idea is one process, structure or contrast with at most 6 boxes.
+- Prefer depth over coverage: if the plan's key points compete for space, keep the highest-CLO points and drop
+  survey slides rather than packing three ideas onto one slide.
 - Vary layouts; no more than 2 plain BULLETS slides in a row.
 - If the plan has a REFERENCES slide, it is the last slide: type REFERENCES, layout BULLETS, visual none.
 ${disciplineBlock(profile)}
@@ -319,8 +354,9 @@ const SLIDE_SCHEMA = `{"n": integer /* the slide number given */, "type", "layou
 
 const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit without scrolling):
 - TITLE / SECTION slides: title + subtitle only.
-- CONTENT, AGENDA, LEARNING_OUTCOMES, SUMMARY → 3-5 bullets, each 6-16 words, parallel grammar, informative (no filler,
-  no "In this slide…"). Bold the one key term of a bullet with **term** (at most one bold run per bullet).
+- CONTENT, AGENDA, LEARNING_OUTCOMES, SUMMARY → 3-5 bullets, each 8-16 words, parallel grammar, each carrying a
+  teachable claim (mechanism, condition, result or decision). No filler, no "In this slide…", no topic-name bullets.
+  Bold the one key term of a bullet with **term** (at most one bold run per bullet).
 - INTRODUCTION → subtitle: one sentence on why the topic matters (a real problem, a familiar situation or a motivating
   question) + 3-4 bullets previewing what the lecture covers, in teaching order, each naming the concept and what the
   student will be able to do with it. It frames the lecture: no diagram, code, figure, formula or worked example, and
@@ -328,29 +364,31 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - CONCLUSION → 3-5 bullets, each a key takeaway the student should remember, stated as a full claim (not a topic name)
   that connects ideas from different sections; the last bullet may point to the next topic or a real application.
   No visual. It is the deck's only recap, so it must not restate any earlier slide word for word.
-- DEFINITION → callout {label, text ≤ 35 words} + up to 2 bullets (property, non-example).
+- DEFINITION → callout {label, text ≤ 35 words, the precise formal definition} + up to 2 bullets (necessary condition,
+  non-example or boundary case). Avoid dictionary-style paraphrases that drop technical constraints.
 - FORMULA → formula {latex: valid KaTeX without $ delimiters (escape backslashes as \\\\ in JSON), explanation that names
-  every symbol} + up to 2 bullets on when to use it.
+  every symbol and the assumption it needs} + up to 2 bullets on when to use it / when it fails.
 - CODE → code {language (python, java, cpp, c, javascript, sql, shell…), source: ≤ 12 lines of real, runnable code,
   ≤ 60 characters per line, highlight: 1-3 line numbers the bullets discuss, output: what it prints when run (≤ 3 lines,
   omit when nothing is printed), caption: file name or short label} + 1-3 short bullets explaining the highlighted
   lines. Elide irrelevant lines with "…" instead of shrinking the font. Never put code in bullets, never pair code
   with a diagram.
-- EXAMPLE → example {problem with concrete values/data, steps (2-4, each ≤ 20 words), solution with result + interpretation}.
+- EXAMPLE → example {problem with concrete values/data, steps (2-4, each ≤ 20 words, each naming the rule used),
+  solution with numeric/symbolic result + one-line interpretation}.
 - COMPARISON → two items: leftColumn + rightColumn with matching aspects in the same order (3-4 bullets each), no table.
   Three or more items, or several attributes: type CONTENT, layout BULLETS, table {headers: 2-4 short, rows: 2-5,
   cells ≤ 6 words} with at most 2 bullets, no columns. Never both columns and a table.
-- CHECKPOINT / ACTIVITY → callout {label: "Checkpoint"|"Activity", text: one question or task}; speakerNotes starts with
-  "Answer:" (checkpoint) or the expected outcome (activity).
+- CHECKPOINT / ACTIVITY → callout {label: "Checkpoint"|"Activity", text: one question or task that forces a decision
+  or computation}; speakerNotes starts with "Answer:" (checkpoint) or the expected outcome (activity).
 - Visual "mermaid:<idea>" → diagram {title, mermaid} AND 1-3 short bullets. Mermaid: flowchart LR for a sequence of
   ≤ 5 steps, flowchart TD for a hierarchy (or sequenceDiagram / stateDiagram-v2 / classDiagram when clearly better);
   3-6 nodes and at most 4 levels so labels stay readable when projected; labels ≤ 4 words in double quotes, \\n for a
   line break, no HTML, no styling.
 - REFERENCES → bullets: [] (the cited sources are inserted automatically from the course references).
 - A layout engine measures every slide on the real 16:9 stage; text that does not fit is cut off. Beside a figure or
-  diagram the text column is under half the width, so keep those bullets especially short.
-- Visual "figure:<key>" → the reference figure is attached automatically; write 1-3 bullets on what to notice in it.
-  Do not include a diagram.
+  diagram the text column is under half the width, so keep those bullets especially short (6-12 words) and specific.
+- Visual "figure:<key>" → the reference figure is attached automatically; write 1-3 bullets on what to notice in it
+  and how it supports the headline. Do not include a diagram.
 - type and layout must be the matching pair, and the body must fill that layout's main element:
   CONTENT|DIAGRAM|CODE|AGENDA|SUMMARY|INTRODUCTION|CONCLUSION → BULLETS, DEFINITION → DEFINITION, FORMULA → FORMULA_FOCUS, EXAMPLE → EXAMPLE_STEPS,
   COMPARISON → TWO_COLUMN (needs both columns), CHECKPOINT|ACTIVITY → QUOTE_CALLOUT. Never use TWO_COLUMN without columns
@@ -402,11 +440,16 @@ Slide object fields: ${SLIDE_SCHEMA}
 
 ${SLIDE_BODY_RULES}
 - Other writers handle the other sections in parallel: do not re-explain ideas that belong to other slides of the deck flow.
+- Teach only what the section CLOs require. Use excerpts solely for CLO-related concepts, terms and examples —
+  skip neighbouring chapter material that the CLO descriptions do not call for.
+- Write lecture-ready slides a senior professor would project tomorrow: precise, evidence-backed and visually clean.
 - ${templateBlock(template)}
 
 ${disciplineBlock(profile)}
 
 ${PROFESSIONAL_STYLE}
+
+${CONTENT_DEPTH}
 
 ${exemplars(profile)}
 ${contentLanguageGuidance(input.language)}`,
@@ -418,13 +461,13 @@ Deck: ${plan.title}. Approach: ${plan.approach}
 Deck flow (→ marks your slides):
 ${deckFlowBlock(outline, new Set(items.map((item) => item.index)))}
 
-Section "${section.title}" — goal: ${section.goal}; key points: ${section.keyPoints.join(' / ')}
+Section "${section.title}" — goal: ${section.goal}; CLOs: ${section.cloCodes.join(', ') || '-'}; key points: ${section.keyPoints.join(' / ')}
 
-Slides to write:
+Slides to write (keep each title's claim; prove it in the body):
 ${items.map((item) => slideLine(item, figureByKey)).join('\n')}
 
-Reference excerpts for this section:
-${excerptsBlock(excerpts, 16_000)}`,
+Reference excerpts for this section (CLO-scoped):
+${excerptsBlock(excerpts, 12_000)}`,
   };
 }
 
@@ -488,7 +531,8 @@ export function inspectorPrompt(
 You are the INSPECTOR agent (quality control). Audit every slide of the draft deck like a strict senior instructor:
 - accuracy: contradicts or goes beyond the reference excerpts, wrong formula, wrong example arithmetic;
 - clarity: vague title, filler, jargon not defined, bullets that are not parallel or not self-contained;
-- pedagogy: slide does not serve its CLO, missing example after a hard concept, checkpoint without a real question;
+- pedagogy: slide does not serve its CLO, missing example after a hard concept, checkpoint without a real question,
+  shallow survey bullets that name topics without teaching a mechanism/condition/result;
 - layout: body too dense for a 16:9 slide, wrong element for the content (e.g. comparison written as plain bullets),
   a figure/diagram with no text telling students what to notice, a diagram that does not match its bullets or title,
   type/layout that does not fit the body (TWO_COLUMN shows only the columns, EXAMPLE_STEPS the worked example);
@@ -498,8 +542,11 @@ You are the INSPECTOR agent (quality control). Audit every slide of the draft de
   the CONCLUSION must synthesise takeaways across sections, and a SUMMARY next to it is redundant;
 - polish: headline is a topic label instead of a claim, the body does not prove the headline, mixed fragment and
   sentence bullets, hype or filler, hedging or meta-commentary ("not a complete list", "varies by system"), vague
-  quantities where the reference gives numbers, speaker notes that only read the bullets back.
-Ask of every slide: "Would a senior professor project this as-is?" If not, say exactly what to change.
+  quantities where the reference gives numbers, speaker notes that only read the bullets back, off-CLO padding
+  from neighbouring chapter material.
+Ask of every slide: "Would a senior professor project this as-is tomorrow?" If not, say exactly what to change.
+Flag shallow content as medium pedagogy: a bullet that only names a topic, a definition that drops constraints,
+or an Apply CLO taught only as prose when an EXAMPLE/FORMULA/CODE would fit.
 Fact audit (do it before anything else): recompute every worked example, formula and number; check each definition,
 value, date and name against the reference excerpts. A wrong fact or result is always "high" and its message states
 the correct value. Claims the excerpts do not support are "medium" accuracy findings.
@@ -594,6 +641,8 @@ ${SLIDE_BODY_RULES}
 - When a slide OVERFLOWS, cut words until it fits: merge or drop the weakest bullet and move detail into speakerNotes
   rather than shrinking every bullet slightly.
 - Fix accuracy problems first, using the excerpts' exact values and terms; never trade correctness for brevity.
+- When fixing shallow content, replace topic-name bullets with mechanism/condition/result claims; do not merely
+  rephrase fluff.
 - A problem starting with "REJECTED REWRITE" lists what your previous rewrite of that slide broke; avoid it this time.
 - Do not create new problems: keep every correct key point, keep the headline proven by the body and keep the slide
   within its rendered area.
@@ -604,6 +653,8 @@ ${SLIDE_BODY_RULES}
 ${disciplineBlock(profile)}
 
 ${PROFESSIONAL_STYLE}
+
+${CONTENT_DEPTH}
 
 ${exemplars(profile)}
 ${contentLanguageGuidance(input.language)}`,
@@ -631,8 +682,20 @@ ${excerptsBlock(excerpts, 20_000)}`,
 
 export function illustratorPrompt(
   input: StudioInput,
-  jobs: Array<{ n: number; title: string; idea: string; current: string | null; problems: string[] }>,
+  jobs: Array<{
+    n: number;
+    title: string;
+    idea: string;
+    current: string | null;
+    problems: string[];
+    cloCode?: string | null;
+  }>,
+  excerpts: StudioExcerpt[] = [],
 ): PromptPair {
+  const linked = input.clos.filter((clo) => clo.linked);
+  const clos = (linked.length ? linked : input.clos)
+    .map((clo) => `- ${clo.code}: ${clo.description}`)
+    .join('\n');
   return {
     system: `${TEAM}
 You are the ILLUSTRATOR agent. You write Mermaid diagrams that render with mermaid v11.
@@ -641,14 +704,23 @@ Rules: start with "flowchart LR" (sequences of ≤ 5 steps), "flowchart TD" (hie
 "stateDiagram-v2", "classDiagram" or "timeline" (dated events: "timeline\\n    1932 : Event"); 3-6 nodes and at most 4 levels, because the diagram shares a 16:9 slide with text and
 must stay readable from the back of a lecture hall; labels ≤ 4 words in double quotes; no HTML, no classDef/style
 lines; use \\n inside JSON strings for line breaks.
+Ground each diagram in the slide's CLO and the related reference excerpts — do not invent off-topic nodes from
+unrelated chapter material. Prefer the field's standard names/symbols on nodes; keep one clear teaching story
+(input → transform → result, or hierarchy of concepts) that a student can retell after class.
 ${contentLanguageGuidance(input.language)}`,
     user: `Topic: ${input.topicTitle} (${input.courseTitle})
+
+Topic CLOs:
+${clos || '- (none)'}
+
+Reference excerpts (CLO-related only):
+${excerptsBlock(excerpts, 6_000)}
 
 Diagrams to ${jobs.some((job) => job.current) ? 'create or fix' : 'create'}:
 ${jobs
   .map(
     (job) =>
-      `n=${job.n} | slide "${job.title}" | idea: ${job.idea}${
+      `n=${job.n} | slide "${job.title}" | CLO: ${job.cloCode || '-'} | idea: ${job.idea}${
         job.current
           ? `\nCurrent (broken: ${job.problems.join('; ')}):\n${job.current}`
           : ''
@@ -670,11 +742,14 @@ export function reviewerPrompt(
     system: `${TEAM}
 You are the REVIEWER agent (quality assurance). Check the deck against the plan, the CLOs and the reference excerpts:
 coverage, accuracy, clarity, progression, cognitive load, visual support and professional polish (assertion headlines,
-consistent style, every "rendered:" line fits, no hedging or repeated content). The lecture must be framed: cover,
-an INTRODUCTION that motivates and previews, teaching slides, one CONCLUSION that synthesises (no extra SUMMARY). Score as a demanding department head reviewing a colleague's lecture:
-90+ only when the deck could be projected tomorrow without a single edit.
+consistent style, every "rendered:" line fits, no hedging or repeated content, expert voice, CLO-scoped depth).
+The lecture must be framed: cover, an INTRODUCTION that motivates and previews, teaching slides, one CONCLUSION that
+synthesises (no extra SUMMARY). Score as a demanding department head reviewing a colleague's lecture:
+90+ only when the deck could be projected tomorrow without a single edit; 80-89 still needs polish; below 80 when
+core slides are survey-like, off-CLO, inaccurate or visually weak.
 ${disciplineAudit(profile)} Score a deck that teaches its field mostly in prose (no code for programming, no formulas
-and worked examples for mathematics, no figures for sciences) below 80.
+and worked examples for mathematics, no figures for sciences) below 80. Also score below 80 when many content slides
+are topic catalogues instead of assertion-evidence teaching.
 Slide-specific medium/high issues are sent back to the optimizer, so write each one as a concrete fix instruction
 (what to change and to what) and give its slide number; use slide null only for deck-wide remarks.
 Return ONLY one JSON object:

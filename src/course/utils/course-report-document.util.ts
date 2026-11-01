@@ -8,6 +8,56 @@ export const normalizeReportLanguage = (value: unknown): ReportLanguage =>
 export const sectionKeyOf = (section: string | null | undefined) =>
   (section ?? '').trim();
 
+export const departementKeyOf = (departement: string | null | undefined) =>
+  (departement ?? '').trim();
+
+/** Optional roster narrowing for report recalculation. */
+export type ReportStudentFilter = {
+  section?: string;
+  departement?: string;
+};
+
+export function normalizeReportStudentFilter(input?: {
+  section?: string | null;
+  departement?: string | null;
+  department?: string | null;
+} | null): ReportStudentFilter | undefined {
+  if (!input) return undefined;
+  const section = sectionKeyOf(input.section);
+  const departement = departementKeyOf(
+    input.departement ?? input.department,
+  );
+  if (!section && !departement) return undefined;
+  return {
+    ...(section ? { section } : {}),
+    ...(departement ? { departement } : {}),
+  };
+}
+
+export function studentMatchesReportFilter(
+  student: { section?: string | null; departement?: string | null },
+  filter?: ReportStudentFilter | null,
+) {
+  if (!filter) return true;
+  if (filter.section && sectionKeyOf(student.section) !== filter.section) {
+    return false;
+  }
+  if (
+    filter.departement &&
+    departementKeyOf(student.departement) !== filter.departement
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function filterStudentsByReportFilter<
+  T extends { section?: string | null; departement?: string | null },
+>(students: T[], filter?: ReportStudentFilter | null): T[] {
+  if (!filter) return students;
+  return students.filter((student) => studentMatchesReportFilter(student, filter));
+}
+
 /** Distinct section names, natural-sorted ("2" before "10"); no-section students last. */
 export function orderSections(sections: Iterable<string>): string[] {
   const unique = Array.from(new Set(sections));

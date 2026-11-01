@@ -43,12 +43,9 @@ export const CreateCourseAnswerSheetSchema = z.object({
   showMarksPerQuestion: z.boolean().default(false),
   numberOfQuestions: z.number().int().positive().default(50),
   paperSize: prismaEnumToZod(AssessmentPaperSize).default('A4'),
-  sheetsPerPage: z.number().int().positive().default(1),
+  includeName: z.boolean().default(true),
   includeSection: z.boolean().default(true),
-  includeSignature: z.boolean().default(true),
-  includeDate: z.boolean().default(true),
-  includeStudentInfoHeader: z.boolean().default(true),
-  studentInfoLabel: z.string().nullable().optional(),
+  includeDepartment: z.boolean().default(true),
   numberOfStudentIdDigits: z.number().int().min(1).max(20).default(9),
   studentIdPosition: z
     .enum(['TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT'])
@@ -56,7 +53,6 @@ export const CreateCourseAnswerSheetSchema = z.object({
   includeKeyVersionSection: z.boolean().default(true),
   numberOfKeyVersions: z.number().int().positive().default(3),
   keyVersionLetters: z.string().default('ABCD'),
-  keyVersionLabel: z.string().nullable().optional(),
   /** Optional course link — omit / null for standalone sheets. */
   courseId: z.number().int().positive().nullable().optional(),
   /** Standalone CLO definitions (ignored when linked to a course). */

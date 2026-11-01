@@ -3,7 +3,7 @@ import z from 'zod';
 import { QuestionSchema } from '../schema/question.schema';
 
 export const AddQuestionSchema = QuestionSchema.extend({
-  cloIds: z.array(z.number()).default([]),
+  cloIds: z.array(z.number()).min(1, 'At least one CLO is required'),
 });
 
 export const UpdateQuestionSchema = QuestionSchema.partial().extend({

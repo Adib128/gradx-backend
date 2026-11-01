@@ -101,11 +101,6 @@ enum AssessmentAnswerSheetMode {
   NONE
 }
 
-enum AssessmentStudentIdLabel {
-  STUDENT_ID
-  STUDENT_NAME
-}
-
 enum GradingScanStatus {
   PENDING
   PROCESSING
@@ -527,7 +522,6 @@ model Assessment {
   answerSheetMode                         AssessmentAnswerSheetMode @default(APPEND_SAME_PDF)
   showMarksPerQuestion                    Boolean                   @default(false)
   includeStudentInfoHeader                Boolean                   @default(false)
-  studentIdLabel                          AssessmentStudentIdLabel  @default(STUDENT_ID)
   numberOfStudentIdDigits                 Int                       @default(9)
   /// Corner for the student ID bubble grid on generated answer sheets
   studentIdPosition                       String                    @default("TOP_LEFT")
@@ -694,19 +688,15 @@ model CourseAnswerSheet {
   showMarksPerQuestion     Boolean              @default(false)
   numberOfQuestions        Int                  @default(50)
   paperSize                AssessmentPaperSize  @default(A4)
-  sheetsPerPage            Int                  @default(1)
+  includeName              Boolean              @default(true)
   includeSection           Boolean              @default(true)
-  includeSignature         Boolean              @default(true)
-  includeDate              Boolean              @default(true)
-  includeStudentInfoHeader Boolean              @default(true)
-  studentInfoLabel         String?
+  includeDepartment        Boolean              @default(true)
   numberOfStudentIdDigits  Int                  @default(9)
   /// Corner for the student ID bubble grid: TOP_LEFT | TOP_RIGHT | BOTTOM_LEFT | BOTTOM_RIGHT
   studentIdPosition        String               @default("TOP_LEFT")
   includeKeyVersionSection Boolean              @default(true)
   numberOfKeyVersions      Int                  @default(3)
   keyVersionLetters        String               @default("ABCD")
-  keyVersionLabel          String?
   pdfPath                  String?
   pdfSizeBytes             Int?
 

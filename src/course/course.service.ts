@@ -178,7 +178,10 @@ export class CourseService {
       mainObjective,
     } = createCourseDto;
 
-    await this.assertCourseCodeAvailable(tenantId, code);
+    await this.assertCourseCodeAvailable(tenantId, code, {
+      academicYear,
+      semester,
+    });
 
     const { clos, codeRemap } = normalizeClosForStorage(rawClos ?? []);
     const topics = (rawTopics ?? []).map((topic, index) => ({
@@ -1161,7 +1164,7 @@ export class CourseService {
   }
 
   async update(tenantId: number, id: number, updateCourseDto: UpdateCourseDto) {
-    await this.findCourse(tenantId, id);
+    const existing = await this.findCourse(tenantId, id);
 
     const {
       title, code, program, description, creditHours, level, passRate,
@@ -1172,8 +1175,21 @@ export class CourseService {
       prerequisites, coRequisites, mainObjective, requiredFacilitiesAndEquipment, references,
     } = updateCourseDto;
 
-    if (code !== undefined) {
-      await this.assertCourseCodeAvailable(tenantId, code, id);
+    if (
+      code !== undefined ||
+      academicYear !== undefined ||
+      semester !== undefined
+    ) {
+      await this.assertCourseCodeAvailable(
+        tenantId,
+        code !== undefined ? code : existing.code,
+        {
+          excludeCourseId: id,
+          academicYear:
+            academicYear !== undefined ? academicYear : existing.academicYear,
+          semester: semester !== undefined ? semester : existing.semester,
+        },
+      );
     }
 
     const updated = await this.prisma.course.update({
@@ -1285,6 +1301,28 @@ export class CourseService {
         ? body.title.trim()
         : undefined;
 
+    if (
+      body.code !== undefined ||
+      body.academicYear !== undefined ||
+      body.semester !== undefined
+    ) {
+      await this.assertCourseCodeAvailable(
+        tenantId,
+        body.code !== undefined ? String(body.code ?? '') : course.code,
+        {
+          excludeCourseId: id,
+          academicYear:
+            body.academicYear !== undefined
+              ? (String(body.academicYear ?? '').trim() || null)
+              : course.academicYear,
+          semester:
+            body.semester !== undefined
+              ? (String(body.semester ?? '').trim() || null)
+              : course.semester,
+        },
+      );
+    }
+
     const updated = await this.prisma.course.update({
       where: { id },
       data: {
@@ -1389,7 +1427,26 @@ export class CourseService {
       references?: unknown;
     } & CourseSpecFields,
   ) {
-    await this.findCourse(tenantId, id);
+    const existing = await this.findCourse(tenantId, id);
+    if (
+      body.code !== undefined ||
+      body.academicYear !== undefined ||
+      body.semester !== undefined
+    ) {
+      await this.assertCourseCodeAvailable(
+        tenantId,
+        body.code !== undefined ? body.code : existing.code,
+        {
+          excludeCourseId: id,
+          academicYear:
+            body.academicYear !== undefined
+              ? body.academicYear
+              : existing.academicYear,
+          semester:
+            body.semester !== undefined ? body.semester : existing.semester,
+        },
+      );
+    }
     const passRate =
       body.passRate === null || body.passRate === undefined
         ? undefined
@@ -1501,23 +1558,37 @@ export class CourseService {
   }
 
   /**
-   * Course codes must be unique per tenant (case-insensitive) among active courses.
-   * Empty / null codes are allowed and skipped.
+   * Course codes may repeat across offerings. A conflict is only when another
+   * active course in the same tenant has the same code, academic year, and
+   * semester. Empty / null codes are skipped.
    */
   private async assertCourseCodeAvailable(
     tenantId: number,
     code: string | null | undefined,
-    excludeCourseId?: number,
+    options?: {
+      excludeCourseId?: number;
+      academicYear?: string | null;
+      semester?: string | null;
+    },
   ) {
     const normalized = String(code ?? '').trim();
     if (!normalized) return;
+
+    const yearRaw = String(options?.academicYear ?? '').trim();
+    const semesterRaw = String(options?.semester ?? '').trim().toUpperCase();
 
     const existing = await this.prisma.course.findFirst({
       where: {
         tenantId,
         deletedAt: null,
         code: { equals: normalized, mode: 'insensitive' },
-        ...(excludeCourseId != null ? { id: { not: excludeCourseId } } : {}),
+        academicYear: yearRaw ? { in: academicYearMatchValues(yearRaw) } : null,
+        semester: semesterRaw
+          ? { equals: semesterRaw, mode: 'insensitive' }
+          : null,
+        ...(options?.excludeCourseId != null
+          ? { id: { not: options.excludeCourseId } }
+          : {}),
       },
       select: { id: true },
     });

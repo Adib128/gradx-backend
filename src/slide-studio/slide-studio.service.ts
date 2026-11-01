@@ -52,8 +52,10 @@ const HEARTBEAT_MS = 15_000;
 const MAX_FIGURES = 40;
 const CONTEXT_EXCERPTS = 24;
 const SECTION_EXCERPTS = 8;
-const FULLTEXT_CHAPTER_CHARS = 14_000;
-const FULLTEXT_TOTAL_CHARS = 60_000;
+/** Prefer short CLO-scoped snippets over dumping whole long chapters. */
+const FULLTEXT_CHAPTER_CHARS = 3_500;
+const FULLTEXT_TOTAL_CHARS = 24_000;
+const FULLTEXT_SNIPPET_CHARS = 900;
 
 type SessionMeta = {
   tenantId: number;
@@ -640,13 +642,20 @@ export class SlideStudioService implements OnModuleDestroy {
       );
     }
 
+    const cloFocus = (linked.length ? linked : input.clos)
+      .map((clo) => `${clo.code} ${clo.description}`)
+      .join('\n');
     let budget = FULLTEXT_TOTAL_CHARS;
     const excerpts: StudioExcerpt[] = [];
     for (const chapter of chapters) {
       if (budget <= 0) break;
-      const content = (
-        chapterTexts.get(`${chapter.referenceIndex}:${chapter.chapterIndex}`) ?? ''
-      ).slice(0, Math.min(FULLTEXT_CHAPTER_CHARS, budget));
+      const raw =
+        chapterTexts.get(`${chapter.referenceIndex}:${chapter.chapterIndex}`) ?? '';
+      const content = this.cloScopedChapterText(
+        raw,
+        cloFocus,
+        Math.min(FULLTEXT_CHAPTER_CHARS, budget),
+      );
       if (!content.trim()) continue;
       budget -= content.length;
       excerpts.push({ ...chapter, content, similarity: null });
@@ -654,12 +663,84 @@ export class SlideStudioService implements OnModuleDestroy {
     return { ...context, mode: excerpts.length ? 'fulltext' : 'none', excerpts };
   }
 
+  /**
+   * Keep only paragraphs that overlap CLO / topic terms so long chapters do not
+   * flood generation with unrelated material.
+   */
+  private cloScopedChapterText(
+    chapterText: string,
+    focusText: string,
+    maxChars: number,
+  ): string {
+    const raw = chapterText.replace(/\r\n/g, '\n').trim();
+    if (!raw) return '';
+    if (raw.length <= maxChars) return raw;
+
+    const terms = focusText
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((term) => term.length > 3);
+    const unique = [...new Set(terms)].slice(0, 48);
+    const paragraphs = raw
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 40);
+
+    if (!paragraphs.length || unique.length === 0) {
+      return raw.slice(0, maxChars);
+    }
+
+    const scored = paragraphs
+      .map((paragraph, index) => {
+        const haystack = paragraph.toLowerCase();
+        const hits = unique.reduce(
+          (sum, term) => sum + (haystack.includes(term) ? 1 : 0),
+          0,
+        );
+        return { paragraph, index, hits };
+      })
+      .filter((item) => item.hits > 0)
+      .sort((a, b) => b.hits - a.hits || a.index - b.index);
+
+    if (!scored.length) {
+      return raw.slice(0, Math.min(maxChars, FULLTEXT_SNIPPET_CHARS * 2));
+    }
+
+    const picked: string[] = [];
+    let used = 0;
+    for (const item of scored) {
+      const snippet = item.paragraph.slice(0, FULLTEXT_SNIPPET_CHARS);
+      if (used + snippet.length > maxChars) break;
+      picked.push(snippet);
+      used += snippet.length + 2;
+      if (picked.length >= 6) break;
+    }
+    return picked.join('\n\n').slice(0, maxChars);
+  }
+
   private async sectionExcerpts(
     input: StudioInput,
     context: StudioContext,
     section: StudioPlanSection,
   ): Promise<StudioExcerpt[]> {
-    const query = [section.title, section.goal, ...section.keyPoints].join('\n');
+    const sectionClos = input.clos.filter((clo) =>
+      section.cloCodes.includes(clo.code),
+    );
+    const cloFocus = (
+      sectionClos.length
+        ? sectionClos
+        : input.clos.filter((clo) => clo.linked)
+    )
+      .map((clo) => `${clo.code}: ${clo.description}`)
+      .join('\n');
+    const query = [
+      section.title,
+      section.goal,
+      ...section.keyPoints,
+      cloFocus,
+    ]
+      .filter(Boolean)
+      .join('\n');
     if (context.mode === 'vector') {
       try {
         const result = await this.referenceVector.searchReferenceChunks({
@@ -686,7 +767,7 @@ export class SlideStudioService implements OnModuleDestroy {
       }
       return context.excerpts.slice(0, SECTION_EXCERPTS);
     }
-    // Full-text fallback: favour chapters that mention the section's terms.
+    // Full-text fallback: favour CLO-related snippets for this section.
     const terms = query
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
@@ -695,7 +776,17 @@ export class SlideStudioService implements OnModuleDestroy {
       const haystack = excerpt.content.toLowerCase();
       return terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0);
     };
-    return [...context.excerpts].sort((a, b) => score(b) - score(a));
+    return [...context.excerpts]
+      .map((excerpt) => ({
+        ...excerpt,
+        content: this.cloScopedChapterText(
+          excerpt.content,
+          query,
+          FULLTEXT_SNIPPET_CHARS * 2,
+        ),
+      }))
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, SECTION_EXCERPTS);
   }
 
   private async publishFigure(input: StudioInput, figure: StudioFigure) {

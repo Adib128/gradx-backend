@@ -78,6 +78,7 @@ import {
   coerceTemplateSuggestion,
   emptyPlan,
   planSlideTotal,
+  filterPlanClosToLinked,
   rebalancePlan,
   sanitizeOutline,
   sanitizePlan,
@@ -118,7 +119,7 @@ export type StudioGraphDeps = {
 
 const WRITER_CONCURRENCY = 3;
 /** Optimizer rewrites run at most this many times (the last inspection only reports). */
-const MAX_OPTIMIZE_PASSES = 2;
+const MAX_OPTIMIZE_PASSES = 3;
 const MAX_OPTIMIZE_SLIDES = 12;
 const OPTIMIZE_BATCH = 4;
 const OPTIMIZE_ATTEMPTS = 2;
@@ -327,7 +328,13 @@ export function buildStudioGraph(
       config.signal,
     );
     if (!plan.sections.length) throw new Error('GENERATION_EMPTY_RESULT');
-    plan = rebalancePlan(plan, state.input.slideCount);
+    const linkedCodes = state.input.clos
+      .filter((clo) => clo.linked)
+      .map((clo) => clo.code);
+    plan = filterPlanClosToLinked(
+      rebalancePlan(plan, state.input.slideCount),
+      linkedCodes,
+    );
     emit(config, { event: 'plan_partial', data: plan });
     activity(config, 'planner', 'done', `${plan.sections.length} sections planned`);
     return {
@@ -354,10 +361,15 @@ export function buildStudioGraph(
         planFeedback: answer.feedback.trim().slice(0, 2000),
       };
     }
-    const plan =
+    const linkedCodes = state.input.clos
+      .filter((clo) => clo.linked)
+      .map((clo) => clo.code);
+    const plan = filterPlanClosToLinked(
       answer?.kind === 'plan_review' && answer.action === 'confirm'
         ? sanitizePlan(answer.plan, state.plan!)
-        : state.plan!;
+        : state.plan!,
+      linkedCodes,
+    );
     return {
       plan,
       planFeedback: null,
@@ -620,6 +632,7 @@ export function buildStudioGraph(
               : String(slide.diagram?.title || slide.title || ''),
           current,
           problems,
+          cloCode: slide.cloCode ?? item?.cloCode ?? null,
         };
       })
       .filter((job): job is NonNullable<typeof job> => !!job);
@@ -639,7 +652,11 @@ export function buildStudioGraph(
     try {
       await llm.ndjson(
         'illustrator',
-        illustratorPrompt(state.input, jobs),
+        illustratorPrompt(
+          state.input,
+          jobs,
+          (state.context?.excerpts ?? []).slice(0, 8),
+        ),
         (line) => {
           const index = Number(line.n) - 1;
           const mermaid = typeof line.mermaid === 'string' ? line.mermaid.trim() : '';

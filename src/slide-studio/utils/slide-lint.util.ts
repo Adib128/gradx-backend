@@ -30,9 +30,15 @@ const MAX_TEXT_RUN = 2;
 /** A SUMMARY this close to the CONCLUSION recaps the same lecture twice. */
 const RECAP_DISTANCE = 2;
 const FILLER_RE =
-  /\b(it is (very )?important to (note|remember|understand)|in this slide|as (we|you) can see|let'?s (look|see|take)|needless to say|basically|at the end of the day)\b/i;
+  /\b(it is (very )?important to (note|remember|understand)|in this slide|as (we|you) can see|let'?s (look|see|take)|needless to say|basically|at the end of the day|as mentioned earlier|we will (now )?see|students will learn)\b/i;
+const VAGUE_RE =
+  /\b(many|various|several|some|a few|numerous|etc\.?|and so on|things|aspects|concepts|topics|stuff)\b/i;
+const TOPIC_LABEL_TITLE_RE =
+  /^(overview|introduction|background|basics|fundamentals|key concepts|mathematical foundations|part\s*\d+|section\s*\d+|summary|recap|conclusion)\b/i;
 const HYPE_RE = /\p{L}{3,}!\s*$/u;
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
+/** A bullet this short is usually a topic tag, not a teachable claim. */
+const MIN_BULLET_WORDS = 5;
 /** Ends with exactly one period (not an ellipsis). */
 const FINAL_PERIOD_RE = /[^.]\.$/;
 const CONTENT_TYPES = new Set([
@@ -156,12 +162,25 @@ export function lintSlides(
       );
     }
     if (CONTENT_TYPES.has(String(slide.type)) && title && words(title) <= MAX_LABEL_TITLE_WORDS) {
-      add(index, 'low', 'polish', 'Headline is a topic label; state the slide\'s claim as a 5-10 word sentence.');
+      add(
+        index,
+        'medium',
+        'polish',
+        'Headline is a topic label; state the slide\'s claim as a 5-10 word sentence.',
+      );
+    }
+    if (CONTENT_TYPES.has(String(slide.type)) && title && TOPIC_LABEL_TITLE_RE.test(title)) {
+      add(
+        index,
+        'medium',
+        'polish',
+        'Headline is a catalogue heading; rewrite it as a specific claim students can verify on the slide.',
+      );
     }
     if (textRun > MAX_TEXT_RUN) {
       add(
         index,
-        'low',
+        'medium',
         'layout',
         `Slide ${textRun} in a row with only bullets; turn this one into a diagram, table, comparison or worked example.`,
       );
@@ -170,6 +189,31 @@ export function lintSlides(
     const styled = [title, ...texts];
     if (styled.some((text) => FILLER_RE.test(text))) {
       add(index, 'low', 'polish', 'Remove filler phrases ("it is important to note", "in this slide", "basically").');
+    }
+    if (
+      CONTENT_TYPES.has(String(slide.type)) &&
+      texts.some((text) => VAGUE_RE.test(text) && words(text) <= 12)
+    ) {
+      add(
+        index,
+        'medium',
+        'clarity',
+        'Replace vague wording ("many", "various", "aspects") with a concrete value, named case or mechanism.',
+      );
+    }
+    if (
+      CONTENT_TYPES.has(String(slide.type)) &&
+      (slide.bullets ?? []).some((bullet) => {
+        const count = words(bullet);
+        return count > 0 && count < MIN_BULLET_WORDS;
+      })
+    ) {
+      add(
+        index,
+        'medium',
+        'pedagogy',
+        `A bullet is under ${MIN_BULLET_WORDS} words (topic tag); expand it into a mechanism, condition or result.`,
+      );
     }
     if (styled.some((text) => HYPE_RE.test(text) || EMOJI_RE.test(text))) {
       add(index, 'low', 'polish', 'Remove exclamation marks and emojis; keep an academic tone.');

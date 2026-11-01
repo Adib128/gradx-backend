@@ -56,7 +56,25 @@ export function coercePlanSection(
     cloCodes: textList(raw.cloCodes, 6, 20),
     slideCount: Math.max(1, int(raw.slideCount, 2)),
     keyPoints: textList(raw.keyPoints, 6, 240),
-    visuals: textList(raw.visuals, 6, 240),
+    visuals: textList(raw.visuals, 8, 320),
+  };
+}
+
+/** Drop CLO codes that are not linked to the topic. */
+export function filterPlanClosToLinked(
+  plan: StudioPlan,
+  allowedCodes: string[],
+): StudioPlan {
+  const allowed = new Set(
+    allowedCodes.map((code) => code.trim()).filter(Boolean),
+  );
+  if (!allowed.size) return plan;
+  return {
+    ...plan,
+    sections: plan.sections.map((section) => ({
+      ...section,
+      cloCodes: section.cloCodes.filter((code) => allowed.has(code)),
+    })),
   };
 }
 

@@ -27,10 +27,13 @@ import {
 import {
   buildAchievementComment,
   cloCategoryGroup,
+  filterStudentsByReportFilter,
   normalizeReportLanguage,
+  normalizeReportStudentFilter,
   orderSections,
   sectionKeyOf,
   type ReportLanguage,
+  type ReportStudentFilter,
 } from './utils/course-report-document.util';
 
 const QUESTION_SELECT = {
@@ -252,7 +255,13 @@ export class CourseReportsService {
       include: {
         clos: { orderBy: { id: 'asc' } },
         students: {
-          select: { id: true, studentId: true, name: true, section: true },
+          select: {
+            id: true,
+            studentId: true,
+            name: true,
+            section: true,
+            departement: true,
+          },
           orderBy: { studentId: 'asc' },
         },
         topics: TOPIC_CLO_SELECT,
@@ -262,6 +271,23 @@ export class CourseReportsService {
       throw new NotFoundException('Course not found.');
     }
     return course;
+  }
+
+  private withFilteredRoster<
+    T extends {
+      students: Array<{
+        id: number;
+        studentId: string;
+        section?: string | null;
+        departement?: string | null;
+      }>;
+    },
+  >(course: T, filter?: ReportStudentFilter | null): T {
+    if (!filter) return course;
+    return {
+      ...course,
+      students: filterStudentsByReportFilter(course.students, filter),
+    };
   }
 
   private assessmentPlanItems(
@@ -287,8 +313,11 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
-    return (await this.buildCloAchievement(tenantId, courseId, assessmentId)).report;
+    return (
+      await this.buildCloAchievement(tenantId, courseId, assessmentId, filter)
+    ).report;
   }
 
   /**
@@ -300,9 +329,10 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
     const { report, course, assessedKeys, studentCloScores } =
-      await this.buildCloAchievement(tenantId, courseId, assessmentId);
+      await this.buildCloAchievement(tenantId, courseId, assessmentId, filter);
 
     const clos = report.rows.map((row) => ({
       id: row.id,
@@ -381,14 +411,19 @@ export class CourseReportsService {
       assessmentId?: number;
       language: 'en' | 'ar';
       userId?: number;
+      section?: string;
+      departement?: string;
+      department?: string;
     },
     res: Response,
   ): Promise<void> {
+    const filter = normalizeReportStudentFilter(options);
     // Validate before opening the stream so failures are normal HTTP errors.
     const report = await this.getCloAchievementReport(
       tenantId,
       courseId,
       options.assessmentId,
+      filter,
     );
     if (!report.rows.length) {
       throw new NotFoundException('No CLO data available for analysis.');
@@ -471,8 +506,12 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
-    const course = await this.loadCloCourse(tenantId, courseId);
+    const course = this.withFilteredRoster(
+      await this.loadCloCourse(tenantId, courseId),
+      filter,
+    );
     const passRatePercent = resolvePassRate(course.passRate);
     const assessments = await this.loadCloAssessments(tenantId, courseId, assessmentId);
     const plan = this.assessmentPlanItems(course.assessmentPlan);
@@ -588,11 +627,23 @@ export class CourseReportsService {
   async getCourseReportData(
     tenantId: number,
     courseId: number,
-    options: { assessmentId?: number; language?: ReportLanguage } = {},
+    options: {
+      assessmentId?: number;
+      language?: ReportLanguage;
+      section?: string;
+      departement?: string;
+      department?: string;
+    } = {},
   ) {
     const language = options.language ?? 'en';
+    const filter = normalizeReportStudentFilter(options);
     const { course, assessments, weights, scans, cloTotals, assessedKeys, studentCloScores, report } =
-      await this.buildCloAchievement(tenantId, courseId, options.assessmentId);
+      await this.buildCloAchievement(
+        tenantId,
+        courseId,
+        options.assessmentId,
+        filter,
+      );
 
     const passRatePercent = report.thresholdPercent;
     const gradeBands = resolveGradeBands(course.gradeBands);
@@ -760,12 +811,22 @@ export class CourseReportsService {
   async generateCourseReportNarrative(
     tenantId: number,
     courseId: number,
-    options: { assessmentId?: number; language?: ReportLanguage; userId?: number } = {},
+    options: {
+      assessmentId?: number;
+      language?: ReportLanguage;
+      userId?: number;
+      section?: string;
+      departement?: string;
+      department?: string;
+    } = {},
   ) {
     const language = options.language ?? 'en';
     const data = await this.getCourseReportData(tenantId, courseId, {
       assessmentId: options.assessmentId,
       language,
+      section: options.section,
+      departement: options.departement,
+      department: options.department,
     });
     const course = await this.prisma.course.findFirst({
       where: { id: courseId, tenantId },
@@ -860,11 +921,13 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
     const cloReport = await this.getCloAchievementReport(
       tenantId,
       courseId,
       assessmentId,
+      filter,
     );
     const passRatePercent = cloReport.thresholdPercent;
 
@@ -997,7 +1060,14 @@ export class CourseReportsService {
         passRate: true,
         gradeBands: true,
         assessmentPlan: true,
-        students: { select: { id: true, studentId: true } },
+        students: {
+          select: {
+            id: true,
+            studentId: true,
+            section: true,
+            departement: true,
+          },
+        },
         assessments: {
           where: assessmentId ? { id: assessmentId } : undefined,
           select: {
@@ -1020,8 +1090,12 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
-    const course = await this.loadScoreCourse(tenantId, courseId, assessmentId);
+    const course = this.withFilteredRoster(
+      await this.loadScoreCourse(tenantId, courseId, assessmentId),
+      filter,
+    );
     const passMarkThreshold = resolvePassRate(course.passRate);
     const gradeBands = resolveGradeBands(course.gradeBands);
     const plan = this.assessmentPlanItems(course.assessmentPlan);
@@ -1135,8 +1209,12 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
-    const course = await this.loadScoreCourse(tenantId, courseId, assessmentId);
+    const course = this.withFilteredRoster(
+      await this.loadScoreCourse(tenantId, courseId, assessmentId),
+      filter,
+    );
     const scans = await this.loadStudentScans(
       tenantId,
       course.assessments.map((assessment) => assessment.id),
@@ -1234,8 +1312,12 @@ export class CourseReportsService {
     tenantId: number,
     courseId: number,
     assessmentId?: number,
+    filter?: ReportStudentFilter,
   ) {
-    const course = await this.loadCloCourse(tenantId, courseId);
+    const course = this.withFilteredRoster(
+      await this.loadCloCourse(tenantId, courseId),
+      filter,
+    );
     const passRatePercent = resolvePassRate(course.passRate);
     const gradeBands = resolveGradeBands(course.gradeBands);
     const assessments = await this.loadCloAssessments(tenantId, courseId, assessmentId);
