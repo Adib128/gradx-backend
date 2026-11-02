@@ -32,6 +32,7 @@ import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
 import { DocxPdfService } from './docx-pdf.service';
+import { CourseWorkbookService } from './course-workbook.service';
 import {
   normalizeReportLanguage,
   normalizeReportStudentFilter,
@@ -50,6 +51,7 @@ export class CourseController {
     private readonly courseReportsService: CourseReportsService,
     private readonly referenceVectorService: ReferenceVectorService,
     private readonly docxPdfService: DocxPdfService,
+    private readonly courseWorkbookService: CourseWorkbookService,
   ) {}
 
   @Get()
@@ -342,6 +344,39 @@ export class CourseController {
       ),
       body.report,
     );
+  }
+
+  /** Course, CLOs, roster and assessments (questions + per-question marks) for the marks workbook template. */
+  @Get(':id/workbook/context')
+  getWorkbookContext(
+    @GetUser('tenantId') tenantId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.courseWorkbookService.getContext(tenantId, id);
+  }
+
+  /** Parse an uploaded marks workbook and return what would be created/updated (no writes). */
+  @Post(':id/workbook/preview')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  previewWorkbook(
+    @GetUser() user: { userId: number; tenantId: number },
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.courseWorkbookService.preview(user, id, file);
+  }
+
+  /** Create/update assessments, questions + CLO alignment, students and grades from the workbook. */
+  @Post(':id/workbook/import')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  importWorkbook(
+    @GetUser() user: { userId: number; tenantId: number },
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.courseWorkbookService.import(user, id, file);
   }
 
   @Get(':id/reports/student-results')

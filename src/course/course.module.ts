@@ -7,6 +7,7 @@ import { CourseProcessors } from './processors/course-extraction.processors';
 import { TopicService } from './topic.service';
 import { DocxPdfService } from './docx-pdf.service';
 import { CourseReportsService } from './course-reports.service';
+import { CourseWorkbookService } from './course-workbook.service';
 import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.module';
 
 @Module({
@@ -24,6 +25,7 @@ import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.mod
     TopicService,
     CourseReportsService,
     DocxPdfService,
+    CourseWorkbookService,
   ],
 })
 export class CourseModule {}
