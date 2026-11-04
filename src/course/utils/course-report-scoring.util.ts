@@ -435,15 +435,15 @@ export function assessmentMatchesMethod(assessmentTitle: string, method: string)
 }
 
 /**
- * CLO marks on the raw question-marks scale.
+ * CLO marks on the raw question-marks scale (plain sums only).
  *
- * Question q is worth its own points, split evenly across its CLOs (question
- * CLO links, otherwise its topic's CLOs). CLO max T = sum of those shares over
- * every assessment in scope, so the target is "threshold % of T" (70% of 10 =
- * 7 / 10). A student earns the share of every question answered correctly;
- * results without per-question details (Excel imports) earn score/max of every
- * share. Without any question links, assessments are matched to CLOs through
- * the CLO assessment methods instead (weight-based fallback).
+ * Each question is linked to one CLO. For that CLO:
+ *   T = Σ question.points   (max marks of its questions across assessments)
+ *   S = Σ earnedPoints      (marks the student scored on those questions)
+ * No assessment-weight scaling, no percent-of-max, no splitting across CLOs.
+ * Scans without per-question details contribute nothing on this path.
+ * If no question–CLO links exist at all, assessments fall back to CLO
+ * assessment-method matching (weight-based).
  */
 export function computeCloScores(options: {
   clos: Array<{ id: number; assessmentMethods: string[] }>;
@@ -456,19 +456,25 @@ export function computeCloScores(options: {
   const topicCloMap = new Map(
     options.topics.map((topic) => [topic.id, topic.topicClos.map((link) => link.cloId)]),
   );
+  /** One CLO per question: explicit question link, else the topic's first CLO. */
+  const primaryCloId = (row: QuestionRow): number | null => {
+    const linked = row.questionClos
+      .map((link) => link.cloId)
+      .filter((id) => courseCloIds.has(id));
+    if (linked.length > 0) return linked[0];
+    if (row.topicId == null) return null;
+    const fromTopic = (topicCloMap.get(row.topicId) ?? []).filter((id) =>
+      courseCloIds.has(id),
+    );
+    return fromTopic[0] ?? null;
+  };
   const toQuestion = (row: QuestionRow): CloQuestion => {
-    const linked = row.questionClos.map((link) => link.cloId);
-    const ids =
-      linked.length > 0
-        ? linked
-        : row.topicId != null
-          ? (topicCloMap.get(row.topicId) ?? [])
-          : [];
+    const cloId = primaryCloId(row);
     return {
       id: row.id,
       type: row.type,
       points: row.points > 0 ? row.points : 1,
-      cloIds: Array.from(new Set(ids)).filter((id) => courseCloIds.has(id)),
+      cloIds: cloId != null ? [cloId] : [],
     };
   };
 
@@ -500,26 +506,16 @@ export function computeCloScores(options: {
     }),
   );
 
-  // Raw question marks: a CLO's maximum is the sum of the marks of the questions
-  // mapped to it across the assessments, independent of the assessment weights.
-  const questionWeight = (assessmentId: number, question: CloQuestion) => {
-    const model = models.get(assessmentId);
-    return model && model.pointsTotal > 0 ? question.points : 0;
-  };
-
   for (const { assessment, master } of models.values()) {
     const perClo = new Map<number, { marks: number; questionNumbers: number[] }>();
     master.forEach((question, index) => {
-      const weighted = questionWeight(assessment.id, question);
-      if (question.cloIds.length === 0 || weighted <= 0) return;
-      const share = weighted / question.cloIds.length;
-      for (const cloId of question.cloIds) {
-        cloTotals.set(cloId, (cloTotals.get(cloId) ?? 0) + share);
-        const entry = perClo.get(cloId) ?? { marks: 0, questionNumbers: [] };
-        entry.marks += share;
-        entry.questionNumbers.push(index + 1);
-        perClo.set(cloId, entry);
-      }
+      const cloId = question.cloIds[0];
+      if (cloId == null || question.points <= 0) return;
+      cloTotals.set(cloId, (cloTotals.get(cloId) ?? 0) + question.points);
+      const entry = perClo.get(cloId) ?? { marks: 0, questionNumbers: [] };
+      entry.marks += question.points;
+      entry.questionNumbers.push(index + 1);
+      perClo.set(cloId, entry);
     });
     for (const [cloId, info] of perClo.entries()) {
       cloSources.get(cloId)?.push({
@@ -536,29 +532,9 @@ export function computeCloScores(options: {
   if (usesQuestionLinks) {
     for (const scan of options.scans) {
       const model = models.get(scan.assessmentId);
-      if (!model) continue;
-      const credit = (question: CloQuestion | undefined, fraction: number) => {
-        if (!question || question.cloIds.length === 0) return;
-        const share = (questionWeight(scan.assessmentId, question) * fraction) / question.cloIds.length;
-        for (const cloId of question.cloIds) addStudentScore(cloId, scan.studentKey, share);
-      };
-
-      if (scan.questionDetails.length === 0) {
-        const fraction = Math.min(1, Math.max(0, scan.score / scan.maxScore));
-        for (const question of model.master) credit(question, fraction);
-        continue;
-      }
+      if (!model || scan.questionDetails.length === 0) continue;
 
       for (const detail of scan.questionDetails) {
-        const maxPts = Number(detail.maxPoints);
-        const earnedPts = Number(detail.earnedPoints);
-        const fraction =
-          Number.isFinite(earnedPts) && Number.isFinite(maxPts) && maxPts > 0
-            ? Math.min(1, Math.max(0, earnedPts / maxPts))
-            : detail.isCorrect === true
-              ? 1
-              : 0;
-        if (fraction <= 0) continue;
         const questionId = Number(detail.questionId);
         let question = Number.isInteger(questionId) ? model.byId.get(questionId) : undefined;
         if (!question) {
@@ -569,7 +545,16 @@ export function computeCloScores(options: {
               : undefined) ?? model.master;
           question = sheet[Number(detail.question) - 1];
         }
-        credit(question, fraction);
+        const cloId = question?.cloIds[0];
+        if (cloId == null || !question) continue;
+
+        const earnedPts = Number(detail.earnedPoints);
+        const earned = Number.isFinite(earnedPts)
+          ? Math.max(0, earnedPts)
+          : detail.isCorrect === true
+            ? question.points
+            : 0;
+        addStudentScore(cloId, scan.studentKey, earned);
       }
     }
   } else {
@@ -594,6 +579,10 @@ export function computeCloScores(options: {
       }
       for (const scan of options.scans) {
         if (scan.assessmentId !== assessment.id) continue;
+        if (scan.questionDetails.length > 0) {
+          // Without question–CLO links we cannot attribute raw marks; skip.
+          continue;
+        }
         const fraction = Math.min(1, Math.max(0, scan.score / scan.maxScore));
         for (const clo of matched) addStudentScore(clo.id, scan.studentKey, share * fraction);
       }

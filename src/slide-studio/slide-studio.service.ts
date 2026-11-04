@@ -25,10 +25,12 @@ import { detectContentLanguage } from 'src/topic-content/utils/content-language.
 import { RedisCheckpointSaver } from './checkpoint/redis-checkpoint-saver';
 import type { ResumeSlideStudioDto, StartSlideStudioDto } from './dto/slide-studio.dto';
 import { buildStudioGraph, type StudioGraph, type StudioStateType } from './slide-studio.graph';
-import { SlideStudioLlm } from './slide-studio.llm';
+import { runWithPlanModels, SlideStudioLlm } from './slide-studio.llm';
 import { customTemplateDbId } from './slide-studio.templates';
 import { SlideTemplatesService } from './slide-templates.service';
 import { AiUsageService } from 'src/ai-usage/ai-usage.service';
+import { GenerationPlansService } from 'src/generation-plans/generation-plans.service';
+import type { PlanModelsMap } from 'src/generation-plans/generation-plan.roles';
 import type {
   StudioChapterSelection,
   StudioContext,
@@ -63,6 +65,8 @@ type SessionMeta = {
   topicId: number;
   courseId: number;
   createdAt: string;
+  /** Selected content-generation quality plan (High / Medium / Low). */
+  generationPlanId: number | null;
 };
 
 type RawReference = {
@@ -100,6 +104,7 @@ export class SlideStudioService implements OnModuleDestroy {
     private readonly llm: SlideStudioLlm,
     private readonly slideTemplates: SlideTemplatesService,
     private readonly aiUsage: AiUsageService,
+    private readonly generationPlans: GenerationPlansService,
   ) {
     this.redis = new Redis({
       host: config.get<string>('REDIS_HOST') ?? 'localhost',
@@ -261,6 +266,7 @@ export class SlideStudioService implements OnModuleDestroy {
       sessionId,
       topicId: meta.topicId,
       createdAt: meta.createdAt,
+      generationPlanId: meta.generationPlanId ?? null,
       status,
       next: snapshot.next,
       pending,
@@ -281,7 +287,7 @@ export class SlideStudioService implements OnModuleDestroy {
       qa: values.qa ?? null,
       review: values.review ?? null,
       deck: values.deck ?? null,
-      models: this.llm.models,
+      models: this.llm.effectiveModels(),
     };
   }
 
@@ -351,6 +357,10 @@ export class SlideStudioService implements OnModuleDestroy {
       course.description,
       ...course.clos.map((clo) => clo.description),
     );
+    const resolvedPlan = await this.generationPlans.resolveModels(dto.generationPlanId ?? null);
+    if (dto.generationPlanId && !resolvedPlan.planId) {
+      throw new NotFoundException(ErrorMessageKey.GENERATION_PLAN_NOT_FOUND);
+    }
     const sessionId = randomUUID();
     const input: StudioInput = {
       sessionId,
@@ -384,6 +394,7 @@ export class SlideStudioService implements OnModuleDestroy {
       topicId: topic.id,
       courseId: course.id,
       createdAt: new Date().toISOString(),
+      generationPlanId: resolvedPlan.planId,
     };
     await this.redis
       .multi()
@@ -478,35 +489,37 @@ export class SlideStudioService implements OnModuleDestroy {
       if (!res.writableEnded) res.write(': ping\n\n');
     }, HEARTBEAT_MS);
 
-    send('session', { sessionId });
+    send('session', { sessionId, generationPlanId: meta.generationPlanId ?? null });
     try {
+      const planModels = await this.planModelsForSession(meta);
       await runWithAiContext(
         { userId: meta.userId, tenantId: meta.tenantId, purpose: 'slide_studio' },
-        async () => {
-          const stream = await this.graph.stream(payload as never, {
-            ...this.config(sessionId),
-            streamMode: ['custom', 'updates'],
-            signal: abort.signal,
-            recursionLimit: 80,
-          });
-          for await (const chunk of stream as AsyncIterable<[string, unknown]>) {
-            const [mode, data] = chunk;
-            if (mode === 'custom') {
-              const event = data as StudioEvent;
-              send(event.event, event.data);
-            } else if (
-              mode === 'updates' &&
-              data &&
-              typeof data === 'object' &&
-              INTERRUPT in data
-            ) {
-              const interrupts = (data as Record<string, Array<{ value: unknown }>>)[
-                INTERRUPT
-              ];
-              if (interrupts?.[0]) send('interrupt', interrupts[0].value);
+        () =>
+          runWithPlanModels(planModels, async () => {
+            const stream = await this.graph.stream(payload as never, {
+              ...this.config(sessionId),
+              streamMode: ['custom', 'updates'],
+              signal: abort.signal,
+              recursionLimit: 80,
+            });
+            for await (const chunk of stream as AsyncIterable<[string, unknown]>) {
+              const [mode, data] = chunk;
+              if (mode === 'custom') {
+                const event = data as StudioEvent;
+                send(event.event, event.data);
+              } else if (
+                mode === 'updates' &&
+                data &&
+                typeof data === 'object' &&
+                INTERRUPT in data
+              ) {
+                const interrupts = (data as Record<string, Array<{ value: unknown }>>)[
+                  INTERRUPT
+                ];
+                if (interrupts?.[0]) send('interrupt', interrupts[0].value);
+              }
             }
-          }
-        },
+          }),
       );
       const snapshot = await this.graph.getState(this.config(sessionId));
       send('end', {
@@ -537,6 +550,11 @@ export class SlideStudioService implements OnModuleDestroy {
       await this.redis.del(this.lockKey(sessionId)).catch(() => undefined);
       if (!res.writableEnded) res.end();
     }
+  }
+
+  private async planModelsForSession(meta: SessionMeta): Promise<PlanModelsMap> {
+    const resolved = await this.generationPlans.resolveModels(meta.generationPlanId ?? null);
+    return resolved.models;
   }
 
   // ----------------------------------------------------------- graph deps

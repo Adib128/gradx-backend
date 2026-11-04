@@ -11,9 +11,19 @@ export function formatZodIssues(
 ): FormattedValidationError[] {
   if (!issues?.length) return [];
 
-  return issues.map((issue) => ({
-    field: issue.path.map(String).join('.'),
-    message: issue.message,
-    code: issue.code,
-  }));
+  return issues.flatMap((issue) => {
+    if (!issue || typeof issue !== 'object') return [];
+    const path = Array.isArray(issue.path) ? issue.path.map(String).join('.') : '';
+    const message =
+      typeof issue.message === 'string' && issue.message.trim()
+        ? issue.message
+        : 'Invalid value';
+    return [
+      {
+        field: path,
+        message,
+        code: typeof issue.code === 'string' ? issue.code : undefined,
+      },
+    ];
+  });
 }

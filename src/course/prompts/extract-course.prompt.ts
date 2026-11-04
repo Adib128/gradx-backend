@@ -77,29 +77,35 @@ Some course specifications also include an Assessment / Activities / Evaluation 
 If the document contains a table like:
 
 No | Assessment Activities | Assessment timing (in week no) | Percentage of Total Assessment Score
-1. | Mid-Term Exam | 7th week | 20%
-2. | Quizzes | 4, 6 and 10th | 10%
-3. | Final Exam | 17 or 18 week | 40%
-4. | Total |  | 70%
+1. | Mid-Term Exam | Week 7 | 20%
+2. | Advanced Lab Assignments (Algorithm Implementation) | Weeks 3, 5, 9, 11 | 20%
+3. | Quizzes | TBD | 10%
+4. | Applied Term Project (Optimizing a Deep Learning Architecture) | Week 14 | 10%
+5. | Final Exam | Week 16 | 40%
+6. | Total |  | 100%
 
-Then produce:
+Then produce EVERY activity row (never drop labs/projects/quizzes even when the "No" column repeats a number):
 
 "assessments": [
-  { "title": "Mid-Term Exam", "type": "Mid-Term Exam", "percentage": 20, "timing": "7th week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Quizzes", "type": "Quizzes", "percentage": 10, "timing": "4, 6 and 10th", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
-  { "title": "Final Exam", "type": "Final Exam", "percentage": 40, "timing": "17 or 18 week", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
+  { "title": "Mid-Term Exam", "type": "Mid-Term Exam", "percentage": 20, "timing": "Week 7", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Advanced Lab Assignments (Algorithm Implementation)", "type": "Advanced Lab Assignments", "percentage": 20, "timing": "Weeks 3, 5, 9, 11", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Quizzes", "type": "Quizzes", "percentage": 10, "timing": "TBD", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Applied Term Project (Optimizing a Deep Learning Architecture)", "type": "Applied Term Project", "percentage": 10, "timing": "Week 14", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" },
+  { "title": "Final Exam", "type": "Final Exam", "percentage": 40, "timing": "Week 16", "duration": null, "totalMarks": null, "passMark": null, "numberOfVersions": 2, "difficulty": "BALANCED" }
 ],
-"assessmentsTotalPercentage": 70
+"assessmentsTotalPercentage": 100
 
 Rules for the "Students Assessment Activities" table (No | Assessment Activities | Assessment timing (in week no) | Percentage of Total Assessment Score):
-- One "assessments" item per activity row, "title" copied exactly (e.g. "Project, presentation and Quiz").
+- One "assessments" item per activity row, "title" copied exactly (e.g. "Project, presentation and Quiz"). Include ALL activity rows; duplicate "No" values (e.g. two rows numbered "4.") still each become their own assessment.
+- Skip the footnote under the table (e.g. "*Assessment Activities (i.e., Written test, oral test...)") — it is NOT an assessment row.
 - "type" is DYNAMIC: choose a short human type label from the assessment activity name (usually the title itself, or a concise category drawn from that name). Examples: title "Mid-Term Exam" → type "Mid-Term Exam"; title "Quizzes" → type "Quizzes"; title "Project, presentation and Quiz" → type "Project Presentation & Quiz". NEVER use fixed codes (QUIZ, FINAL_EXAM, MID_TERM_EXAM, LAB, ASSIGNMENT, OTHER). NEVER use "OTHER". Every assessment must have its own meaningful type.
-- "timing" = the "Assessment timing (in week no)" cell copied verbatim (e.g. "4, 6 and 10th", "7th week", "1-15 week", "17 or 18 week"); null when empty.
-- The "Total" row is NOT an assessment: put its percentage in "assessmentsTotalPercentage" exactly as printed (e.g. 100) and do not add it to "assessments".
+- "timing" = the "Assessment timing (in week no)" cell copied verbatim (e.g. "Week 7", "Weeks 3, 5, 9, 11", "TBD", "17 or 18 week"); null only when empty.
+- The "Total" row is NOT an assessment: put its percentage in "assessmentsTotalPercentage" exactly as printed (almost always 100) and do not add it to "assessments".
 
 Rules for assessment percentage:
 - "percentage" is the grade weight toward the final grade as a number (e.g. 20 for 20%). Do NOT confuse this with totalMarks (exam point total) or teachingModes percentage.
 - Prefer explicit Assessment / Evaluation / Activities tables when present. Also scan narrative course-description text for activity weights.
+- Course specifications always allocate 100% across activities. Extract every row so the sum of assessment "percentage" values equals 100 (and matches "assessmentsTotalPercentage" when a Total row is printed). If your draft sum is not 100, you missed or misread a row — re-read the table and fix the list before answering.
 - Keep "duration" as exam length in minutes when stated; keep "totalMarks" as point total when stated. These are separate from "percentage".
 
 Rules for "references":

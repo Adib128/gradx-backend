@@ -10,6 +10,8 @@ const SelectionSchema = z.object({
 export const StartSlideStudioSchema = z.object({
   slideCount: z.number().int().min(MIN_SLIDES).max(MAX_SLIDES),
   selections: z.array(SelectionSchema).max(10).default([]),
+  /** Content generation quality plan (High / Medium / Low). */
+  generationPlanId: z.number().int().positive().optional(),
 });
 
 export const ResumeSlideStudioSchema = z.object({

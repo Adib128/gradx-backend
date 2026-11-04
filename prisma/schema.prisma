@@ -1024,3 +1024,49 @@ model SlideTemplate {
   @@index([tenantId])
   @@map("slide_templates")
 }
+
+/// Content / slide generation quality tier (High / Medium / Low). Admin-managed.
+/// Distinct from commercial subscription `Plan` packages.
+model GenerationPlan {
+  id              Int                    @id @default(autoincrement())
+  /// Stable code: HIGH | MEDIUM | LOW (or custom).
+  code            String                 @unique
+  nameEn          String
+  nameAr          String
+  descriptionEn   String?
+  descriptionAr   String?
+  /// Short quality headline shown on the picker cards.
+  qualityLabelEn  String
+  qualityLabelAr  String
+  /// Approximate total token budget shown to the instructor (informational).
+  estimatedTokens Int                    @default(0)
+  isActive        Boolean                @default(true)
+  sortOrder       Int                    @default(0)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  models          GenerationPlanModel[]
+
+  @@index([isActive, sortOrder])
+  @@map("generation_plans")
+}
+
+/// OpenRouter model assignment for one agent role inside a generation plan.
+model GenerationPlanModel {
+  id              Int            @id @default(autoincrement())
+  planId          Int
+  /// Slide Studio role (writer, planner, …) or "default" for single-model flows.
+  role            String
+  /// Primary OpenRouter model id, e.g. anthropic/claude-haiku-5.5
+  model           String
+  /// Fallback model ids tried in order when the primary fails.
+  fallbackModels  Json           @default("[]")
+  maxTokens       Int?
+  reasoningTokens Int?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  plan            GenerationPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, role])
+  @@index([planId])
+  @@map("generation_plan_models")
+}

@@ -1207,10 +1207,9 @@ export class GradingService {
   }
 
   /**
-   * Student score vs. maximum score per CLO for one scan. Uses the course
-   * reports' weighting: each question is worth its share of the assessment's
-   * total marks, split evenly across its CLOs (question CLO links, otherwise
-   * its topic's CLOs), and a correct answer earns the full share.
+   * Student score vs. maximum score per CLO for one scan.
+   * Each question maps to one CLO. T = Σ question points, S = Σ earned marks
+   * (plain sums — no assessment-total scaling and no percent splits).
    */
   async getScanCloBreakdown(user: RequestUser, scanId: number) {
     const scan = await this.prisma.gradingScan.findFirst({
@@ -1302,24 +1301,18 @@ export class GradingService {
     );
     const courseClos = assessment.course?.clos ?? [];
     const courseCloIds = new Set(courseClos.map((clo) => clo.id));
-    const resolveCloIds = (question: (typeof orderedQuestions)[number]) => {
-      const linked = question.questionClos.map((link) => link.cloId);
-      const ids = linked.length > 0
-        ? linked
-        : question.topicId != null
-          ? (topicCloMap.get(question.topicId) ?? [])
-          : [];
-      return Array.from(new Set(ids)).filter((id) => courseCloIds.has(id));
+    /** One CLO per question: explicit link, else the topic's first course CLO. */
+    const resolvePrimaryCloId = (question: (typeof orderedQuestions)[number]) => {
+      const linked = question.questionClos
+        .map((link) => link.cloId)
+        .filter((id) => courseCloIds.has(id));
+      if (linked.length > 0) return linked[0];
+      if (question.topicId == null) return null;
+      const fromTopic = (topicCloMap.get(question.topicId) ?? []).filter((id) =>
+        courseCloIds.has(id),
+      );
+      return fromTopic[0] ?? null;
     };
-
-    const weights = orderedQuestions.map((question) =>
-      question.points > 0 ? question.points : 1,
-    );
-    const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
-    const examTotal =
-      assessment.totalMarks && assessment.totalMarks > 0
-        ? assessment.totalMarks
-        : weightSum;
 
     const hasDetails = details.length > 0;
     const detailByQuestion = new Map<number, Record<string, unknown>>();
@@ -1355,27 +1348,22 @@ export class GradingService {
       return column;
     };
 
+    // Plain sum of question marks per CLO (no exam-total scaling, no %).
     orderedQuestions.forEach((question, index) => {
       const questionNumber = index + 1;
-      const weightedPoints =
-        weightSum > 0 ? (weights[index] / weightSum) * examTotal : 0;
+      const maxPoints = question.points > 0 ? question.points : 1;
       const detail = detailByQuestion.get(questionNumber);
-      const maxPts = Number(detail?.maxPoints);
       const earnedPts = Number(detail?.earnedPoints);
-      const earned =
-        Number.isFinite(earnedPts) && Number.isFinite(maxPts) && maxPts > 0
-          ? (earnedPts / maxPts) * weightedPoints
-          : detail?.isCorrect === true
-            ? weightedPoints
-            : 0;
-      const cloIds = resolveCloIds(question);
-      const targets = cloIds.length > 0 ? cloIds : [null];
-      for (const cloId of targets) {
-        const column = columnFor(cloId);
-        column.questionNumbers.push(questionNumber);
-        column.maxScore += weightedPoints / targets.length;
-        column.studentScore += earned / targets.length;
-      }
+      const earned = Number.isFinite(earnedPts)
+        ? Math.max(0, earnedPts)
+        : detail?.isCorrect === true
+          ? maxPoints
+          : 0;
+      const cloId = resolvePrimaryCloId(question);
+      const column = columnFor(cloId);
+      column.questionNumbers.push(questionNumber);
+      column.maxScore += maxPoints;
+      column.studentScore += earned;
     });
 
     const round = (value: number) => Math.round(value * 100) / 100;
@@ -1392,12 +1380,17 @@ export class GradingService {
         studentScore: hasDetails ? round(column.studentScore) : null,
       }));
 
+    const totalMax = Array.from(columns.values()).reduce(
+      (sum, column) => sum + column.maxScore,
+      0,
+    );
+
     return {
       scanId: scan.id,
       hasQuestionDetails: hasDetails,
       columns: rows,
       total: {
-        maxScore: round(examTotal),
+        maxScore: round(totalMax),
         studentScore: hasDetails
           ? round(
               Array.from(columns.values()).reduce(

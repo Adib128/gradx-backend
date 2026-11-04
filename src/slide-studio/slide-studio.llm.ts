@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
@@ -8,6 +9,7 @@ import {
   type OpenRouterBalance,
 } from 'src/common/helpers/openrouter-chat.helper';
 import { ErrorMessageKey } from 'src/common/constants/error-message';
+import type { PlanModelsMap } from 'src/generation-plans/generation-plan.roles';
 import type { PromptPair } from './prompts/studio.prompts';
 import { NdjsonStreamParser, parseJsonObject } from './utils/ndjson-stream.util';
 import type { StudioAgent } from './slide-studio.types';
@@ -79,6 +81,13 @@ const REASONING_TOKENS: Record<ModelRole, number> = {
   reviewer: 2000,
 };
 
+/** Per-request plan model overrides (concurrent sessions must not mutate instance state). */
+const planModelsStorage = new AsyncLocalStorage<PlanModelsMap>();
+
+export function runWithPlanModels<T>(models: PlanModelsMap, fn: () => Promise<T>): Promise<T> {
+  return planModelsStorage.run(models, fn);
+}
+
 @Injectable()
 export class SlideStudioLlm {
   private readonly client: OpenAI;
@@ -113,6 +122,39 @@ export class SlideStudioLlm {
     return fetchOpenRouterBalance(this.client);
   }
 
+  /** Effective models for the current ALS plan context (else env/defaults). */
+  effectiveModels(): Record<ModelRole, string> {
+    const plan = planModelsStorage.getStore();
+    if (!plan) return this.models;
+    const roles = Object.keys(DEFAULT_MODELS) as ModelRole[];
+    return Object.fromEntries(
+      roles.map((role) => {
+        const override = plan[role] ?? plan.default;
+        return [role, override?.model || this.models[role]];
+      }),
+    ) as Record<ModelRole, string>;
+  }
+
+  private resolveRole(role: ModelRole) {
+    const plan = planModelsStorage.getStore();
+    const override = plan?.[role] ?? plan?.default;
+    const model = override?.model || this.models[role];
+    const reasoning =
+      override?.reasoningTokens != null && Number.isFinite(override.reasoningTokens)
+        ? Math.max(0, Math.round(override.reasoningTokens))
+        : this.reasoning[role];
+    const maxTokens =
+      override?.maxTokens != null && Number.isFinite(override.maxTokens)
+        ? Math.max(1, Math.round(override.maxTokens))
+        : MAX_TOKENS[role];
+    const fallbacks = (
+      override?.fallbackModels?.length
+        ? override.fallbackModels
+        : FALLBACK_MODELS[role]
+    ).filter((candidate) => candidate !== model);
+    return { model, reasoning, maxTokens, fallbacks };
+  }
+
   async text(
     role: ModelRole,
     prompt: PromptPair,
@@ -122,9 +164,7 @@ export class SlideStudioLlm {
       temperature?: number;
     } = {},
   ): Promise<string> {
-    const model = this.models[role];
-    const reasoning = this.reasoning[role];
-    const fallbacks = FALLBACK_MODELS[role].filter((candidate) => candidate !== model);
+    const { model, reasoning, maxTokens, fallbacks } = this.resolveRole(role);
     const { text } = await streamChatCompletion(
       this.client,
       {
@@ -134,7 +174,7 @@ export class SlideStudioLlm {
         ...(reasoning
           ? { reasoning: { max_tokens: reasoning, exclude: true } }
           : { temperature: options.temperature ?? 0.4 }),
-        max_tokens: MAX_TOKENS[role] + reasoning,
+        max_tokens: maxTokens + reasoning,
         messages: [
           { role: 'system', content: prompt.system },
           { role: 'user', content: prompt.user },

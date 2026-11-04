@@ -19,6 +19,7 @@ import { UniversityModule } from './university/university.module';
 import { AdminModule } from './admin/admin.module';
 import { PackageModule } from './package/package.module';
 import { AiUsageModule } from './ai-usage/ai-usage.module';
+import { GenerationPlansModule } from './generation-plans/generation-plans.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { AiUsageModule } from './ai-usage/ai-usage.module';
     UniversityModule,
     AdminModule,
     PackageModule,
+    GenerationPlansModule,
   ],
   providers: [
     {

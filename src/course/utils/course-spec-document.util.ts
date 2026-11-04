@@ -397,31 +397,263 @@ type AssessmentActivityRow = {
   percentage: number | null;
 };
 
+const ASSESSMENT_FOOTNOTE =
+  /^\*?assessment\s+activities\b.*\bi\.?e\.?\b|written\s+test.*oral\s+test|oral\s+presentation.*group\s+project/i;
+
+/** Grade-weight cell: prefer an explicit % value in 0..100 over a bare trailing number. */
+function parseAssessmentPercentageCell(
+  cells: string[],
+  titleIndex: number,
+): number | null {
+  for (let index = cells.length - 1; index > titleIndex; index -= 1) {
+    const cell = (cells[index] ?? '').replace(/\s*<br>\s*/g, ' ').trim();
+    if (!cell) continue;
+    const hasPercentSign = /%/.test(cell);
+    const bareWeight = /^(?:\d+(?:\.\d+)?)\s*%?$/.test(cell);
+    if (!hasPercentSign && !bareWeight) continue;
+    const parsed = firstNumber(cell);
+    if (parsed == null || parsed < 0 || parsed > 100) continue;
+    return Math.round(parsed);
+  }
+  return null;
+}
+
+const isAssessmentHeaderLine = (line: string, cells: string[]) => {
+  const joined = cells.join(' ');
+  return (
+    /assessment\s+activities|percentage|timing/i.test(joined) &&
+    (/no\.?|#|رقم/i.test(joined) || /percentage\s+of\s+total/i.test(joined))
+  );
+};
+
+const isTimingCell = (value: string) => {
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (/^(?:\d+(?:\.\d+)?)\s*%$/.test(text)) return false;
+  return /^(?:weeks?|tbd|w\b)/i.test(text) || /\bweek\b|\btbd\b/i.test(text);
+};
+
+const isPercentWeightCell = (value: string) => {
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (!/%/.test(text) && !/^(?:\d+(?:\.\d+)?)$/.test(text)) return false;
+  const parsed = firstNumber(text);
+  return parsed != null && parsed >= 0 && parsed <= 100;
+};
+
+/** Pull a trailing "Week(s) …" / TBD timing off a mashed title+timing cell. */
+function peelTrailingTiming(text: string): { title: string; timing: string | null } {
+  const cleaned = text.replace(/\s+/g, ' ').trim().replace(/,\s*$/, '');
+  const match = cleaned.match(
+    /^(.*?)\s+((?:Weeks?\s+.+|TBD(?:\b.*)?))$/i,
+  );
+  if (!match) return { title: cleaned, timing: null };
+  const title = match[1].replace(/[(\[]\s*$/, '').trim();
+  const timing = match[2].replace(/,\s*$/, '').trim();
+  return { title: title || cleaned, timing: timing || null };
+}
+
 /**
- * Rows of the Students Assessment Activities table as { title, timing, percentage }.
- * Timing is the cell after the activity; the percentage is the last cell.
+ * PDF layout often shreds wrapped activity rows across pipe and plain lines, e.g.
+ *   Advanced Lab Assignments (Algorithm Weeks 3, 5, 20%
+ *   2.
+ *   | Implementation) | 9, 11 |
+ * Merge those fragments so Lab/Project weights are not lost.
  */
-export function findAssessmentActivityRows(text: string): AssessmentActivityRow[] {
-  for (const body of sectionTableLines(text, ASSESSMENT_ACTIVITIES_HEADING, NEXT_SECTION_AFTER_ASSESSMENTS)) {
-    const rows: AssessmentActivityRow[] = [];
-    for (const line of body) {
-      if (!line.trim().startsWith('|')) continue;
-      const cells = splitCells(line);
-      const titleIndex = firstTextCellIndex(cells);
-      if (titleIndex < 0 || cells.length < titleIndex + 3) continue;
-      const title = cells[titleIndex].replace(/\s*<br>\s*/g, ' ').trim();
-      if (TOTAL_LABEL.test(title) || /assessment\s+activities|percentage|timing/i.test(line)) continue;
-      if (isPlaceholderValue(title)) continue;
-      const timing = cells[titleIndex + 1].replace(/\s*<br>\s*/g, ' ').trim();
+function parseAssessmentRowsFromSectionLines(lines: string[]): AssessmentActivityRow[] {
+  type Draft = {
+    titleParts: string[];
+    timingParts: string[];
+    percentage: number | null;
+  };
+  const rows: AssessmentActivityRow[] = [];
+  let draft: Draft | null = null;
+
+  const commit = () => {
+    if (!draft) return;
+    let title = draft.titleParts.join(' ').replace(/\s+/g, ' ').trim();
+    let timing =
+      draft.timingParts
+        .join(', ')
+        .replace(/\s+/g, ' ')
+        .replace(/,\s*,+/g, ',')
+        .replace(/\s+,/g, ',')
+        .replace(/,\s*$/g, '')
+        .trim() || null;
+    if (!timing) {
+      const peeled = peelTrailingTiming(title);
+      title = peeled.title;
+      timing = peeled.timing;
+    }
+    title = title
+      .replace(/\s*---\s*Page\b.*$/i, '')
+      .replace(/\s+/g, ' ')
+      .replace(/\(\s+/g, '(')
+      .replace(/\s+\)/g, ')')
+      .trim();
+    if (
+      title &&
+      !isPlaceholderValue(title) &&
+      !TOTAL_LABEL.test(title) &&
+      !ASSESSMENT_FOOTNOTE.test(title)
+    ) {
       rows.push({
         title,
-        timing: timing && !isPlaceholderValue(timing) ? timing : null,
-        percentage: firstNumber(cells[cells.length - 1]),
+        timing,
+        percentage: draft.percentage,
       });
     }
-    if (rows.length > 0) return rows;
+    draft = null;
+  };
+
+  const startDraft = (title: string, timing: string | null, percentage: number | null) => {
+    commit();
+    const peeled = timing ? { title, timing } : peelTrailingTiming(title);
+    draft = {
+      titleParts: peeled.title ? [peeled.title] : [],
+      timingParts: peeled.timing ? [peeled.timing] : timing ? [timing] : [],
+      percentage,
+    };
+  };
+
+  const appendFragment = (raw: string) => {
+    const text = raw.replace(/\s+/g, ' ').trim();
+    if (!text || !draft) return;
+    if (NUMBERING_CELL.test(text)) return;
+    if (isPercentWeightCell(text)) {
+      draft.percentage = draft.percentage ?? Math.round(firstNumber(text)!);
+      return;
+    }
+    if (isTimingCell(text) || /^\d+(?:\s*,\s*\d+)+$/.test(text)) {
+      // "9, 11" continuation of "Weeks 3, 5"
+      if (draft.timingParts.length > 0 && /^\d/.test(text)) {
+        draft.timingParts[draft.timingParts.length - 1] = `${draft.timingParts[draft.timingParts.length - 1]}, ${text}`;
+      } else if (!draft.timingParts.includes(text)) {
+        draft.timingParts.push(text);
+      }
+      return;
+    }
+    const peeled = peelTrailingTiming(text);
+    if (peeled.timing && !draft.timingParts.length) draft.timingParts.push(peeled.timing);
+    if (peeled.title) draft.titleParts.push(peeled.title);
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    // PDF page markers / footer page numbers — never part of an activity.
+    if (/^---\s*Page\b/i.test(line) || /^\d{1,3}$/.test(line)) {
+      commit();
+      continue;
+    }
+
+    // Lone row number sitting on its own baseline (common in this PDF).
+    if (/^\d+\s*[.)]?$/.test(line)) continue;
+
+    if (line.startsWith('|')) {
+      const cells = splitCells(line).map((cell) =>
+        cell.replace(/\s*<br>\s*/g, ' ').replace(/\s+/g, ' ').trim(),
+      );
+      if (cells.every((cell) => !cell)) continue;
+      if (isAssessmentHeaderLine(line, cells)) continue;
+
+      const titleIndex = firstTextCellIndex(cells);
+      if (titleIndex < 0) continue;
+      const titleCell = cells[titleIndex];
+      if (TOTAL_LABEL.test(titleCell)) {
+        commit();
+        continue;
+      }
+      if (ASSESSMENT_FOOTNOTE.test(titleCell) || /^\*/.test(titleCell)) continue;
+
+      const hasNumbering = cells
+        .slice(0, Math.max(titleIndex, 0) + 1)
+        .some((cell) => NUMBERING_CELL.test(cell.trim()));
+      const percentage = parseAssessmentPercentageCell(cells, titleIndex);
+      const timingFromRow =
+        cells.length >= titleIndex + 3 && !isPercentWeightCell(cells[titleIndex + 1] ?? '')
+          ? cells[titleIndex + 1]
+          : null;
+
+      // Well-formed row: "| 1. | Mid-Term Exam | Week 7 | 20% |" — commit immediately.
+      if (hasNumbering && percentage != null && cells.length >= titleIndex + 3) {
+        startDraft(titleCell, timingFromRow, percentage);
+        commit();
+        continue;
+      }
+
+      // Numbered but incomplete (title only) — wait for wrap fragments.
+      if (hasNumbering) {
+        startDraft(titleCell, timingFromRow, percentage);
+        for (const cell of cells.slice(titleIndex + 1)) appendFragment(cell);
+        continue;
+      }
+
+      // Unnumbered pipe row with a % — often a wrapped project/lab line.
+      if (percentage != null) {
+        startDraft(titleCell, timingFromRow, percentage);
+        for (const cell of cells.slice(titleIndex + 1)) {
+          if (cell === timingFromRow) continue;
+          if (isPercentWeightCell(cell)) continue;
+          appendFragment(cell);
+        }
+        continue;
+      }
+
+      // Continuation fragments: "| Implementation) | 9, 11 |"
+      if (draft) {
+        for (const cell of cells) appendFragment(cell);
+      }
+      continue;
+    }
+
+    // Plain (non-pipe) lines — PDF often dumps wrapped lab/project rows here.
+    if (ASSESSMENT_FOOTNOTE.test(line) || /^\*/.test(line)) {
+      commit();
+      continue;
+    }
+    if (TOTAL_LABEL.test(line)) {
+      commit();
+      continue;
+    }
+    if (/assessment\s+activities|percentage of total|assessment timing/i.test(line)) continue;
+
+    const plainPercent = firstNumber(line.match(/(\d+(?:\.\d+)?)\s*%/)?.[0] ?? '');
+    if (plainPercent != null && plainPercent >= 0 && plainPercent <= 100) {
+      // e.g. "Advanced Lab Assignments (Algorithm Weeks 3, 5, 20%"
+      const withoutPercent = line.replace(/\s*\d+(?:\.\d+)?\s*%\s*$/, '').trim();
+      const peeled = peelTrailingTiming(withoutPercent);
+      startDraft(peeled.title, peeled.timing, Math.round(plainPercent));
+      continue;
+    }
+
+    if (draft) appendFragment(line);
   }
-  return [];
+  commit();
+
+  return rows.filter((row) => row.title && row.percentage != null);
+}
+
+/**
+ * Rows of the Students Assessment Activities table as { title, timing, percentage }.
+ * Timing is the cell after the activity; the percentage is the weight cell (usually last).
+ */
+export function findAssessmentActivityRows(text: string): AssessmentActivityRow[] {
+  let best: AssessmentActivityRow[] = [];
+  let bestScore = -1;
+  for (const body of sectionTableLines(text, ASSESSMENT_ACTIVITIES_HEADING, NEXT_SECTION_AFTER_ASSESSMENTS)) {
+    const rows = parseAssessmentRowsFromSectionLines(body);
+    if (rows.length === 0) continue;
+    const sum = rows.reduce((total, row) => total + (row.percentage ?? 0), 0);
+    // Prefer a complete 100% plan, then the densest / highest-weight parse.
+    const score = (sum === 100 ? 10_000 : 0) + sum * 10 + rows.length;
+    if (score > bestScore) {
+      best = rows;
+      bestScore = score;
+    }
+    if (sum === 100) return rows;
+  }
+  return best;
 }
 
 /** Type label taken from the assessment activity name (dynamic, not a fixed enum). */
@@ -429,30 +661,174 @@ export function inferAssessmentType(title: string): string {
   const cleaned = String(title || '')
     .trim()
     .replace(/\s+/g, ' ');
-  return cleaned || 'Assessment';
+  // Prefer the lead phrase before a long parenthetical (e.g. "Advanced Lab Assignments (...)").
+  const withoutParen = cleaned.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return withoutParen || cleaned || 'Assessment';
 }
 
-/** Document rows win (order, title, timing, percentage, type) when the table is readable. */
-function applyAssessmentFallbacks(assessments: unknown, text: string): unknown {
-  const documentRows = text ? findAssessmentActivityRows(text) : [];
-  if (documentRows.length > 0) {
-    return documentRows.map((row) => ({
-      title: row.title,
-      type: inferAssessmentType(row.title),
-      percentage: row.percentage,
-      timing: row.timing,
-      duration: null,
-      totalMarks: null,
-      passMark: null,
-      numberOfVersions: 2,
-      difficulty: 'BALANCED',
-    }));
-  }
+const toAssessmentPercentage = (value: unknown): number | null => {
+  if (value == null || value === '') return null;
+  const cleaned = String(value).replace(/%/g, '').trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+  return Math.round(parsed);
+};
 
-  return (Array.isArray(assessments) ? assessments : [])
+/**
+ * Course specs always allocate 100% across activities. Snap near-100 float sums
+ * to exact integers; leave clearly incomplete extractions untouched for review.
+ */
+export function normalizeAssessmentPlanPercentages(
+  assessments: unknown,
+  documentTotal: number | null = null,
+): { assessments: Record<string, unknown>[]; assessmentsTotalPercentage: number | null; sum: number } {
+  const rows = (Array.isArray(assessments) ? assessments : [])
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .filter((item) => !TOTAL_LABEL.test(primitiveText(item.title).trim()))
-    .map((item) => ({ ...item, timing: toCleanText(item.timing) }));
+    .filter((item) => !ASSESSMENT_FOOTNOTE.test(primitiveText(item.title).trim()));
+
+  const withPercents = rows.map((row) => ({
+    ...row,
+    percentage: toAssessmentPercentage(row.percentage ?? row.score ?? row.weight),
+  }));
+
+  const weighted = withPercents.filter((row) => row.percentage != null) as Array<
+    Record<string, unknown> & { percentage: number }
+  >;
+  const sum = weighted.reduce((total, row) => total + row.percentage, 0);
+  const target =
+    documentTotal != null && documentTotal > 0 && documentTotal <= 100
+      ? Math.round(documentTotal)
+      : 100;
+
+  // All rows have weights and already total the expected plan — keep as-is.
+  if (
+    weighted.length === withPercents.length &&
+    withPercents.length > 0 &&
+    sum === target
+  ) {
+    return {
+      assessments: withPercents,
+      assessmentsTotalPercentage: target,
+      sum,
+    };
+  }
+
+  // Float / rounding drift (e.g. 33.3+33.3+33.4) → largest-remainder to target.
+  if (
+    weighted.length === withPercents.length &&
+    withPercents.length > 0 &&
+    Math.abs(sum - target) <= 1.5 &&
+    sum > 0
+  ) {
+    const raw = weighted.map((row) => (row.percentage / sum) * target);
+    const floors = raw.map((value) => Math.floor(value + 1e-9));
+    let remaining = target - floors.reduce((total, value) => total + value, 0);
+    const order = raw
+      .map((value, index) => ({ index, frac: value - Math.floor(value + 1e-9) }))
+      .sort((a, b) => b.frac - a.frac || a.index - b.index);
+    for (let i = 0; i < remaining; i += 1) {
+      floors[order[i % order.length].index] += 1;
+    }
+    const normalized = withPercents.map((row, index) => ({
+      ...row,
+      percentage: floors[index],
+    }));
+    return {
+      assessments: normalized,
+      assessmentsTotalPercentage: target,
+      sum: target,
+    };
+  }
+
+  return {
+    assessments: withPercents,
+    assessmentsTotalPercentage:
+      sum > 0 && weighted.length === withPercents.length ? Math.round(sum) : documentTotal,
+    sum,
+  };
+}
+
+const toAssessmentRecord = (row: {
+  title: string;
+  timing: string | null;
+  percentage: number | null;
+  type?: string;
+}): Record<string, unknown> => ({
+  title: row.title,
+  type: row.type || inferAssessmentType(row.title),
+  percentage: row.percentage,
+  timing: row.timing,
+  duration: null,
+  totalMarks: null,
+  passMark: null,
+  numberOfVersions: 2,
+  difficulty: 'BALANCED',
+});
+
+const assessmentTitleKey = (title: unknown) =>
+  normalizeTitle(title).replace(/\b(?:exam|assignment|assignments|project|quiz|quizzes)\b/g, (m) =>
+    m.toLowerCase(),
+  );
+
+/** Document rows win when complete; otherwise merge with AI so wrapped PDF rows are not lost. */
+function applyAssessmentFallbacks(assessments: unknown, text: string): unknown {
+  const documentRows = text ? findAssessmentActivityRows(text) : [];
+  const aiRows = (Array.isArray(assessments) ? assessments : [])
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .filter((item) => !TOTAL_LABEL.test(primitiveText(item.title).trim()))
+    .filter((item) => !ASSESSMENT_FOOTNOTE.test(primitiveText(item.title).trim()))
+    .map((item) => ({
+      ...item,
+      title: primitiveText(item.title || item.activity).trim(),
+      percentage: toAssessmentPercentage(item.percentage ?? item.score ?? item.weight),
+      timing: toCleanText(item.timing),
+      type: primitiveText(item.type).trim() || inferAssessmentType(primitiveText(item.title)),
+    }))
+    .filter((item) => item.title);
+
+  const documentMapped = documentRows.map((row) => toAssessmentRecord(row));
+  const documentSum = documentRows.reduce((total, row) => total + (row.percentage ?? 0), 0);
+
+  if (documentMapped.length > 0 && documentSum >= 100) {
+    return documentMapped;
+  }
+
+  if (documentMapped.length > 0 && aiRows.length > 0) {
+    const merged = [...documentMapped];
+    const seen = new Set(merged.map((row) => assessmentTitleKey(row.title)));
+    for (const ai of aiRows) {
+      const key = assessmentTitleKey(ai.title);
+      if (!key || seen.has(key)) continue;
+      // Fuzzy: AI title contained in a document title (or vice versa) counts as same row.
+      const overlap = [...seen].some(
+        (existing) => existing.includes(key) || key.includes(existing),
+      );
+      if (overlap) continue;
+      seen.add(key);
+      merged.push(
+        toAssessmentRecord({
+          title: String(ai.title),
+          timing: (ai.timing as string | null) ?? null,
+          percentage: (ai.percentage as number | null) ?? null,
+          type: String(ai.type || ''),
+        }),
+      );
+    }
+    const mergedSum = merged.reduce(
+      (total, row) => total + (typeof row.percentage === 'number' ? row.percentage : 0),
+      0,
+    );
+    // Prefer the fuller plan when document parse was incomplete (common with wrapped PDF cells).
+    if (mergedSum > documentSum || merged.length > documentMapped.length) {
+      return merged;
+    }
+    return documentMapped;
+  }
+
+  if (documentMapped.length > 0) return documentMapped;
+  return aiRows;
 }
 
 const COURSE_QUALITY_HEADING = /assessment\s+of\s+course\s+quality|تقييم\s*جودة\s*المقرر/i;
@@ -940,10 +1316,20 @@ export function applyCourseSpecDocumentFallbacks(
 
   next.topicsTotalHours =
     (text ? findCourseContentTotal(text) : null) ?? toPositiveInt(result.topicsTotalHours);
-  next.assessmentsTotalPercentage =
+
+  // Assessment activity tables are usually single-line cells; parse them from
+  // DOCX and layout-PDF pipe text (not only when `exact` is true for other fields).
+  const documentAssessmentTotal =
     (text ? findAssessmentActivitiesTotal(text) : null) ??
     toPositiveInt(result.assessmentsTotalPercentage);
-  next.assessments = applyAssessmentFallbacks(result.assessments, exact ? text : '');
+  const assessmentRows = applyAssessmentFallbacks(result.assessments, text);
+  const normalizedAssessments = normalizeAssessmentPlanPercentages(
+    assessmentRows,
+    documentAssessmentTotal,
+  );
+  next.assessments = normalizedAssessments.assessments;
+  next.assessmentsTotalPercentage =
+    normalizedAssessments.assessmentsTotalPercentage ?? documentAssessmentTotal;
 
   const documentQuality = exact ? findCourseQualityAssessment(text) : [];
   next.courseQualityAssessment =

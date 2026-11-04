@@ -73,8 +73,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
             typeof body.message === 'string'
               ? body.message
               : 'Validation failed';
-          messageKey = ErrorMessageKey.VALIDATION_FAILED;
-          errors = formatZodIssues(body.errors as ZodIssue[]);
+          const stringErrors = body.errors.filter(
+            (item): item is string => typeof item === 'string' && item.trim().length > 0,
+          );
+          if (stringErrors.length === body.errors.length && stringErrors.length > 0) {
+            // App-level string lists (e.g. workbook save), not Zod issues.
+            messageKey =
+              typeof body.message === 'string' ? body.message : ErrorMessageKey.VALIDATION_FAILED;
+            detail = stringErrors.join('\n');
+            errors = stringErrors.map((item) => ({ field: '', message: item }));
+          } else {
+            messageKey = ErrorMessageKey.VALIDATION_FAILED;
+            errors = formatZodIssues(body.errors as ZodIssue[]);
+          }
         } else {
           const rawMessage = body.message;
 

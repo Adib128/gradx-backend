@@ -32,7 +32,10 @@ import { TopicService } from './topic.service';
 import { UpdateTopicDto } from './dto/update-topic.dto';
 import { CourseReportsService } from './course-reports.service';
 import { DocxPdfService } from './docx-pdf.service';
-import { CourseWorkbookService } from './course-workbook.service';
+import {
+  CourseWorkbookService,
+  type EditorWorkbookPayload,
+} from './course-workbook.service';
 import {
   normalizeReportLanguage,
   normalizeReportStudentFilter,
@@ -377,6 +380,16 @@ export class CourseController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     return this.courseWorkbookService.import(user, id, file);
+  }
+
+  /** Save the in-app marks spreadsheet (students, assessments, questions, grades). */
+  @Put(':id/workbook')
+  saveWorkbook(
+    @GetUser() user: { userId: number; tenantId: number },
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: EditorWorkbookPayload,
+  ) {
+    return this.courseWorkbookService.saveEditor(user, id, body);
   }
 
   @Get(':id/reports/student-results')

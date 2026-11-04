@@ -12,6 +12,8 @@ import {
   normalizeQuestionType,
   parseCourseWorkbook,
   ParsedAssessmentSheet,
+  ParsedCourseWorkbook,
+  ParsedMark,
 } from './utils/course-workbook.util';
 
 type WorkbookUser = { userId: number; tenantId: number };
@@ -126,10 +128,152 @@ function planItemType(item: Record<string, unknown>) {
   return typeof raw === 'string' ? raw.trim() : '';
 }
 
+/** In-app marks editor payload (mirrors ParsedCourseWorkbook without Excel). */
+export type EditorWorkbookPayload = {
+  students: Array<{
+    studentId: string;
+    name: string;
+    section?: string;
+    departement?: string;
+  }>;
+  assessments: Array<{
+    sheetName: string;
+    code?: string | null;
+    type: string;
+    title: string;
+    weight?: number | null;
+    questions: Array<{
+      questionId?: number | null;
+      label?: string;
+      cloCodes: string[];
+      maxMarks: number | null;
+      type: string;
+      text?: string;
+    }>;
+    rows: Array<{
+      studentId: string;
+      name?: string;
+      section?: string;
+      departement?: string;
+      marks: Array<number | null>;
+    }>;
+  }>;
+};
+
+function columnLetter(index: number) {
+  let n = index + 1;
+  let label = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    label = String.fromCharCode(65 + rem) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label || 'A';
+}
+
+function editorPayloadToParsed(payload: EditorWorkbookPayload): ParsedCourseWorkbook {
+  const roster = (payload.students ?? [])
+    .map((student, index) => ({
+      sheetName: 'Students',
+      rowNumber: index + 1,
+      studentId: String(student.studentId ?? '').trim(),
+      name: String(student.name ?? '').trim(),
+      section: String(student.section ?? '').trim(),
+      departement: String(student.departement ?? '').trim(),
+    }))
+    .filter((row) => row.studentId);
+
+  const assessments: ParsedAssessmentSheet[] = (payload.assessments ?? []).map(
+    (sheet, sheetIndex) => {
+      const questions = (sheet.questions ?? []).map((question, index) => {
+        const questionId =
+          question.questionId != null && Number.isInteger(Number(question.questionId))
+            ? Number(question.questionId)
+            : null;
+        const maxParsed =
+          question.maxMarks == null || !Number.isFinite(Number(question.maxMarks))
+            ? null
+            : Number(question.maxMarks);
+        return {
+          column: columnLetter(index + 4),
+          label: String(question.label ?? `Q${index + 1}`).trim() || `Q${index + 1}`,
+          questionId,
+          questionIdRaw: questionId != null ? String(questionId) : '',
+          cloCodes: Array.isArray(question.cloCodes)
+            ? question.cloCodes.map((code) => String(code).trim()).filter(Boolean)
+            : [],
+          maxMarks: maxParsed,
+          maxMarksRaw: maxParsed == null ? '' : String(maxParsed),
+          typeRaw: String(question.type ?? 'MCQ').trim(),
+          text: String(question.text ?? '').trim(),
+        };
+      });
+
+      const rows = (sheet.rows ?? [])
+        .map((row, index) => {
+          const marks: ParsedMark[] = questions.map((_, qIndex) => {
+            const value = row.marks?.[qIndex];
+            if (value == null) return null;
+            const num = Number(value);
+            return Number.isFinite(num) ? num : { invalid: String(value) };
+          });
+          return {
+            rowNumber: index + 1,
+            studentId: String(row.studentId ?? '').trim(),
+            name: String(row.name ?? '').trim(),
+            section: String(row.section ?? '').trim(),
+            departement: String(row.departement ?? '').trim(),
+            marks,
+          };
+        })
+        .filter((row) => row.studentId || row.marks.some((mark) => mark !== null));
+
+      return {
+        sheetName: String(sheet.sheetName || sheet.title || `Assessment ${sheetIndex + 1}`).trim(),
+        code: String(sheet.code ?? '').trim(),
+        type: String(sheet.type ?? '').trim(),
+        title: String(sheet.title ?? '').trim(),
+        weightRaw:
+          sheet.weight == null || !Number.isFinite(Number(sheet.weight))
+            ? ''
+            : String(sheet.weight),
+        questions,
+        rows,
+        errors: [],
+      };
+    },
+  );
+
+  return { roster, assessments };
+}
+
 function omit<T extends object, K extends keyof T>(value: T, ...keys: K[]): Omit<T, K> {
   const copy = { ...value };
   for (const key of keys) delete copy[key];
   return copy;
+}
+
+/** Flat text for workbook cells — avoids `[object Object]` from bad/legacy values. */
+function workbookFieldText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed === '[object Object]' ? '' : trimmed;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const key of ['name', 'code', 'title', 'label', 'value', 'section', 'departement', 'department']) {
+      const nested = obj[key];
+      if (typeof nested === 'string' || typeof nested === 'number') {
+        const text = String(nested).trim();
+        return text === '[object Object]' ? '' : text;
+      }
+    }
+    return '';
+  }
+  const fallback = String(value).trim();
+  return fallback === '[object Object]' ? '' : fallback;
 }
 
 @Injectable()
@@ -268,10 +412,10 @@ export class CourseWorkbookService {
       plan,
       clos: course.clos.map((clo) => ({ code: clo.code, description: clo.description })),
       students: course.students.map((student) => ({
-        studentId: student.studentId,
-        name: student.name,
-        section: student.section ?? '',
-        departement: student.departement ?? '',
+        studentId: String(student.studentId ?? '').trim(),
+        name: String(student.name ?? '').trim(),
+        section: workbookFieldText(student.section),
+        departement: workbookFieldText(student.departement),
       })),
       assessments: course.assessments.map((assessment) => {
         const ordered = orderQuestionsForSheet(assessment.questions);
@@ -303,11 +447,18 @@ export class CourseWorkbookService {
   }
 
   async preview(user: WorkbookUser, courseId: number, file?: Express.Multer.File) {
-    const analysis = await this.analyze(user, courseId, file);
+    const analysis = await this.analyzeFile(user, courseId, file);
     return analysis.preview;
   }
 
-  private async analyze(
+  /** Persist an in-app marks editor payload (same rules as Excel import). */
+  async saveEditor(user: WorkbookUser, courseId: number, payload: EditorWorkbookPayload) {
+    const parsed = editorPayloadToParsed(payload);
+    const analysis = await this.analyzeParsed(user, courseId, parsed);
+    return this.persistAnalysis(user, analysis);
+  }
+
+  private async analyzeFile(
     user: WorkbookUser,
     courseId: number,
     file?: Express.Multer.File,
@@ -323,16 +474,21 @@ export class CourseWorkbookService {
     } catch {
       throw new BadRequestException('Could not read the Excel file.');
     }
+    return this.analyzeParsed(user, courseId, parsed);
+  }
 
+  private async analyzeParsed(
+    user: WorkbookUser,
+    courseId: number,
+    parsed: ParsedCourseWorkbook,
+  ): Promise<Analysis> {
     const course = await this.loadCourse(user.tenantId, courseId);
     const passRate = course.assessmentPassRate;
     const errors: string[] = [];
     const warnings: string[] = [];
 
     if (parsed.assessments.length === 0) {
-      errors.push(
-        'No assessment tabs were found. Download the course marks template and fill one tab per assessment.',
-      );
+      errors.push('No assessment tabs were found. Add at least one assessment tab.');
     }
 
     const cloByCode = new Map(course.clos.map((clo) => [codeKey(clo.code), clo]));
@@ -477,7 +633,7 @@ export class CourseWorkbookService {
     const hasWork =
       active.length > 0 || summary.studentsToCreate > 0 || summary.studentsToUpdate > 0;
     if (!hasWork && errors.length === 0) {
-      errors.push('The file has no assessments with questions, marks or students to import.');
+      errors.push('Nothing to save: add assessments with questions, marks or students.');
     }
 
     const preview: WorkbookPreview = {
@@ -760,19 +916,18 @@ export class CourseWorkbookService {
       question.averagePercent = round1((sum / (plannedRows.length * question.maxMarks)) * 100);
     });
 
+    // One CLO per question: T = Σ maxMarks, earned = Σ student marks (plain sums).
     const cloTotals = new Map<string, { marks: number; earned: number }>();
     plannedQuestions.forEach((question, position) => {
-      if (question.cloCodes.length === 0) return;
-      const share = question.maxMarks / question.cloCodes.length;
-      for (const code of question.cloCodes) {
-        const entry = cloTotals.get(code) ?? { marks: 0, earned: 0 };
-        entry.marks += share;
-        entry.earned += plannedRows.reduce(
-          (acc, row) => acc + (row.rawMarks[position] ?? 0) / question.cloCodes.length,
-          0,
-        );
-        cloTotals.set(code, entry);
-      }
+      const code = question.cloCodes[0];
+      if (!code || question.maxMarks <= 0) return;
+      const entry = cloTotals.get(code) ?? { marks: 0, earned: 0 };
+      entry.marks += question.maxMarks;
+      entry.earned += plannedRows.reduce(
+        (acc, row) => acc + (row.rawMarks[position] ?? 0),
+        0,
+      );
+      cloTotals.set(code, entry);
     });
 
     const percents = plannedRows.map((row) => row.percent);
@@ -813,11 +968,17 @@ export class CourseWorkbookService {
   }
 
   async import(user: WorkbookUser, courseId: number, file?: Express.Multer.File) {
-    const analysis = await this.analyze(user, courseId, file);
+    const analysis = await this.analyzeFile(user, courseId, file);
+    return this.persistAnalysis(user, analysis);
+  }
+
+  private async persistAnalysis(user: WorkbookUser, analysis: Analysis) {
     if (!analysis.preview.canImport) {
+      const messages = analysis.preview.errors.filter(Boolean);
       throw new BadRequestException({
-        message: analysis.preview.errors[0] || 'The workbook cannot be imported.',
-        errors: analysis.preview.errors,
+        message: messages[0] || 'The workbook cannot be saved.',
+        detail: messages.join('\n'),
+        errors: messages,
       });
     }
 
