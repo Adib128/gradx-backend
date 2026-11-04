@@ -792,7 +792,9 @@ export class CourseWorkbookService {
 
       const cloIds: number[] = [];
       if (question.cloCodes.length === 0) {
-        errors.push(`${where}: select the CLO code this question measures.`);
+        warnings.push(
+          `${where}: no CLO selected — question is saved without CLO mapping until you set one.`,
+        );
       }
       for (const code of question.cloCodes) {
         const clo = ctx.cloByCode.get(codeKey(code));
@@ -806,7 +808,12 @@ export class CourseWorkbookService {
         errors.push(`${where}: question type "${question.typeRaw}" must be MCQ or TRUE_FALSE.`);
       }
 
-      const text = question.text || current?.text || `${question.label} — CLO ${question.cloCodes.join(', ')}`;
+      const text =
+        question.text ||
+        current?.text ||
+        (question.cloCodes.length
+          ? `${question.label} — CLO ${question.cloCodes.join(', ')}`
+          : question.label);
       let action: QuestionAction = 'create';
       if (current) {
         const currentClos = current.questionClos.map((link) => link.cloId).sort().join(',');
@@ -835,7 +842,7 @@ export class CourseWorkbookService {
     });
 
     if (plannedQuestions.length === 0) {
-      errors.push('Add at least one question with its CLO code and max marks.');
+      errors.push('Add at least one question with max marks.');
     }
 
     const untouched = (existing?.questions ?? []).filter((question) => !usedQuestionIds.has(question.id));
