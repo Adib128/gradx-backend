@@ -17,6 +17,16 @@ const NEUTRAL_TYPES = new Set([
   'LEARNING_OUTCOMES',
   'NEXT_STEPS',
   'REFERENCES',
+  'CHECKPOINT',
+]);
+
+const FRAME_BULLET_TYPES = new Set([
+  'INTRODUCTION',
+  'LEARNING_OUTCOMES',
+  'AGENDA',
+  'SUMMARY',
+  'CONCLUSION',
+  'REFERENCES',
 ]);
 const NOTE_SKIP_RE =
   /^(next|now|then|so,|let'?s|in the next|answer:|ask |pause|today|we will|we'll|remember|transition|ok)/i;
@@ -51,7 +61,7 @@ function cleanText(value: unknown): string {
 
 function cleanItem(value: unknown): string {
   return cleanText(value)
-    .replace(/^(?:[-•▪◦·]|\*(?!\*)|\d{1,2}[.)])\s+/, '')
+    .replace(/^(?:[-•▪◦·]|\*(?!\*))\s+/, '')
     .trim();
 }
 
@@ -128,7 +138,12 @@ export function renderedLayout(slide: StudioSlide): string {
   if (type === 'FORMULA' || layout === 'FORMULA_FOCUS') return 'FORMULA_FOCUS';
   if (type === 'EXAMPLE' || layout === 'EXAMPLE_STEPS') return 'EXAMPLE_STEPS';
   if (type === 'COMPARISON' || layout === 'TWO_COLUMN') return 'TWO_COLUMN';
-  if (type === 'CHECKPOINT' || type === 'ACTIVITY' || layout === 'QUOTE_CALLOUT' || slide.callout) {
+  if (type === 'CHECKPOINT') {
+    const bullets = Array.isArray(slide.bullets) ? slide.bullets.filter(Boolean) : [];
+    if (bullets.length >= 2) return 'BULLETS';
+  }
+  if (FRAME_BULLET_TYPES.has(type)) return 'BULLETS';
+  if (type === 'ACTIVITY' || layout === 'QUOTE_CALLOUT') {
     return 'QUOTE_CALLOUT';
   }
   return layout || 'BULLETS';
@@ -145,7 +160,13 @@ export function visibleTexts(slide: StudioSlide): string[] {
   } else {
     texts.push(...(slide.bullets ?? []));
   }
-  if (layout === 'DEFINITION' || layout === 'QUOTE_CALLOUT') texts.push(slide.callout?.text);
+  if (
+    layout === 'DEFINITION' ||
+    layout === 'QUOTE_CALLOUT' ||
+    (layout === 'BULLETS' && str(slide.callout?.text))
+  ) {
+    texts.push(slide.callout?.text);
+  }
   texts.push(slide.formula?.latex, slide.formula?.explanation, ...exampleTexts(slide));
   texts.push(slide.code?.source, slide.code?.output);
   texts.push(...(slide.table?.headers ?? []), ...(slide.table?.rows ?? []).flat());
@@ -182,7 +203,13 @@ function layoutForContent(slide: StudioSlide): { type: string; layout: string } 
   if (hasExample(slide)) return { type: 'EXAMPLE', layout: 'EXAMPLE_STEPS' };
   if (str(slide.code?.source)) return { type: 'CODE', layout: 'BULLETS' };
   const type = upper(slide.type);
-  if (str(slide.callout?.text) && (type === 'CHECKPOINT' || type === 'ACTIVITY')) {
+  if (str(slide.callout?.text) && type === 'ACTIVITY') {
+    return { type, layout: 'QUOTE_CALLOUT' };
+  }
+  if (type === 'CHECKPOINT' && (slide.bullets?.length ?? 0) >= 2) {
+    return { type, layout: 'BULLETS' };
+  }
+  if (str(slide.callout?.text) && type === 'CHECKPOINT') {
     return { type, layout: 'QUOTE_CALLOUT' };
   }
   return { type: neutralType(slide), layout: 'BULLETS' };
@@ -283,7 +310,11 @@ export function repairSlideStructure(input: StudioSlide): { slide: StudioSlide; 
   }
 
   const layout = renderedLayout(slide);
-  if (slide.callout && layout !== 'DEFINITION' && layout !== 'QUOTE_CALLOUT') {
+  const keepsCallout =
+    layout === 'DEFINITION' ||
+    layout === 'QUOTE_CALLOUT' ||
+    (layout === 'BULLETS' && FRAME_BULLET_TYPES.has(upper(slide.type)));
+  if (slide.callout && !keepsCallout) {
     const line = `**${slide.callout.label || 'Note'}:** ${slide.callout.text}`;
     if (layout === 'TWO_COLUMN') appendNotes(slide, [line]);
     else slide.bullets = [...slide.bullets, line];

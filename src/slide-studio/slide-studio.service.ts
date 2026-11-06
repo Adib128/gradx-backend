@@ -30,7 +30,6 @@ import { customTemplateDbId } from './slide-studio.templates';
 import { SlideTemplatesService } from './slide-templates.service';
 import { AiUsageService } from 'src/ai-usage/ai-usage.service';
 import { GenerationPlansService } from 'src/generation-plans/generation-plans.service';
-import type { PlanModelsMap } from 'src/generation-plans/generation-plan.roles';
 import type {
   StudioChapterSelection,
   StudioContext,
@@ -491,11 +490,16 @@ export class SlideStudioService implements OnModuleDestroy {
 
     send('session', { sessionId, generationPlanId: meta.generationPlanId ?? null });
     try {
-      const planModels = await this.planModelsForSession(meta);
+      const resolvedPlan = await this.planModelsForSession(meta);
       await runWithAiContext(
-        { userId: meta.userId, tenantId: meta.tenantId, purpose: 'slide_studio' },
+        {
+          userId: meta.userId,
+          tenantId: meta.tenantId,
+          purpose: 'slide_studio',
+          generationPlanCode: resolvedPlan.code,
+        },
         () =>
-          runWithPlanModels(planModels, async () => {
+          runWithPlanModels(resolvedPlan.models, async () => {
             const stream = await this.graph.stream(payload as never, {
               ...this.config(sessionId),
               streamMode: ['custom', 'updates'],
@@ -536,12 +540,7 @@ export class SlideStudioService implements OnModuleDestroy {
           (error as { response?: { message?: unknown } })?.response?.message ?? message,
           ErrorMessageKey.SLIDE_STUDIO_FAILED,
         );
-        const balance =
-          errorKey === ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED ||
-          errorKey === ErrorMessageKey.GENERATION_AI_KEY_LIMIT_EXCEEDED
-            ? await this.llm.balance().catch(() => null)
-            : null;
-        send('error', { errorKey, message: errorKey, ...(balance ? { balance } : {}) });
+        send('error', { errorKey, message: errorKey });
       }
     } finally {
       finished = true;
@@ -552,9 +551,8 @@ export class SlideStudioService implements OnModuleDestroy {
     }
   }
 
-  private async planModelsForSession(meta: SessionMeta): Promise<PlanModelsMap> {
-    const resolved = await this.generationPlans.resolveModels(meta.generationPlanId ?? null);
-    return resolved.models;
+  private async planModelsForSession(meta: SessionMeta) {
+    return this.generationPlans.resolveModels(meta.generationPlanId ?? null);
   }
 
   // ----------------------------------------------------------- graph deps

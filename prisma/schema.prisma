@@ -33,6 +33,8 @@ enum QuestionType {
   SHORT_ANSWER
   CODING
   MATH
+  ORDERING
+  MATCHING
 }
 
 enum DifficultyLevel {
@@ -994,6 +996,8 @@ model AiUsageLog {
   durationMs       Int?
   /// When the LLM request was sent.
   startedAt        DateTime?
+  /// Content-generation quality tier when known: HIGH | MEDIUM | LOW.
+  generationPlanCode String?
   createdAt        DateTime  @default(now())
   user             User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
   tenant           Tenant?   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
@@ -1004,6 +1008,7 @@ model AiUsageLog {
   @@index([createdAt])
   @@index([success])
   @@index([startedAt])
+  @@index([generationPlanCode])
   @@map("ai_usage_logs")
 }
 

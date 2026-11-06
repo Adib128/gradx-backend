@@ -14,6 +14,12 @@ import type {
   UpdateGenerationPlanModelDto,
   UpsertGenerationPlanModelDto,
 } from './dto/generation-plans.dto';
+import {
+  estimateStudioCostUsd,
+  estimateStudioTokens,
+  parseGenerationTier,
+  STUDIO_REFERENCE_SLIDES,
+} from './generation-plan.presets';
 import type { PlanModelsMap } from './generation-plan.roles';
 
 const PLAN_INCLUDE = {
@@ -24,9 +30,9 @@ const PLAN_INCLUDE = {
 export class GenerationPlansService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Active plans for the instructor picker (cards). */
-  listActive() {
-    return this.prisma.generationPlan.findMany({
+  /** Active plans for the instructor picker (cards). Token/cost estimates follow slide count. */
+  async listActive(slideCount = STUDIO_REFERENCE_SLIDES) {
+    const plans = await this.prisma.generationPlan.findMany({
       where: { isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { nameEn: 'asc' }],
       include: {
@@ -42,6 +48,21 @@ export class GenerationPlansService {
           },
         },
       },
+    });
+    const slides = Number.isFinite(slideCount) ? slideCount : STUDIO_REFERENCE_SLIDES;
+    return plans.map((plan) => {
+      const tier = parseGenerationTier(plan.code);
+      const estimatedTokens = tier
+        ? estimateStudioTokens(tier, slides)
+        : plan.estimatedTokens;
+      const cost = estimateStudioCostUsd(plan.code, slides);
+      return {
+        ...plan,
+        estimatedTokens,
+        referenceSlideCount: STUDIO_REFERENCE_SLIDES,
+        estimatedCostUsdMin: cost?.min ?? null,
+        estimatedCostUsdMax: cost?.max ?? null,
+      };
     });
   }
 

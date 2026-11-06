@@ -9,8 +9,23 @@ import * as XLSX from 'xlsx';
 
 export const WORKBOOK_SOURCE = 'COURSE_WORKBOOK';
 
-/** Stored question types; the workbook itself only offers MCQ and TRUE_FALSE. */
-export type WorkbookQuestionType = 'MCQ' | 'TRUE_FALSE' | 'SHORT_ANSWER' | 'CODING' | 'MATH';
+/** Stored question types offered by one-file grading / course workbook. */
+export type WorkbookQuestionType =
+  | 'MCQ'
+  | 'TRUE_FALSE'
+  | 'SHORT_ANSWER'
+  | 'CODING'
+  | 'ORDERING'
+  | 'MATCHING';
+
+export const WORKBOOK_QUESTION_TYPE_LABELS = [
+  'MCQ',
+  'TRUE_FALSE',
+  'SHORT_ANSWER',
+  'Coding',
+  'ORDERING',
+  'MATCHING',
+] as const;
 
 const ROSTER_SHEET_KEYS = new Set(['students', 'roster', 'studentlist']);
 /** Overview tabs of the template — never assessments, even though they mention assessment types. */
@@ -122,14 +137,15 @@ export function splitCloCodes(raw: string) {
   );
 }
 
-export function normalizeQuestionType(
-  raw: string,
-  fallback: WorkbookQuestionType = 'MCQ',
-): WorkbookQuestionType | null {
+export function normalizeQuestionType(raw: string): WorkbookQuestionType | null {
   const key = normalizeLabel(raw);
-  if (!key) return fallback;
+  if (!key) return null;
   if (['mcq', 'multiplechoice', 'choice', 'qcm'].includes(key)) return 'MCQ';
   if (['truefalse', 'tf', 'trueorfalse', 'vf'].includes(key)) return 'TRUE_FALSE';
+  if (['shortanswer', 'short', 'sa', 'written'].includes(key)) return 'SHORT_ANSWER';
+  if (['coding', 'code', 'programming'].includes(key)) return 'CODING';
+  if (['ordering', 'order', 'sequence'].includes(key)) return 'ORDERING';
+  if (['matching', 'match'].includes(key)) return 'MATCHING';
   return null;
 }
 

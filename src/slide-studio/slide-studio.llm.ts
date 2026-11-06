@@ -17,22 +17,19 @@ import type { StudioAgent } from './slide-studio.types';
 type ModelRole = Exclude<StudioAgent, 'researcher' | 'publisher'>;
 
 /**
- * Cost-efficient defaults: Claude Haiku 5.5 writes and rewrites the slides (the
- * bulk of the tokens) and Gemini 3.8 Flash takes the once-per-deck reasoning
- * steps, so the judge comes from another family than the author and does not
- * share its blind spots. Each is overridable with SLIDES_<ROLE>_MODEL, e.g.
- * anthropic/claude-opus-5.5 for a premium (far pricier) writer.
+ * Defaults match the Medium generation plan (Claude 3.5 Haiku / GPT-4o) when
+ * no plan is selected. Each role is overridable with SLIDES_<ROLE>_MODEL.
  */
 const DEFAULT_MODELS: Record<ModelRole, string> = {
-  analyst: 'google/gemini-3.8-flash',
-  planner: 'google/gemini-3.8-flash',
-  designer: 'anthropic/claude-haiku-5.5',
-  outliner: 'google/gemini-3.8-flash',
-  writer: 'anthropic/claude-haiku-5.5',
-  illustrator: 'anthropic/claude-haiku-5.5',
-  inspector: 'google/gemini-3.8-flash',
-  optimizer: 'anthropic/claude-haiku-5.5',
-  reviewer: 'google/gemini-3.8-flash',
+  analyst: 'anthropic/claude-3.5-haiku',
+  planner: 'anthropic/claude-3.5-haiku',
+  designer: 'anthropic/claude-3.5-haiku',
+  outliner: 'anthropic/claude-3.5-haiku',
+  writer: 'anthropic/claude-3.5-haiku',
+  illustrator: 'anthropic/claude-3.5-haiku',
+  inspector: 'anthropic/claude-3.5-haiku',
+  optimizer: 'anthropic/claude-3.5-haiku',
+  reviewer: 'anthropic/claude-3.5-haiku',
 };
 
 /**
@@ -40,15 +37,15 @@ const DEFAULT_MODELS: Record<ModelRole, string> = {
  * unavailable; kept in the same price tier so a fallback never multiplies cost.
  */
 const FALLBACK_MODELS: Record<ModelRole, string[]> = {
-  analyst: ['anthropic/claude-haiku-5.5'],
-  planner: ['anthropic/claude-haiku-5.5'],
-  designer: ['google/gemini-3.8-flash'],
-  outliner: ['anthropic/claude-haiku-5.5'],
-  writer: ['openai/gpt-6-luna'],
-  illustrator: ['google/gemini-3.8-flash'],
-  inspector: ['openai/gpt-6-luna'],
-  optimizer: ['openai/gpt-6-luna'],
-  reviewer: ['openai/gpt-6-luna'],
+  analyst: ['openai/gpt-4o'],
+  planner: ['openai/gpt-4o'],
+  designer: ['openai/gpt-4o'],
+  outliner: ['openai/gpt-4o'],
+  writer: ['openai/gpt-4o'],
+  illustrator: ['openai/gpt-4o'],
+  inspector: ['openai/gpt-4o'],
+  optimizer: ['openai/gpt-4o'],
+  reviewer: ['openai/gpt-4o'],
 };
 
 /** Visible answer budget (reasoning tokens are added on top). */

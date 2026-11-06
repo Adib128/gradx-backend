@@ -88,6 +88,29 @@ export type StudioContext = {
   }>;
 };
 
+/** How much of a CLO concept the selected chapter can actually teach. */
+export type CloCoverageStatus = 'covered' | 'partial' | 'not_covered';
+
+/** One concept/skill carved out of a CLO and mapped to the chapter. */
+export type StudioCloComponent = {
+  id: string;
+  cloCode: string;
+  label: string;
+  status: CloCoverageStatus;
+  evidence: string;
+};
+
+/** Teaching-arc phase for a plan section (PO lecture structure). */
+export type LecturePhase =
+  | 'title'
+  | 'clo_scope'
+  | 'roadmap'
+  | 'introduction'
+  | 'body'
+  | 'summary'
+  | 'knowledge_check'
+  | 'references';
+
 export type StudioAnalysis = {
   /** Discipline profile that drives evidence types and teaching rules. */
   profile: DisciplineId;
@@ -99,6 +122,8 @@ export type StudioAnalysis = {
   keyConcepts: string[];
   visualStrategy: string;
   summary: string;
+  /** CLO parts vs selected chapter — honest scope for this lecture. */
+  cloComponents: StudioCloComponent[];
 };
 
 export type StudioPlanSection = {
@@ -109,6 +134,8 @@ export type StudioPlanSection = {
   slideCount: number;
   keyPoints: string[];
   visuals: string[];
+  /** Lecture-arc phase; body sections hold the main teaching. */
+  phase: LecturePhase;
 };
 
 export type StudioPlan = {
@@ -116,6 +143,8 @@ export type StudioPlan = {
   approach: string;
   learningGoals: string[];
   sections: StudioPlanSection[];
+  /** Copied from analysis at plan time so HITL can edit coverage honesty. */
+  cloComponents?: StudioCloComponent[];
 };
 
 export type StudioTemplateSuggestion = {
@@ -140,10 +169,28 @@ export type StudioOutlineItem = {
   visual: StudioVisual;
 };
 
+export type StudioVisualSource = {
+  slide: number;
+  classification: 'textbook' | 'ai_generated' | 'none' | 'not_verified';
+  description: string;
+  figureKey?: string | null;
+  pageNumber?: number | null;
+};
+
 export type StudioReview = {
   score: number;
   summary: string;
   cloCoverage: Array<{ code: string; slides: number[] }>;
+  /** Per-component coverage honesty (guide §8). */
+  cloComponentCoverage?: Array<{
+    id: string;
+    cloCode: string;
+    label: string;
+    status: CloCoverageStatus;
+    slides: number[];
+    note: string;
+  }>;
+  visualSources?: StudioVisualSource[];
   issues: Array<{ slide: number | null; severity: string; message: string }>;
 };
 

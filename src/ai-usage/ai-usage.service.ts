@@ -7,6 +7,7 @@ import {
   setAiQuotaGuard,
   setAiUsageLogger,
 } from 'src/common/helpers/openrouter-chat.helper';
+import { paginate } from 'src/common/helpers/paginate.helper';
 
 /** Background reference indexing is a platform cost, not the user's generation. */
 const UNMETERED_PURPOSES = [
@@ -15,12 +16,64 @@ const UNMETERED_PURPOSES = [
   'reference_search_debug',
 ];
 
+/**
+ * Every metered AI call rolls up into one user-facing operation.
+ * Sub-steps (planner, designer, extract vision, …) are not reported separately.
+ */
+export function aiOperationCode(purpose: string | null | undefined): string {
+  const value = (purpose || '').trim();
+  if (
+    value === 'course_extract' ||
+    value === 'course_extract_text' ||
+    value === 'course_extract_vision' ||
+    value === 'course_clo_topic_matching'
+  ) {
+    return 'course_extraction';
+  }
+  if (
+    value === 'slide_studio' ||
+    value.startsWith('slide_studio_') ||
+    value.startsWith('topic_') ||
+    value.startsWith('assessment_')
+  ) {
+    return 'content_generation';
+  }
+  if (value.startsWith('grading_')) return 'grading';
+  if (value === 'reference_relevance' || value.startsWith('reference_')) {
+    return 'reference_check';
+  }
+  if (
+    value === 'clo_analysis' ||
+    value === 'clo_analysis_all' ||
+    value === 'clo_analysis_stream' ||
+    value === 'course_report_narrative'
+  ) {
+    return 'course_report';
+  }
+  return 'other';
+}
+
+const OPERATION_ORDER = [
+  'content_generation',
+  'course_extraction',
+  'grading',
+  'reference_check',
+  'course_report',
+  'other',
+];
+
 export type AiUsageSummary = {
   used: number;
   /** null = unlimited. */
   limit: number | null;
   periodStart: string;
   resetsAt: string;
+};
+
+export type AiUsageOperation = {
+  code: string;
+  tokens: number;
+  lastAt: string | null;
 };
 
 function monthStart(date: Date, offset = 0) {
@@ -57,6 +110,7 @@ export class AiUsageService implements OnModuleInit {
             errorMessage: entry.errorMessage || null,
             durationMs: entry.durationMs ?? null,
             startedAt: entry.startedAt ?? null,
+            generationPlanCode: entry.generationPlanCode || null,
           },
         });
       } catch {
@@ -93,6 +147,79 @@ export class AiUsageService implements OnModuleInit {
       periodStart: periodStart.toISOString(),
       resetsAt: monthStart(now, 1).toISOString(),
     };
+  }
+
+  /** This month's tokens summed by operation, with sub-steps already combined. */
+  async operations(userId: number) {
+    const summary = await this.summary(userId);
+    const rows = await this.prisma.aiUsageLog.groupBy({
+      by: ['purpose'],
+      where: {
+        userId,
+        createdAt: { gte: new Date(summary.periodStart) },
+        purpose: { notIn: UNMETERED_PURPOSES },
+      },
+      _sum: { totalTokens: true },
+      _max: { createdAt: true },
+    });
+    const buckets = new Map<string, { tokens: number; lastAt: Date | null }>();
+    for (const row of rows) {
+      const code = aiOperationCode(row.purpose);
+      const current = buckets.get(code) ?? { tokens: 0, lastAt: null };
+      current.tokens += row._sum.totalTokens ?? 0;
+      const at = row._max.createdAt;
+      if (at && (!current.lastAt || at > current.lastAt)) current.lastAt = at;
+      buckets.set(code, current);
+    }
+    const operations: AiUsageOperation[] = [...buckets.entries()]
+      .map(([code, value]) => ({
+        code,
+        tokens: value.tokens,
+        lastAt: value.lastAt ? value.lastAt.toISOString() : null,
+      }))
+      .sort(
+        (a, b) =>
+          OPERATION_ORDER.indexOf(a.code) - OPERATION_ORDER.indexOf(b.code) ||
+          b.tokens - a.tokens,
+      );
+    return { ...summary, operations };
+  }
+
+  /** This month's metered AI calls for the signed-in user, newest first. */
+  async listMine(userId: number, page = 1, limit = 20) {
+    const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    const safeLimit = Math.min(
+      50,
+      Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 20),
+    );
+    const where = {
+      userId,
+      createdAt: { gte: monthStart(new Date()) },
+      purpose: { notIn: UNMETERED_PURPOSES },
+    };
+    const [total, data] = await Promise.all([
+      this.prisma.aiUsageLog.count({ where }),
+      this.prisma.aiUsageLog.findMany({
+        where,
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          purpose: true,
+          model: true,
+          promptTokens: true,
+          completionTokens: true,
+          totalTokens: true,
+          success: true,
+          durationMs: true,
+          startedAt: true,
+          createdAt: true,
+          generationPlanCode: true,
+        },
+      }),
+    ]);
+    return paginate(data, total, safePage, safeLimit);
   }
 
   /** Tokens each user consumed in the current month, for admin listings. */

@@ -26,6 +26,7 @@ export type AiUsageLogEntry = {
   errorMessage?: string | null;
   durationMs?: number | null;
   startedAt?: Date | null;
+  generationPlanCode?: string | null;
 };
 
 type AiUsageLogger = (entry: AiUsageLogEntry) => Promise<void>;
@@ -54,6 +55,8 @@ export type ChatCompletionContext = {
   userId?: number | null;
   tenantId?: number | null;
   purpose?: string;
+  /** HIGH | MEDIUM | LOW when this call is part of content generation. */
+  generationPlanCode?: string | null;
 };
 
 const aiContextStorage = new AsyncLocalStorage<ChatCompletionContext>();
@@ -213,6 +216,7 @@ export async function createChatCompletion(
     ...stored,
     ...context,
     purpose: context?.purpose || stored?.purpose || 'other',
+    generationPlanCode: context?.generationPlanCode || stored?.generationPlanCode || null,
   };
   await aiQuotaGuard?.(merged);
 
@@ -224,6 +228,7 @@ export async function createChatCompletion(
       userId: merged.userId ?? null,
       tenantId: merged.tenantId ?? null,
       purpose: merged.purpose || 'other',
+      generationPlanCode: merged.generationPlanCode || null,
       model,
       requestPreview,
       startedAt,
@@ -313,6 +318,8 @@ export async function streamChatCompletion(
     ...stored,
     ...options.context,
     purpose: options.context?.purpose || stored?.purpose || 'other',
+    generationPlanCode:
+      options.context?.generationPlanCode || stored?.generationPlanCode || null,
   };
   await aiQuotaGuard?.(merged);
 
@@ -324,6 +331,7 @@ export async function streamChatCompletion(
       userId: merged.userId ?? null,
       tenantId: merged.tenantId ?? null,
       purpose: merged.purpose || 'other',
+      generationPlanCode: merged.generationPlanCode || null,
       model,
       requestPreview: previewText((params as { messages?: unknown }).messages),
       startedAt,

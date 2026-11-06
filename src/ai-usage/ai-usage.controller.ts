@@ -1,4 +1,4 @@
-import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -14,6 +14,20 @@ export class AiUsageController {
   @Get('me')
   me(@GetUser('userId') userId: number) {
     return this.aiUsage.summary(userId);
+  }
+
+  @Get('me/operations')
+  operations(@GetUser('userId') userId: number) {
+    return this.aiUsage.operations(userId);
+  }
+
+  @Get('me/logs')
+  logs(
+    @GetUser('userId') userId: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.aiUsage.listMine(userId, Number(page) || 1, Number(limit) || 20);
   }
 
   /** Server-Sent Events: the current total first, then one event per metered AI call. */

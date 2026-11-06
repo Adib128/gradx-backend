@@ -8,6 +8,8 @@ import {
   type DisciplineProfile,
 } from '../utils/discipline-profile.util';
 import { estimateSlideFit } from '../utils/slide-fit.util';
+import { cloComponentsBlock } from '../utils/lecture-arc.util';
+import { rankedFiguresBlock } from '../utils/figure-rank.util';
 import type {
   StudioAnalysis,
   StudioContext,
@@ -132,18 +134,20 @@ function analysisBlock(analysis: StudioAnalysis | null) {
   if (!analysis) return '';
   return `Material analysis: profile=${disciplineProfile(analysis.profile).label}; field=${analysis.field}; discipline=${analysis.discipline}; subfield=${analysis.subfield}; material types=${analysis.materialTypes.join(', ')}; audience=${analysis.audienceLevel}.
 Key concepts: ${analysis.keyConcepts.join(', ')}.
-Visual strategy: ${analysis.visualStrategy}`;
+Visual strategy: ${analysis.visualStrategy}
+${cloComponentsBlock(analysis.cloComponents)}`;
 }
 
 function planBlock(plan: StudioPlan) {
   return `Deck title: ${plan.title}
 Approach: ${plan.approach}
 Learning goals: ${plan.learningGoals.join(' | ')}
+${cloComponentsBlock(plan.cloComponents)}
 Sections:
 ${plan.sections
   .map(
     (section, index) =>
-      `${index + 1}. [${section.id}] ${section.title} — ${section.slideCount} slide(s); goal: ${section.goal}; CLOs: ${section.cloCodes.join(', ') || '-'}; key points: ${section.keyPoints.join(' / ')}; visuals: ${section.visuals.join(', ') || 'none'}`,
+      `${index + 1}. [${section.id}|${section.phase}] ${section.title} — ${section.slideCount} slide(s); goal: ${section.goal}; CLOs: ${section.cloCodes.join(', ') || '-'}; key points: ${section.keyPoints.join(' / ')}; visuals: ${section.visuals.join(', ') || 'none'}`,
   )
   .join('\n')}`;
 }
@@ -155,14 +159,21 @@ function templateBlock(template: SlideTemplate) {
 export function analystPrompt(input: StudioInput, context: StudioContext): PromptPair {
   return {
     system: `${TEAM}
-You are the ANALYST agent. Classify the teaching material so the other agents can adapt pedagogy and visuals.
-Return ONLY one JSON object:
-{"profile": ${Object.keys(DISCIPLINES).map((id) => `"${id}"`).join('|')} /* teaching profile, see below */,
+You are the ANALYST agent. Classify the teaching material AND map CLO components to the selected chapter.
+Return ONLY one compact JSON object (no markdown fences, no commentary). Keep cloComponents to at most 6 items.
+{"profile": ${Object.keys(DISCIPLINES).map((id) => `"${id}"`).join('|')},
  "field": string, "discipline": string, "subfield": string,
- "materialTypes": string[] /* from: theoretical, mathematical, procedural, programming, experimental, case-based, descriptive, clinical */,
- "audienceLevel": string, "keyConcepts": string[] /* 5-10 */,
- "visualStrategy": string /* which visuals teach this best: textbook figures, process/sequence/state diagrams, formulas, tables */,
- "summary": string /* 2 sentences describing what this topic covers */}
+ "materialTypes": string[],
+ "audienceLevel": string, "keyConcepts": string[],
+ "visualStrategy": string,
+ "summary": string,
+ "cloComponents": [{"id": string, "cloCode": string, "label": string,
+   "status": "covered"|"partial"|"not_covered",
+   "evidence": string}]}
+CLO mapping rules:
+- Split linked CLOs into a few components (action verb + concepts). Max 6 total.
+- covered = chapter teaches it well; partial = introduced only; not_covered = not supported here.
+- Never invent page numbers. Prefer textbook figures in visualStrategy when captions match.
 Profiles (pick the one whose teaching evidence fits the material, not only the department name):
 ${Object.values(DISCIPLINES)
   .map((profile) => `- ${profile.id}: ${profile.label} — taught with ${profile.evidence}`)
@@ -191,37 +202,33 @@ export function plannerPrompt(
 You are the PLANNER agent (lead instructional designer). Design the teaching plan for a deck of EXACTLY ${input.slideCount} slides.
 
 Output NDJSON: one JSON object per line, no prose, no code fences, no array brackets.
-Line 1: {"type":"meta","title":string /* assertion about the lecture, not "Lecture on X" */,"approach":string /* pedagogy in 1-2 sentences */,"learningGoals":string[] /* 3-5 measurable outcomes with Bloom verbs + object, e.g. "Compute the Jacobian of a vector mapping" */}
+Line 1: {"type":"meta","title":string /* assertion about the lecture, not "Lecture on X" */,"approach":string /* pedagogy in 1-2 sentences */,"learningGoals":string[] /* 3-5 measurable outcomes with Bloom verbs + object, only for CLO parts covered/partial in this lecture */,"cloComponents":[{"id","cloCode","label","status":"covered"|"partial"|"not_covered","evidence"}]}
 Then one line per section, in teaching order:
-{"type":"section","title":string,"goal":string /* what students can do after the section */,"cloCodes":string[],"slideCount":integer,"keyPoints":string[] /* 2-5 assertion claims */,"visuals":string[]}
+{"type":"section","phase":"title"|"clo_scope"|"roadmap"|"introduction"|"body"|"summary"|"knowledge_check"|"references","title":string,"goal":string,"cloCodes":string[],"slideCount":integer,"keyPoints":string[] /* 2-5 assertion claims for body; short for frame phases */,"visuals":string[]}
+
+Required lecture arc (phases, in this order):
+1. title (1 slide) — cover from course data; visuals none
+2. clo_scope (1 slide) — full original CLO + which components are covered / partial / not covered this lecture
+3. roadmap (1 slide) — teaching order tied to chapter sections for covered/partial components only
+4. introduction (1 slide) — context, importance, motivating question grounded in the chapter
+5. body (several sections) — teach ONLY covered/partial CLO components; never invent not_covered topics
+6. summary (1 slide) — takeaways + contribution to covered CLO parts only (do not claim the whole CLO)
+7. knowledge_check (1 slide) — 3–5 questions only on content taught; answers belong in speaker notes later
+8. references (1 slide, always last) — verified biblio; figure provenance filled later
 
 Rules:
 - The sum of slideCount over all sections MUST equal ${input.slideCount}.
-- First section opens the lecture: the cover slide (built automatically from the course data), then an INTRODUCTION
-  slide (why the topic matters and what the lecture covers), optionally outcomes/agenda. Last section closes it:
-  a checkpoint question, then a CONCLUSION slide with the key takeaways. The CONCLUSION is the lecture's only recap:
-  never plan a separate SUMMARY slide as well.
-- Usually 4-8 sections; every core section maps to at least one CLO code from the list.
+- Copy/refine cloComponents from the analyst map; keep honesty about partial/not_covered.
+- Body sections only: usually 3-6 thematic units; every body section maps to at least one CLO code.
 - ONLY use CLO codes from the provided topic-linked list — never invent or pick unrelated course CLOs.
-- Stay inside those CLOs: do not expand into neighbouring chapter topics that the CLO descriptions do not cover.
-- Section titles are teachable units ("The Hessian measures local curvature"), not catalogue headings
-  ("Mathematical foundations", "Part 1", "Background").
-- keyPoints are assertion claims the later slides must prove (mechanism, condition, result or misconception),
-  8-16 words each — never topic labels ("Gradients", "Overview of Jacobians").
-- Ground key points in the reference excerpts that relate to the CLO descriptions; use their terminology and examples,
-  and ignore excerpt material that is off-CLO.
-- Think like an expert professor: sequence from prerequisites to the hardest idea, and where students commonly
-  hold a misconception about a key point, make correcting it one of that section's key points.
-- Budget slides for depth: after a hard concept, allocate room for an EXAMPLE / FORMULA / DIAGRAM / CODE slide before
-  moving on; avoid long runs of "overview" sections.
-- When reference excerpts are provided, the closing section also contains one REFERENCES slide (its list of sources
-  is filled automatically) — count it in that section's slideCount.
-- visuals entries are "figure:<figure key>" (ONLY keys from the figure list, pick the most instructive ones) or
-  "mermaid:<prompt describing the diagram to draw from the section CLOs and related chapter concepts>".
-  You may attach several mermaid prompts per section when multiple diagrams teach distinct CLO ideas.
-- Prefer reference figures when one directly shows the concept; use mermaid for processes, flows, hierarchies, states and comparisons.
-- Plan the field's own evidence too: "code:<what the snippet shows>", "formula:<equation>", "example:<worked case>" or
-  "table:<what it compares>" entries in visuals.
+- Section titles for body are teachable units ("The PCB stores everything needed to resume a process"), not catalogue headings.
+- keyPoints for body are assertion claims (mechanism, condition, result or misconception), 8-16 words each.
+- Ground key points in the reference excerpts for covered/partial components; use textbook terminology.
+- Budget depth: after a hard concept, allocate EXAMPLE / FORMULA / DIAGRAM / CODE before moving on.
+- visuals: prefer "figure:<key>" from the figure list / shortlists when a textbook figure teaches the idea;
+  otherwise "mermaid:<prompt>". Never present an AI diagram as a textbook figure.
+  Also use "code:", "formula:", "example:", "table:" when the chapter supports them — do not force every type.
+- Frame phases (title, clo_scope, roadmap, introduction, summary, knowledge_check, references) use visuals: [].
 ${disciplineBlock(disciplineProfile(analysis?.profile))}
 ${PROFESSIONAL_STYLE}
 ${contentLanguageGuidance(input.language)}`,
@@ -234,6 +241,17 @@ ${excerptsBlock(context.excerpts, 40_000)}
 
 Reference figures (key: caption):
 ${figuresBlock(context.figures)}
+
+${rankedFiguresBlock(
+  (analysis?.keyConcepts ?? []).slice(0, 8).map((concept, index) => ({
+    id: `concept-${index + 1}`,
+    title: concept,
+    goal: concept,
+    keyPoints: [concept],
+    cloCodes: [],
+  })),
+  context.figures,
+)}
 ${
   revision
     ? `
@@ -255,6 +273,8 @@ export function designerPrompt(
   return {
     system: `${TEAM}
 You are the DESIGNER agent. Choose the slide template that best fits the field, the material and the plan.
+All built-in templates share the same lecture chrome (underline header, rounded graphic cards, Think-about-it, CLO bands). Pick on palette and writing style, not decoration.
+Prefer an institution custom template when brand identity matters. Otherwise default to academic-classic (Scholar) for university lectures unless another template's field list is a clearly better match.
 Templates:
 ${templateCatalogForPrompt(input.customTemplates)}
 
@@ -291,28 +311,26 @@ Output NDJSON: one JSON object per line (one per slide, in order), no prose, no 
 Types: ${SLIDE_TYPES}
 Layouts: ${SLIDE_LAYOUTS}
 Rules:
-- Respect each section's slide count and order. Slide 1 is TITLE/TITLE_CENTER (the cover; its content is filled from
-  the course data). Slide 2 is INTRODUCTION/BULLETS. The last teaching slide is CONCLUSION/BULLETS (key takeaways),
-  followed only by the REFERENCES slide when there is one.
-- Teaching arc: the INTRODUCTION opens with a motivating question or real-world problem and previews the lecture
-  (visual none — it frames the topic and never teaches the first concept); inside each core section go
-  concept → worked example or visual → application; close with a CHECKPOINT, then the CONCLUSION (visual none).
-  The CONCLUSION is the only recap: never add a SUMMARY slide next to it.
-- Insert a CHECKPOINT or ACTIVITY roughly every 6-8 slides; every key concept is followed within 2 slides by an
-  EXAMPLE, a visual or a COMPARISON.
-- Titles are assertion headlines (see the standard below); no two slides share a title; intent states the student
-  takeaway as a measurable outcome ("compute the Jacobian of F", not "introduce Jacobians").
-- Use COMPARISON for contrasts, FORMULA for equations the students must use, CODE (layout BULLETS, visual none) for
-  source code, commands or queries the students must read or write, DEFINITION for formal terms.
-- Planned "code:", "formula:", "example:" and "table:" visuals become CODE, FORMULA, EXAMPLE and COMPARISON slides.
+- Respect each section's slide count, order and phase.
+- Map phases to types: title→TITLE/TITLE_CENTER; clo_scope→LEARNING_OUTCOMES/BULLETS (exact CLO wording +
+  covered/partial/not_covered lists); roadmap→AGENDA/BULLETS (chapter-grounded teaching order); introduction→
+  INTRODUCTION/BULLETS (motivating question + why it matters + CLO link; visual none); body→ teaching types;
+  summary→SUMMARY/BULLETS titled "Key takeaways" with sectionLabel "Lecture summary" (visual none);
+  knowledge_check→CHECKPOINT/BULLETS titled "Check your understanding" with sectionLabel "Knowledge check" and
+  3–5 numbered question bullets (answers only in speakerNotes); references→REFERENCES (always last).
+- Closing triad is mandatory and in this order: SUMMARY → Knowledge check → REFERENCES (never omit).
+- Inside each body section: concept → worked example or visual → application. Do not teach not_covered CLO parts.
+  Mid-deck ACTIVITY is fine; the final Knowledge check is the closing assessment slide.
+- Titles are assertion headlines (see the standard below); no two slides share a title; intent is a measurable
+  student takeaway. Prefer a short section/page cue in the intent when the excerpts provide one (never invent pages).
+- Use COMPARISON for contrasts, FORMULA for equations, CODE (layout BULLETS, visual none) for source, DEFINITION
+  for formal terms. Planned "code:", "formula:", "example:", "table:" become CODE, FORMULA, EXAMPLE, COMPARISON.
 - ${templateBlock(template)}
-- Use the planned visuals; a figure key may appear at most once; only keys from the list. Never repeat a diagram idea.
-- Show, don't only tell: at least half of the core content slides carry a figure, a diagram, a worked example, a
-  table or a comparison. A diagram idea is one process, structure or contrast with at most 6 boxes.
-- Prefer depth over coverage: if the plan's key points compete for space, keep the highest-CLO points and drop
-  survey slides rather than packing three ideas onto one slide.
-- Vary layouts; no more than 2 plain BULLETS slides in a row.
-- If the plan has a REFERENCES slide, it is the last slide: type REFERENCES, layout BULLETS, visual none.
+- Prefer planned textbook figures before mermaid; a figure key appears at most once; never label AI diagrams as
+  textbook figures. Mermaid ideas: one process/structure/contrast with at most 6 boxes.
+- Show, don't only tell on body slides: at least half carry a figure, diagram, example, table or comparison.
+- Prefer depth over coverage: keep highest-CLO points; drop survey slides.
+- Vary layouts; no more than 2 plain BULLETS slides in a row among body content.
 ${disciplineBlock(profile)}
 
 ${PROFESSIONAL_STYLE}
@@ -350,20 +368,31 @@ const SLIDE_SCHEMA = `{"n": integer /* the slide number given */, "type", "layou
  "example"?: {"problem", "steps": string[], "solution"},
  "table"?: {"headers": string[], "rows": string[][]}, "diagram"?: {"title", "mermaid"},
  "cloCode"?: string, "bloomLevel": "Remember"|"Understand"|"Apply"|"Analyze"|"Evaluate"|"Create",
+ "teachingBeat"?: "explain"|"example"|"check"|"frame",
  "speakerNotes": string}`;
 
 const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit without scrolling):
 - TITLE / SECTION slides: title + subtitle only.
-- CONTENT, AGENDA, LEARNING_OUTCOMES, SUMMARY → 3-5 bullets, each 8-16 words, parallel grammar, each carrying a
-  teachable claim (mechanism, condition, result or decision). No filler, no "In this slide…", no topic-name bullets.
-  Bold the one key term of a bullet with **term** (at most one bold run per bullet).
-- INTRODUCTION → subtitle: one sentence on why the topic matters (a real problem, a familiar situation or a motivating
-  question) + 3-4 bullets previewing what the lecture covers, in teaching order, each naming the concept and what the
-  student will be able to do with it. It frames the lecture: no diagram, code, figure, formula or worked example, and
-  it does not teach the first concept (that is the next slide's job).
-- CONCLUSION → 3-5 bullets, each a key takeaway the student should remember, stated as a full claim (not a topic name)
-  that connects ideas from different sections; the last bullet may point to the next topic or a real application.
-  No visual. It is the deck's only recap, so it must not restate any earlier slide word for word.
+- CONTENT, AGENDA, LEARNING_OUTCOMES, SUMMARY → 3-5 bullets designed as graphic cards: "**Term** — one claim"
+  (8-16 words after the dash), parallel grammar, each carrying a teachable claim (mechanism, condition, result or
+  decision). No filler, no "In this slide…", no topic-name bullets. Bold the one key term with **term** (at most one bold run per bullet).
+  Prefer 3-card rows for mechanisms, 2-column COMPARISON for contrasts, EXAMPLE_STEPS for worked problems.
+- LEARNING_OUTCOMES (clo_scope) → sectionLabel "Course learning outcome & lecture scope"; title "What this lecture
+  covers from {CLO code}". callout = the original CLO statement unchanged. table = two columns
+  ("In this lecture" | "CLO components") with up to three rows: Covered / Partially covered / Not covered.
+  Separate components in a cell with "; ". Never imply the whole CLO is achieved here if the map says otherwise. No visual.
+- AGENDA (roadmap) → sectionLabel "Lecture roadmap"; title "Today's path through {chapter}". Numbered stops:
+  "n. **Title** — one-line outcome". Add a chapter/section cue only when the excerpts name it. Never invent § or page numbers. No visual.
+- INTRODUCTION → sectionLabel "Introduction"; title is a concrete hook (never the word "Introduction");
+  callout {label: "Think about it", text: a short scenario ending with one question}; 3 bullets exactly:
+  "**Context** — …", "**Why it matters** — …", "**Link to CLO** — …". Frames only — no teaching the first concept.
+- SUMMARY → sectionLabel "Lecture summary"; title "Key takeaways"; 4–6 takeaway cards as "**Term** — one claim"
+  for content actually taught; callout {label: "Contribution to CLO", text: covered parts only}. No visual. Do not claim full CLO
+  mastery. Prefer SUMMARY over CONCLUSION for the closing recap.
+- CONCLUSION (legacy) → rewrite as SUMMARY ("Key takeaways" / sectionLabel "Lecture summary") when used as the closing recap.
+- CHECKPOINT (closing knowledge_check) → sectionLabel "Knowledge check"; title "Check your understanding"; layout BULLETS
+  with 3–5 numbered questions (1. … 2. …) assessing only taught content; speakerNotes starts with "Answer:" per
+  question. Do not assess not_covered CLO parts. (Single-prompt ACTIVITY mid-deck may still use QUOTE_CALLOUT.)
 - DEFINITION → callout {label, text ≤ 35 words, the precise formal definition} + up to 2 bullets (necessary condition,
   non-example or boundary case). Avoid dictionary-style paraphrases that drop technical constraints.
 - FORMULA → formula {latex: valid KaTeX without $ delimiters (escape backslashes as \\\\ in JSON), explanation that names
@@ -378,8 +407,8 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - COMPARISON → two items: leftColumn + rightColumn with matching aspects in the same order (3-4 bullets each), no table.
   Three or more items, or several attributes: type CONTENT, layout BULLETS, table {headers: 2-4 short, rows: 2-5,
   cells ≤ 6 words} with at most 2 bullets, no columns. Never both columns and a table.
-- CHECKPOINT / ACTIVITY → callout {label: "Checkpoint"|"Activity", text: one question or task that forces a decision
-  or computation}; speakerNotes starts with "Answer:" (checkpoint) or the expected outcome (activity).
+- ACTIVITY (mid-deck) → callout {label: "Activity", text: one short task}; speakerNotes = expected outcome.
+- Closing CHECKPOINT → prefer bullets (numbered questions), not a single callout blob.
 - Visual "mermaid:<idea>" → diagram {title, mermaid} AND 1-3 short bullets. Mermaid: flowchart LR for a sequence of
   ≤ 5 steps, flowchart TD for a hierarchy (or sequenceDiagram / stateDiagram-v2 / classDiagram when clearly better);
   3-6 nodes and at most 4 levels so labels stay readable when projected; labels ≤ 4 words in double quotes, \\n for a
@@ -387,20 +416,29 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - REFERENCES → bullets: [] (the cited sources are inserted automatically from the course references).
 - A layout engine measures every slide on the real 16:9 stage; text that does not fit is cut off. Beside a figure or
   diagram the text column is under half the width, so keep those bullets especially short (6-12 words) and specific.
-- Visual "figure:<key>" → the reference figure is attached automatically; write 1-3 bullets on what to notice in it
-  and how it supports the headline. Do not include a diagram.
+- Visual "figure:<key>" → the textbook figure is attached automatically unchanged; write 1-3 bullets on what to notice
+  and how it supports the headline; mention figure caption/page in speakerNotes when known. Do not include a diagram
+  and never redraw or claim an AI diagram is the textbook figure.
+- Visual "mermaid:<idea>" → original educational diagram (AI-generated); speakerNotes may note "AI-generated educational illustration".
 - type and layout must be the matching pair, and the body must fill that layout's main element:
-  CONTENT|DIAGRAM|CODE|AGENDA|SUMMARY|INTRODUCTION|CONCLUSION → BULLETS, DEFINITION → DEFINITION, FORMULA → FORMULA_FOCUS, EXAMPLE → EXAMPLE_STEPS,
-  COMPARISON → TWO_COLUMN (needs both columns), CHECKPOINT|ACTIVITY → QUOTE_CALLOUT. Never use TWO_COLUMN without columns
+  CONTENT|DIAGRAM|CODE|AGENDA|LEARNING_OUTCOMES|SUMMARY|INTRODUCTION|CONCLUSION|CHECKPOINT → BULLETS,
+  DEFINITION → DEFINITION, FORMULA → FORMULA_FOCUS, EXAMPLE → EXAMPLE_STEPS,
+  COMPARISON → TWO_COLUMN (needs both columns), ACTIVITY → QUOTE_CALLOUT. Never use TWO_COLUMN without columns
   or EXAMPLE_STEPS without a real worked example — such text is hidden on the slide.
 - Every content slide shows readable text: a figure or diagram is never the whole slide.
 - Say each thing once: never repeat the bullets inside the example/callout (or the other way round), and do not reuse
   sentences from other slides. No markdown other than **bold**.
-- speakerNotes: 4-6 sentences the instructor says, in the first person to the class — explain the idea in plain
-  words, give an analogy or real case, name the misconception students most often hold about it (when there is one)
-  or a question to ask the room, and end with a one-sentence transition to the next slide. Never read the bullets
-  back; add what the slide does not say.
-- Stay faithful to the reference excerpts and their terminology; never invent facts, numbers or citations.`;
+- speakerNotes: a teaching script the instructor can read, 4-6 sentences, first person to the class:
+  start with "CLO component: <label>." then what to say (analogy or real case), a misconception or cold-call
+  question, the figure source when the slide has a visual ("textbook figure p. N" or "AI-generated educational
+  illustration"), and a one-sentence transition. Never read the bullets back.
+- Body slides that teach a partial CLO component: set sectionLabel to "Partially covered — continued later"
+  (Arabic: "تغطية جزئية — يُستكمل لاحقاً"). Do not imply that component is finished.
+- One idea per slide. Prefer graphic components over a wall of bullets: 2–3 icon cards ("**Term** — claim"),
+  two-column comparison cards, a navy banner plus coverage cards (CLO), a Think-about-it panel, a numbered roadmap,
+  a worked example with a Result card, a textbook figure, or a mermaid diagram. Optional § / page cues in
+  sectionLabel only when the excerpts name them; never invent.
+- Stay faithful to the reference excerpts and their terminology; never invent facts, numbers, citations or pages.`;
 
 function slideLine(item: StudioOutlineItem, figureByKey: Map<string, StudioFigure>) {
   const figure = item.visual.kind === 'figure' ? figureByKey.get(item.visual.figureKey) : null;
@@ -538,8 +576,11 @@ You are the INSPECTOR agent (quality control). Audit every slide of the draft de
   type/layout that does not fit the body (TWO_COLUMN shows only the columns, EXAMPLE_STEPS the worked example);
 - coherence: repeats another slide, the same text twice on one slide (bullets copied into the example or callout,
   a table that restates the columns), breaks the teaching order, inconsistent terminology;
-- framing: slide 2 (INTRODUCTION) must motivate the topic and preview the lecture, not teach its first concept;
-  the CONCLUSION must synthesise takeaways across sections, and a SUMMARY next to it is redundant;
+- framing: LEARNING_OUTCOMES must keep the original CLO and show covered / partial / not_covered honestly;
+  INTRODUCTION must motivate (Think about it) and preview, not teach the first concept;
+  the deck must close Lecture summary → Knowledge check ("Check your understanding") → References;
+  a SUMMARY that claims the whole CLO while the map has partial/not_covered is a pedagogy finding;
+  an AI diagram labeled as a textbook figure is a high accuracy finding;
 - polish: headline is a topic label instead of a claim, the body does not prove the headline, mixed fragment and
   sentence bullets, hype or filler, hedging or meta-commentary ("not a complete list", "varies by system"), vague
   quantities where the reference gives numbers, speaker notes that only read the bullets back, off-CLO padding
@@ -740,22 +781,23 @@ export function reviewerPrompt(
   const deck = slides.map(slideDigest).join('\n');
   return {
     system: `${TEAM}
-You are the REVIEWER agent (quality assurance). Check the deck against the plan, the CLOs and the reference excerpts:
-coverage, accuracy, clarity, progression, cognitive load, visual support and professional polish (assertion headlines,
-consistent style, every "rendered:" line fits, no hedging or repeated content, expert voice, CLO-scoped depth).
-The lecture must be framed: cover, an INTRODUCTION that motivates and previews, teaching slides, one CONCLUSION that
-synthesises (no extra SUMMARY). Score as a demanding department head reviewing a colleague's lecture:
-90+ only when the deck could be projected tomorrow without a single edit; 80-89 still needs polish; below 80 when
-core slides are survey-like, off-CLO, inaccurate or visually weak.
-${disciplineAudit(profile)} Score a deck that teaches its field mostly in prose (no code for programming, no formulas
-and worked examples for mathematics, no figures for sciences) below 80. Also score below 80 when many content slides
-are topic catalogues instead of assertion-evidence teaching.
-Slide-specific medium/high issues are sent back to the optimizer, so write each one as a concrete fix instruction
-(what to change and to what) and give its slide number; use slide null only for deck-wide remarks.
+You are the REVIEWER agent (quality assurance). Check the deck against the plan, CLO component map and excerpts:
+coverage honesty, accuracy, clarity, progression, visual provenance and professional polish.
+Required arc: TITLE, LEARNING_OUTCOMES (CLO scope with covered/partial/not_covered bands), AGENDA, INTRODUCTION
+(Think about it), body teaching, Lecture summary (Key takeaways), Knowledge check (Check your understanding),
+References (always last, with figure provenance).
+Score as a demanding department head: 90+ only if projectable tomorrow; below 80 if survey-like, off-CLO,
+missing Summary or Check your understanding, claims full CLO when map has gaps, or AI diagrams are presented as textbook figures.
+${disciplineAudit(profile)}
+Slide-specific medium/high issues go to the optimizer — write concrete fix instructions with slide numbers.
 Return ONLY one JSON object:
 {"score": integer /* 0-100 */, "summary": string /* 2 sentences for the instructor */,
  "cloCoverage": [{"code": string, "slides": integer[]}],
- "issues": [{"slide": integer|null, "severity": "low"|"medium"|"high", "message": string}] /* at most 8, most important first */}
+ "cloComponentCoverage": [{"id": string, "cloCode": string, "label": string,
+   "status": "covered"|"partial"|"not_covered", "slides": integer[], "note": string}],
+ "visualSources": [{"slide": integer, "classification": "textbook"|"ai_generated"|"none"|"not_verified",
+   "description": string, "figureKey"?: string, "pageNumber"?: integer}],
+ "issues": [{"slide": integer|null, "severity": "low"|"medium"|"high", "message": string}] /* at most 8 */}
 ${contentLanguageGuidance(input.language)}`,
     user: `${courseBlock(input)}
 

@@ -1,4 +1,5 @@
 import type { StudioLanguage, StudioQaFinding, StudioSlide } from '../slide-studio.types';
+import { closingTriadGaps } from './lecture-arc.util';
 import { disciplineFindings, type DisciplineProfile } from './discipline-profile.util';
 import { estimateSlideFit, longestCodeLine } from './slide-fit.util';
 import { hasVisual, renderedLayout, similarText, textKey, visibleTexts } from './slide-repair.util';
@@ -127,6 +128,21 @@ export function lintSlides(
     category: string,
     message: string,
   ) => findings.push({ slide: index + 1, severity, category, message, source: 'auto' });
+
+  const types = new Set(slides.map((slide) => String(slide.type ?? '').toUpperCase()));
+  const arcRequired: Array<[string, string]> = [
+    ['LEARNING_OUTCOMES', 'Add a CLO scope slide that lists covered / partial / not-covered components.'],
+    ['AGENDA', 'Add a lecture roadmap (AGENDA) before the main teaching slides.'],
+    ['INTRODUCTION', 'Add an introduction that motivates the lecture before teaching content.'],
+    ['SUMMARY', 'Add a Lecture summary (Key takeaways) before the knowledge check.'],
+    ['CHECKPOINT', 'Add a Knowledge check ("Check your understanding") with questions on taught content.'],
+    ['REFERENCES', 'Add a References slide after the knowledge check.'],
+  ];
+  for (const [type, message] of arcRequired) {
+    if (!types.has(type) && !(type === 'SUMMARY' && types.has('CONCLUSION'))) {
+      add(0, 'medium', 'pedagogy', message);
+    }
+  }
 
   const titleCounts = new Map<string, number>();
   for (const slide of slides) {
@@ -331,8 +347,28 @@ export function lintSlides(
       }
     }
     const prompt = plain(slide.callout?.text);
-    if (slide.type === 'CHECKPOINT' && !/[?؟]/.test(prompt) && !(TASK_RE.test(prompt) || (language === 'ar' && words(prompt) >= 6))) {
-      add(index, 'medium', 'pedagogy', 'Checkpoint must ask the students one clear question or task.');
+    const checkQuestions = (slide.bullets ?? []).filter((bullet) => plain(bullet));
+    if (slide.type === 'CHECKPOINT') {
+      const asked =
+        checkQuestions.some((bullet) => /[?؟]/.test(plain(bullet)) || TASK_RE.test(plain(bullet))) ||
+        /[?؟]/.test(prompt) ||
+        TASK_RE.test(prompt) ||
+        (language === 'ar' && words(prompt) >= 6);
+      if (!asked && checkQuestions.length < 2) {
+        add(index, 'medium', 'pedagogy', 'Checkpoint must ask the students one clear question or task.');
+      }
+    }
+    const imageCaption = plain((slide as { image?: { caption?: string } }).image?.caption);
+    if (
+      String(slide.diagram?.mermaid ?? '').trim() &&
+      /textbook figure|شكل أصلي من الكتاب/i.test([imageCaption, ...texts, plain(slide.speakerNotes)].join(' '))
+    ) {
+      add(
+        index,
+        'high',
+        'accuracy',
+        'AI diagram is described as a textbook figure; label it AI-generated or attach the original figure.',
+      );
     }
     if (slide.type === 'FORMULA' && !plain(slide.formula?.latex)) {
       add(index, 'high', 'accuracy', 'Formula slide has no formula; add the LaTeX formula and explain its symbols.');
@@ -354,17 +390,49 @@ export function lintSlides(
     }
   });
 
-  const conclusion = slides.findIndex((slide) => slide.type === 'CONCLUSION');
-  slides.forEach((slide, index) => {
-    if (slide.type === 'SUMMARY' && conclusion >= 0 && Math.abs(conclusion - index) <= RECAP_DISTANCE) {
+  // Closing triad: last three slides must be SUMMARY → CHECKPOINT → REFERENCES.
+  const triadGaps = closingTriadGaps(slides.map((slide) => String(slide.type ?? '')));
+  if (triadGaps.length) {
+    add(
+      Math.max(0, slides.length - 1),
+      'high',
+      'pedagogy',
+      'Deck must end with Lecture summary, then Knowledge check ("Check your understanding"), then References.',
+    );
+  }
+  const checkAt = slides.length >= 2 ? slides.length - 2 : slides.findIndex((slide) => slide.type === 'CHECKPOINT');
+  if (checkAt >= 0 && slides[checkAt]?.type === 'CHECKPOINT') {
+    const check = slides[checkAt];
+    const questions = (check.bullets ?? []).filter((bullet) => plain(bullet));
+    if (questions.length < 3 && !plain(check.callout?.text)) {
       add(
-        index,
+        checkAt,
         'medium',
-        'coherence',
-        `Recaps the lecture right next to the conclusion (slide ${conclusion + 1}); turn it into a CHECKPOINT question or a worked example that applies several ideas together.`,
+        'pedagogy',
+        'Knowledge check needs 3–5 numbered "Check your understanding" questions.',
       );
     }
-  });
+    if (questions.some((bullet) => /^answer\s*:/i.test(plain(bullet)))) {
+      add(checkAt, 'medium', 'pedagogy', 'Keep answers in speaker notes, not on the Knowledge check slide.');
+    }
+  }
+  const summary = slides.find((slide) => slide.type === 'SUMMARY' || slide.type === 'CONCLUSION');
+  const summaryText = summary
+    ? [summary.title, ...(summary.bullets ?? []), summary.subtitle, summary.speakerNotes].map(plain).join(' ')
+    : '';
+  if (
+    summary &&
+    /\b(fully (covers?|achieves?|meets?)|complete(ly)? (cover|achieve)|the entire CLO|all (parts|components) of (the )?CLO|master(s|y of) the CLO)\b/i.test(
+      summaryText,
+    )
+  ) {
+    add(
+      slides.indexOf(summary),
+      'medium',
+      'pedagogy',
+      'Summary claims full CLO mastery; state only the components this lecture actually taught.',
+    );
+  }
   if (profile) findings.push(...disciplineFindings(slides, profile));
   return findings;
 }

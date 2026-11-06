@@ -66,8 +66,8 @@ import {
   polishSlide,
 } from './utils/slide-lint.util';
 import { fillEmptySlideBody, repairSlideStructure } from './utils/slide-repair.util';
-import { figureCaption, withReferencesSlide } from './utils/studio-references.util';
-import { withCoverSlide, withLectureFrame } from './utils/studio-frame.util';
+import { figureCaption } from './utils/studio-references.util';
+import { withLectureFrame } from './utils/studio-frame.util';
 import {
   applyPlanMeta,
   coerceAnalysis,
@@ -77,12 +77,14 @@ import {
   coerceReview,
   coerceTemplateSuggestion,
   emptyPlan,
+  fallbackAnalysis,
   planSlideTotal,
   filterPlanClosToLinked,
   rebalancePlan,
   sanitizeOutline,
   sanitizePlan,
 } from './utils/studio-coerce.util';
+import { ensureClosingOutline, ensureLectureArc } from './utils/lecture-arc.util';
 
 export const StudioState = Annotation.Root({
   input: Annotation<StudioInput>(),
@@ -277,13 +279,29 @@ export function buildStudioGraph(
     config: LangGraphRunnableConfig,
   ): Promise<Update> => {
     activity(config, 'analyst', 'start', 'Classifying the material', llm.models.analyst);
-    const raw = await llm.json(
-      'analyst',
-      analystPrompt(state.input, state.context!),
-      config.signal,
-    );
-    const analysis = coerceAnalysis(raw);
+    let analysis = fallbackAnalysis(state.input);
+    try {
+      const raw = await llm.json(
+        'analyst',
+        analystPrompt(state.input, state.context!),
+        config.signal,
+      );
+      analysis = coerceAnalysis(raw);
+    } catch {
+      activity(
+        config,
+        'analyst',
+        'info',
+        'Model returned invalid JSON — using topic/CLO fallback analysis',
+      );
+    }
     analysis.profile = classifyDiscipline(state.input, analysis, state.context?.excerpts ?? []);
+    if (!analysis.cloComponents.length) {
+      analysis = {
+        ...analysis,
+        cloComponents: fallbackAnalysis(state.input).cloComponents,
+      };
+    }
     emit(config, { event: 'analysis', data: analysis });
     activity(
       config,
@@ -331,10 +349,17 @@ export function buildStudioGraph(
     const linkedCodes = state.input.clos
       .filter((clo) => clo.linked)
       .map((clo) => clo.code);
-    plan = filterPlanClosToLinked(
-      rebalancePlan(plan, state.input.slideCount),
-      linkedCodes,
+    if (!plan.cloComponents?.length && state.analysis?.cloComponents?.length) {
+      plan = { ...plan, cloComponents: state.analysis.cloComponents };
+    }
+    plan = ensureLectureArc(
+      filterPlanClosToLinked(rebalancePlan(plan, state.input.slideCount), linkedCodes),
+      {
+        language: state.input.language,
+        hasReferences: (state.context?.excerpts.length ?? 0) > 0,
+      },
     );
+    plan = rebalancePlan(plan, state.input.slideCount);
     emit(config, { event: 'plan_partial', data: plan });
     activity(config, 'planner', 'done', `${plan.sections.length} sections planned`);
     return {
@@ -364,10 +389,15 @@ export function buildStudioGraph(
     const linkedCodes = state.input.clos
       .filter((clo) => clo.linked)
       .map((clo) => clo.code);
-    const plan = filterPlanClosToLinked(
+    const confirmed =
       answer?.kind === 'plan_review' && answer.action === 'confirm'
         ? sanitizePlan(answer.plan, state.plan!)
-        : state.plan!,
+        : state.plan!;
+    const plan = filterPlanClosToLinked(
+      ensureLectureArc(confirmed, {
+        language: state.input.language,
+        hasReferences: (state.context?.excerpts.length ?? 0) > 0,
+      }),
       linkedCodes,
     );
     return {
@@ -491,10 +521,11 @@ export function buildStudioGraph(
         `Slides ${enforced.changed.map((index) => index + 1).join(', ')} retyped to carry ${profile.evidence}`,
       );
     }
-    emit(config, { event: 'outline', data: enforced.outline });
-    activity(config, 'outliner', 'done', `${outline.length} slides outlined`);
+    const closed = ensureClosingOutline(enforced.outline, plan, state.input.language);
+    emit(config, { event: 'outline', data: closed });
+    activity(config, 'outliner', 'done', `${closed.length} slides outlined`);
     return {
-      outline: enforced.outline,
+      outline: closed,
       outlineFeedback: null,
       outlineRevision: (state.outlineRevision ?? 0) + 1,
     };
@@ -522,10 +553,11 @@ export function buildStudioGraph(
             new Set(state.context!.figures.map((figure) => figure.key)),
           )
         : state.outline!;
+    const closed = ensureClosingOutline(outline, state.plan!, state.input.language);
     return {
-      outline,
+      outline: closed,
       outlineFeedback: null,
-      input: { ...state.input, slideCount: outline.length },
+      input: { ...state.input, slideCount: closed.length },
     };
   };
 
@@ -602,11 +634,17 @@ export function buildStudioGraph(
 
     activity(config, 'writer', 'done', `${slides.filter(Boolean).length} slides written`);
     const written = slides.map((slide, index) => slide ?? { title: outline[index].title });
-    const cited = withReferencesSlide(withCoverSlide(written, state.input), context, state.input.language);
-    cited.forEach((slide, index) => {
+    const framed = withLectureFrame(
+      written,
+      state.input,
+      plan,
+      state.analysis ?? null,
+      context,
+    );
+    framed.forEach((slide, index) => {
       if (slide !== written[index]) emit(config, { event: 'slide', data: { index, slide } });
     });
-    return { slides: cited };
+    return { slides: framed };
   };
 
   const illustrator = async (

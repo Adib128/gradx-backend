@@ -199,7 +199,21 @@ function renderedLayout(slide: StudioSlide): string {
   if (type === 'COMPARISON' || layout === 'TWO_COLUMN' || slide.leftColumn || slide.rightColumn) {
     return slide.leftColumn || slide.rightColumn ? 'TWO_COLUMN' : 'BULLETS';
   }
-  if (type === 'CHECKPOINT' || type === 'ACTIVITY' || layout === 'QUOTE_CALLOUT' || slide.callout) {
+  if (type === 'CHECKPOINT') {
+    const bullets = Array.isArray(slide.bullets) ? slide.bullets.filter(Boolean) : [];
+    if (bullets.length >= 2) return 'BULLETS';
+  }
+  if (
+    type === 'INTRODUCTION' ||
+    type === 'LEARNING_OUTCOMES' ||
+    type === 'AGENDA' ||
+    type === 'SUMMARY' ||
+    type === 'CONCLUSION' ||
+    type === 'REFERENCES'
+  ) {
+    return 'BULLETS';
+  }
+  if (type === 'ACTIVITY' || layout === 'QUOTE_CALLOUT') {
     return 'QUOTE_CALLOUT';
   }
   return layout || 'BULLETS';

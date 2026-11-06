@@ -238,6 +238,7 @@ function defaultLayoutForType(type: string): string {
     case 'COMPARISON':
       return 'TWO_COLUMN';
     case 'CHECKPOINT':
+      return 'BULLETS';
     case 'ACTIVITY':
       return 'QUOTE_CALLOUT';
     default:
@@ -293,10 +294,7 @@ function canonicalizeTypeAndLayout(
   if (type === 'TITLE') layout = 'TITLE_CENTER';
   if (type === 'SECTION') layout = 'SECTION_DIVIDER';
   if (type === 'EXAMPLE' && layout === 'BULLETS') layout = 'EXAMPLE_STEPS';
-  if (
-    (type === 'CHECKPOINT' || type === 'ACTIVITY') &&
-    layout === 'BULLETS'
-  ) {
+  if (type === 'ACTIVITY' && layout === 'BULLETS') {
     layout = 'QUOTE_CALLOUT';
   }
   if (type === 'DEFINITION' && layout === 'BULLETS') layout = 'DEFINITION';
@@ -555,12 +553,13 @@ export function normalizeOneSlide(raw: unknown): SlideDeckSlide | null {
   }
   if (
     !callout &&
-    (type === 'CHECKPOINT' ||
+    bullets.length &&
+    !(type === 'CHECKPOINT' && bullets.length >= 2) &&
+    (type === 'DEFINITION' ||
+      layout === 'DEFINITION' ||
       type === 'ACTIVITY' ||
-      type === 'DEFINITION' ||
       layout === 'QUOTE_CALLOUT' ||
-      layout === 'DEFINITION') &&
-    bullets.length
+      type === 'CHECKPOINT')
   ) {
     callout = {
       label:

@@ -16,12 +16,13 @@ const MESSAGE_ALIASES: Array<{ pattern: RegExp; key: ErrorMessageKey }> = [
     key: ErrorMessageKey.GENERATION_AI_WORKSPACE_BUDGET_EXCEEDED,
   },
   {
-    pattern: /key limit exceeded|limit_source: \w*key/i,
+    pattern:
+      /key limit exceeded|spending limit|limit_source: \w*key|openrouter\.ai\/settings\/keys/i,
     key: ErrorMessageKey.GENERATION_AI_KEY_LIMIT_EXCEEDED,
   },
   {
     pattern:
-      /402|requires more credits|can only afford|insufficient.?credit|max_tokens/i,
+      /402|requires more credits|can only afford|insufficient.?credit|max_tokens|openrouter\.ai\/settings\/credits/i,
     key: ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
   },
   {
@@ -137,7 +138,7 @@ export function generationErrorPayload(
 
   const errorKey = normalizeGenerationErrorKey(failedReason, fallback);
   return {
-    error: failedReason,
+    error: errorKey,
     errorKey,
   };
 }

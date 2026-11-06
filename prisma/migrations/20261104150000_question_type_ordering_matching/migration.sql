@@ -1,0 +1,3 @@
+-- AlterEnum
+ALTER TYPE "QuestionType" ADD VALUE 'ORDERING';
+ALTER TYPE "QuestionType" ADD VALUE 'MATCHING';

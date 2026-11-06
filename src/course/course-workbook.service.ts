@@ -204,7 +204,7 @@ function editorPayloadToParsed(payload: EditorWorkbookPayload): ParsedCourseWork
             : [],
           maxMarks: maxParsed,
           maxMarksRaw: maxParsed == null ? '' : String(maxParsed),
-          typeRaw: String(question.type ?? 'MCQ').trim(),
+          typeRaw: String(question.type ?? '').trim(),
           text: String(question.text ?? '').trim(),
         };
       });
@@ -802,10 +802,13 @@ export class CourseWorkbookService {
         else errors.push(`${where}: CLO "${code}" is not a course CLO.`);
       }
 
-      const fallbackType = current?.type ?? 'MCQ';
-      const type = normalizeQuestionType(question.typeRaw, fallbackType);
-      if (!type) {
-        errors.push(`${where}: question type "${question.typeRaw}" must be MCQ or TRUE_FALSE.`);
+      const type = normalizeQuestionType(question.typeRaw);
+      if (!question.typeRaw.trim()) {
+        errors.push(`${where}: select the question type.`);
+      } else if (!type) {
+        errors.push(
+          `${where}: question type "${question.typeRaw}" must be MCQ, TRUE_FALSE, SHORT_ANSWER, Coding, ORDERING, or MATCHING.`,
+        );
       }
 
       const text =
@@ -834,7 +837,7 @@ export class CourseWorkbookService {
         cloCodes: question.cloCodes,
         cloIds: Array.from(new Set(cloIds)),
         maxMarks: maxMarks ?? 0,
-        type: type ?? 'MCQ',
+        type: type ?? 'MCQ', // narrowed only after validation; empty type already errors above
         text,
         action,
         averagePercent: null,
