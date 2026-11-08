@@ -17,7 +17,29 @@ export function detectContentLanguage(
   return 'en';
 }
 
-export function contentLanguageGuidance(language: 'ar' | 'en' | undefined): string {
+export type ContentLanguageGuidanceOptions = {
+  /** Human language name when generating in a language other than English/Arabic. */
+  otherLanguageName?: string | null;
+};
+
+export function contentLanguageGuidance(
+  language: 'ar' | 'en' | undefined,
+  options?: ContentLanguageGuidanceOptions,
+): string {
+  const otherName = String(options?.otherLanguageName || '').trim();
+  if (otherName) {
+    return `
+## Output language (CRITICAL — ${otherName})
+Instructor requested deck language: ${otherName}.
+- Write ALL generated string VALUES in clear academic ${otherName}, including:
+  titles, bullets, definitions, examples, speaker notes, questions, diagram titles, and captions.
+- Do NOT mix English headings with ${otherName} body text inside string values.
+- Keep JSON keys in English exactly as required by the schema. Only VALUES are localized.
+- Keep technical terms, formulas, code identifiers, and CLO codes in their standard form when needed for accuracy.
+- Mermaid node/edge labels should be in ${otherName} when they are instructional text.
+`.trim();
+  }
+
   if (language !== 'ar') {
     return `
 ## Output language

@@ -108,6 +108,7 @@ export class CourseAIService implements OnModuleDestroy {
       this.cache = new Redis({
         host: this.config.get<string>('REDIS_HOST') ?? 'localhost',
         port: Number(this.config.get<number>('REDIS_PORT') ?? 6379),
+        password: this.config.get<string>('REDIS_PASSWORD') || undefined,
         maxRetriesPerRequest: 1,
         commandTimeout: 2000,
       });

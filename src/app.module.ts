@@ -36,6 +36,7 @@ import { GenerationPlansModule } from './generation-plans/generation-plans.modul
         connection: {
           host: config.get<string>('REDIS_HOST'),
           port: config.get<number>('REDIS_PORT'),
+          password: config.get<string>('REDIS_PASSWORD') || undefined,
         },
       }),
     }),

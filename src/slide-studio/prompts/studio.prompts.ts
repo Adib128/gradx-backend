@@ -85,6 +85,68 @@ const SLIDE_TYPES =
 const SLIDE_LAYOUTS =
   'TITLE_CENTER | BULLETS | TWO_COLUMN | DEFINITION | FORMULA_FOCUS | EXAMPLE_STEPS | QUOTE_CALLOUT | SECTION_DIVIDER';
 
+function outputLanguageOptions(input: StudioInput) {
+  const prefs = input.preferences;
+  if (prefs?.language === 'other' && prefs.otherLanguageName) {
+    return { otherLanguageName: prefs.otherLanguageName };
+  }
+  return undefined;
+}
+
+function studioLanguageGuidance(input: StudioInput) {
+  return contentLanguageGuidance(input.language, outputLanguageOptions(input));
+}
+
+function preferencesBlock(input: StudioInput) {
+  const prefs = input.preferences;
+  if (!prefs) return null;
+  const depth =
+    prefs.contentDepth === 'basic'
+      ? 'keep explanations short and introductory'
+      : prefs.contentDepth === 'detailed'
+        ? 'include definitions, derivations, and edge cases where useful'
+        : 'balance overview with enough detail to teach the CLO';
+  const visuals =
+    prefs.visualPreference === 'diagrams'
+      ? 'prefer process/flow/structure diagrams'
+      : prefs.visualPreference === 'infographics'
+        ? 'prefer comparison charts, cards, and visual summaries'
+        : 'mix diagrams and visual summaries';
+  const examples =
+    prefs.examples === 'basic'
+      ? 'use short textbook-style examples'
+      : prefs.examples === 'real_world'
+        ? 'use realistic workplace or domain scenarios'
+        : 'use practical applied classroom examples';
+  const style =
+    prefs.presentationStyle === 'modern'
+      ? 'modern lecture tone with crisp claims'
+      : prefs.presentationStyle === 'minimal'
+        ? 'minimal text, high signal per slide'
+        : 'classic academic lecture tone';
+  const audience =
+    prefs.audience === 'graduate'
+      ? 'graduate / advanced students; assume prior fundamentals'
+      : 'undergraduate students; explain unfamiliar terms';
+  const languageLabel =
+    prefs.language === 'ar'
+      ? 'Arabic'
+      : prefs.language === 'other'
+        ? prefs.otherLanguageName || prefs.otherLanguage || 'other'
+        : 'English';
+  return [
+    'Instructor preferences (MUST follow):',
+    `- Audience: ${prefs.audience} (${audience})`,
+    `- Content depth: ${prefs.contentDepth} (${depth})`,
+    `- Presentation style: ${prefs.presentationStyle} (${style})`,
+    `- Visual preference: ${prefs.visualPreference} (${visuals})`,
+    `- Examples: ${prefs.examples} (${examples})`,
+    `- Deck language: ${languageLabel}`,
+    `- Speaker notes: ${prefs.speakerNotes ? 'required on every content slide' : 'omit speaker notes (use empty string)'}`,
+    `- Slide count is fixed at ${input.slideCount}.`,
+  ].join('\n');
+}
+
 function courseBlock(input: StudioInput) {
   const linked = input.clos.filter((clo) => clo.linked);
   const clos = (linked.length ? linked : input.clos)
@@ -100,6 +162,7 @@ function courseBlock(input: StudioInput) {
     input.courseDescription ? `Course description: ${input.courseDescription}` : null,
     `Topic ${input.topicNumber}: ${input.topicTitle}`,
     `Course learning outcomes${linked.length ? ' linked to this topic' : ''}:\n${clos || '- (none provided)'}`,
+    preferencesBlock(input),
   ]
     .filter(Boolean)
     .join('\n');
@@ -180,7 +243,7 @@ ${Object.values(DISCIPLINES)
   .join('\n')}
 Choose programming when students write or read source code; computing for systems/theory courses (networks, OS,
 databases, AI) where code is occasional; mathematics when results are derived and computed; general only when none fits.
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Reference excerpts (sample):
@@ -231,7 +294,7 @@ Rules:
 - Frame phases (title, clo_scope, roadmap, introduction, summary, knowledge_check, references) use visuals: [].
 ${disciplineBlock(disciplineProfile(analysis?.profile))}
 ${PROFESSIONAL_STYLE}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 ${analysisBlock(analysis)}
@@ -274,6 +337,7 @@ export function designerPrompt(
     system: `${TEAM}
 You are the DESIGNER agent. Choose the slide template that best fits the field, the material and the plan.
 All built-in templates share the same lecture chrome (underline header, rounded graphic cards, Think-about-it, CLO bands). Pick on palette and writing style, not decoration.
+Honor the instructor presentation-style preference from the course block (academic → Scholar/classic; modern → cleaner contemporary palettes; minimal → Swiss/Atlas-like sparse look) when it still fits the field.
 Prefer an institution custom template when brand identity matters. Otherwise default to academic-classic (Scholar) for university lectures unless another template's field list is a clearly better match.
 Templates:
 ${templateCatalogForPrompt(input.customTemplates)}
@@ -281,7 +345,7 @@ ${templateCatalogForPrompt(input.customTemplates)}
 Return ONLY one JSON object:
 {"templateId": string, "rationale": string /* 1-2 sentences addressed to the instructor */,
  "alternatives": [{"templateId": string, "reason": string}] /* exactly 2 other good options */}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 ${analysisBlock(analysis)}
@@ -334,7 +398,7 @@ Rules:
 ${disciplineBlock(profile)}
 
 ${PROFESSIONAL_STYLE}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Approved plan:
@@ -428,10 +492,11 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
 - Every content slide shows readable text: a figure or diagram is never the whole slide.
 - Say each thing once: never repeat the bullets inside the example/callout (or the other way round), and do not reuse
   sentences from other slides. No markdown other than **bold**.
-- speakerNotes: a teaching script the instructor can read, 4-6 sentences, first person to the class:
-  start with "CLO component: <label>." then what to say (analogy or real case), a misconception or cold-call
-  question, the figure source when the slide has a visual ("textbook figure p. N" or "AI-generated educational
-  illustration"), and a one-sentence transition. Never read the bullets back.
+- speakerNotes: follow Instructor preferences. If speaker notes are required, write a teaching script the
+  instructor can read, 4-6 sentences, first person to the class: start with "CLO component: <label>." then what
+  to say (analogy or real case), a misconception or cold-call question, the figure source when the slide has a
+  visual ("textbook figure p. N" or "AI-generated educational illustration"), and a one-sentence transition.
+  Never read the bullets back. If preferences say omit speaker notes, set speakerNotes to "".
 - Body slides that teach a partial CLO component: set sectionLabel to "Partially covered — continued later"
   (Arabic: "تغطية جزئية — يُستكمل لاحقاً"). Do not imply that component is finished.
 - One idea per slide. Prefer graphic components over a wall of bullets: 2–3 icon cards ("**Term** — claim"),
@@ -490,7 +555,7 @@ ${PROFESSIONAL_STYLE}
 ${CONTENT_DEPTH}
 
 ${exemplars(profile)}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 ${analysisBlock(analysis)}
@@ -602,7 +667,7 @@ Return ONLY one JSON object:
  "findings": [{"slide": integer, "severity": "low"|"medium"|"high", "category": "accuracy"|"clarity"|"pedagogy"|"layout"|"coherence"|"polish",
    "message": string /* concrete fix instruction for the optimizer, ≤ 30 words: what to change and to what */}]
    /* at most 16, most important first */}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Plan: ${plan.title} — ${plan.approach}
@@ -637,7 +702,7 @@ Report ONLY problems that remain or are new; return an empty list when a slide i
 Return ONLY one JSON object:
 {"findings": [{"slide": integer, "severity": "low"|"medium"|"high", "category": "accuracy"|"clarity"|"pedagogy"|"layout"|"coherence"|"polish",
    "message": string /* concrete fix instruction, ≤ 30 words */}]}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Deck flow:
@@ -698,7 +763,7 @@ ${PROFESSIONAL_STYLE}
 ${CONTENT_DEPTH}
 
 ${exemplars(profile)}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Deck: ${plan.title}
@@ -718,6 +783,83 @@ ${targets
 
 Reference excerpts:
 ${excerptsBlock(excerpts, 20_000)}`,
+  };
+}
+
+/**
+ * Instructor-triggered rewrite of a single slide. Same schema as the writer /
+ * optimizer, but scoped to one index and optional free-text feedback.
+ */
+export function regenerateSlidePrompt(
+  input: StudioInput,
+  plan: StudioPlan,
+  template: SlideTemplate,
+  slides: StudioSlide[],
+  outline: StudioOutlineItem[],
+  index: number,
+  feedback: string | null,
+  excerpts: StudioExcerpt[],
+  figures: StudioFigure[],
+  profile: DisciplineProfile = disciplineProfile(null),
+): PromptPair {
+  const figureByKey = new Map(figures.map((figure) => [figure.key, figure]));
+  const slide = slides[index];
+  const item = outline[index];
+  const neighbors = slides
+    .map((entry, i) =>
+      Math.abs(i - index) === 1
+        ? `${i + 1}. [${entry.type}] "${entry.title}"`
+        : null,
+    )
+    .filter(Boolean)
+    .join('\n');
+  const frameTypes = new Set([
+    'TITLE',
+    'LEARNING_OUTCOMES',
+    'AGENDA',
+    'INTRODUCTION',
+    'SUMMARY',
+    'CHECKPOINT',
+    'REFERENCES',
+  ]);
+  const lockedType = frameTypes.has(String(slide?.type || '').toUpperCase());
+  return {
+    system: `${TEAM}
+You are rewriting ONE lecture slide for an instructor. Keep the slide's teaching purpose, CLO and visual intent.
+Return ONLY one JSON slide object (no markdown fences, no commentary).
+
+Slide object fields: ${SLIDE_SCHEMA}
+
+${SLIDE_BODY_RULES}
+- Keep n=${index + 1}.
+${lockedType ? `- Keep type "${slide?.type}" and layout "${slide?.layout}" (frame slide).` : '- You may change type/layout only when the instructor feedback requires a different teaching form (e.g. add a worked example).'}
+- Keep the existing diagram unchanged unless feedback asks to redesign it; a textbook figure stays attached automatically.
+- Do not repeat neighbouring slides.
+- If feedback is provided, satisfy it while staying faithful to the excerpts.
+- ${templateBlock(template)}
+
+${disciplineBlock(profile)}
+
+${PROFESSIONAL_STYLE}
+
+${CONTENT_DEPTH}
+
+${exemplars(profile)}
+${studioLanguageGuidance(input)}`,
+    user: `${courseBlock(input)}
+
+Deck: ${plan.title}
+Neighboring slides:
+${neighbors || '- (none)'}
+
+Current slide:
+${slideDigest(slide, index)}${slide?.diagram?.mermaid ? `\n   current mermaid:\n${slide.diagram.mermaid}` : ''}
+Planned: ${item ? slideLine(item, figureByKey) : '-'}
+
+Instructor feedback: ${feedback?.trim() || '(none — improve clarity, depth and classroom usefulness while keeping the same purpose)'}
+
+Reference excerpts:
+${excerptsBlock(excerpts, 16_000)}`,
   };
 }
 
@@ -748,7 +890,7 @@ lines; use \\n inside JSON strings for line breaks.
 Ground each diagram in the slide's CLO and the related reference excerpts — do not invent off-topic nodes from
 unrelated chapter material. Prefer the field's standard names/symbols on nodes; keep one clear teaching story
 (input → transform → result, or hierarchy of concepts) that a student can retell after class.
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `Topic: ${input.topicTitle} (${input.courseTitle})
 
 Topic CLOs:
@@ -798,7 +940,7 @@ Return ONLY one JSON object:
  "visualSources": [{"slide": integer, "classification": "textbook"|"ai_generated"|"none"|"not_verified",
    "description": string, "figureKey"?: string, "pageNumber"?: integer}],
  "issues": [{"slide": integer|null, "severity": "low"|"medium"|"high", "message": string}] /* at most 8 */}
-${contentLanguageGuidance(input.language)}`,
+${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
 Plan:

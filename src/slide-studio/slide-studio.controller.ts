@@ -18,6 +18,7 @@ import type { Response } from 'express';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import {
+  RegenerateSlideDto,
   ResumeSlideStudioDto,
   SaveSlideTemplateDto,
   StartSlideStudioDto,
@@ -131,5 +132,23 @@ export class SlideStudioController {
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
   ) {
     return this.slideStudioService.discardSession(tenantId, sessionId);
+  }
+
+  @Get('sessions/:sessionId/coverage')
+  coverage(
+    @GetUser('tenantId') tenantId: number,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+  ) {
+    return this.slideStudioService.getCoverageReport(tenantId, sessionId);
+  }
+
+  @Post('sessions/:sessionId/slides/:index/regenerate')
+  regenerateSlide(
+    @GetUser('tenantId') tenantId: number,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: RegenerateSlideDto,
+  ) {
+    return this.slideStudioService.regenerateSlide(tenantId, sessionId, index, dto);
   }
 }

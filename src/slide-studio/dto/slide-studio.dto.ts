@@ -7,11 +7,29 @@ const SelectionSchema = z.object({
   chapterIndices: z.array(z.number().int().nonnegative()).max(200),
 });
 
+const PreferencesSchema = z
+  .object({
+    audience: z.enum(['undergraduate', 'graduate']).optional(),
+    contentDepth: z.enum(['basic', 'moderate', 'detailed']).optional(),
+    presentationStyle: z.enum(['academic', 'modern', 'minimal']).optional(),
+    visualPreference: z.enum(['diagrams', 'infographics', 'balanced']).optional(),
+    language: z.enum(['en', 'ar', 'other']).optional(),
+    /** ISO-ish code when language is `other` (fr, es, de, …). */
+    otherLanguage: z.string().trim().min(2).max(12).optional(),
+    /** Human label for prompts when language is `other`. */
+    otherLanguageName: z.string().trim().min(2).max(40).optional(),
+    examples: z.enum(['basic', 'practical', 'real_world']).optional(),
+    speakerNotes: z.boolean().optional(),
+  })
+  .optional();
+
 export const StartSlideStudioSchema = z.object({
   slideCount: z.number().int().min(MIN_SLIDES).max(MAX_SLIDES),
   selections: z.array(SelectionSchema).max(10).default([]),
   /** Content generation quality plan (High / Medium / Low). */
   generationPlanId: z.number().int().positive().optional(),
+  /** Instructor presentation preferences for this run. */
+  preferences: PreferencesSchema,
 });
 
 export const ResumeSlideStudioSchema = z.object({
@@ -21,6 +39,11 @@ export const ResumeSlideStudioSchema = z.object({
   templateId: z.string().max(60).optional(),
   plan: z.unknown().optional(),
   outline: z.unknown().optional(),
+});
+
+export const RegenerateSlideSchema = z.object({
+  /** Optional instructor note for the rewrite (what to change). */
+  feedback: z.string().trim().max(2000).optional(),
 });
 
 export const SaveSlideTemplateSchema = z.object({
@@ -37,3 +60,4 @@ export const SaveSlideTemplateSchema = z.object({
 export class StartSlideStudioDto extends createZodDto(StartSlideStudioSchema) {}
 export class SaveSlideTemplateDto extends createZodDto(SaveSlideTemplateSchema) {}
 export class ResumeSlideStudioDto extends createZodDto(ResumeSlideStudioSchema) {}
+export class RegenerateSlideDto extends createZodDto(RegenerateSlideSchema) {}

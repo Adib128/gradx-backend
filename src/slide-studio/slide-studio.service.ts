@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -21,12 +22,26 @@ import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 import { filterFiguresForChapters } from 'src/course/utils/extract-reference-figures.util';
 import { resolveTenantReferenceFilePath } from 'src/course/utils/reference-document-storage.util';
 import { ReferenceVectorService } from 'src/reference-vector/reference-vector.service';
+import {
+  fitSlideDeckToTarget,
+  normalizeAndPaginateSlideDeck,
+  normalizeOneSlide,
+} from 'src/topic-content/utils/slide-deck.util';
 import { detectContentLanguage } from 'src/topic-content/utils/content-language.util';
 import { RedisCheckpointSaver } from './checkpoint/redis-checkpoint-saver';
-import type { ResumeSlideStudioDto, StartSlideStudioDto } from './dto/slide-studio.dto';
+import type {
+  RegenerateSlideDto,
+  ResumeSlideStudioDto,
+  StartSlideStudioDto,
+} from './dto/slide-studio.dto';
+import { regenerateSlidePrompt } from './prompts/studio.prompts';
 import { buildStudioGraph, type StudioGraph, type StudioStateType } from './slide-studio.graph';
 import { runWithPlanModels, SlideStudioLlm } from './slide-studio.llm';
-import { customTemplateDbId } from './slide-studio.templates';
+import {
+  customTemplateDbId,
+  findTemplate,
+  templateDeckMeta,
+} from './slide-studio.templates';
 import { SlideTemplatesService } from './slide-templates.service';
 import { AiUsageService } from 'src/ai-usage/ai-usage.service';
 import { GenerationPlansService } from 'src/generation-plans/generation-plans.service';
@@ -41,10 +56,16 @@ import type {
   StudioInterrupt,
   StudioLanguage,
   StudioPlanSection,
+  StudioPreferences,
   StudioResume,
+  StudioSlide,
 } from './slide-studio.types';
 import { summarizeContext } from './slide-studio.types';
-import { semesterLabel } from './utils/studio-frame.util';
+import { buildCloCoverageReport } from './utils/clo-coverage-report.util';
+import { disciplineProfile } from './utils/discipline-profile.util';
+import { fillEmptySlideBody, repairSlideStructure } from './utils/slide-repair.util';
+import { polishSlide } from './utils/slide-lint.util';
+import { semesterLabel, withLectureFrame } from './utils/studio-frame.util';
 
 const PREFIX = 'slide-studio';
 const SESSION_TTL_SECONDS = 3 * 24 * 60 * 60;
@@ -57,6 +78,62 @@ const SECTION_EXCERPTS = 8;
 const FULLTEXT_CHAPTER_CHARS = 3_500;
 const FULLTEXT_TOTAL_CHARS = 24_000;
 const FULLTEXT_SNIPPET_CHARS = 900;
+
+const DEFAULT_PREFERENCES: StudioPreferences = {
+  audience: 'undergraduate',
+  contentDepth: 'moderate',
+  presentationStyle: 'academic',
+  visualPreference: 'balanced',
+  language: 'en',
+  examples: 'practical',
+  speakerNotes: true,
+};
+
+const OTHER_LANGUAGE_NAMES: Record<string, string> = {
+  fr: 'French',
+  es: 'Spanish',
+  de: 'German',
+  zh: 'Chinese',
+  pt: 'Portuguese',
+  ru: 'Russian',
+  tr: 'Turkish',
+  hi: 'Hindi',
+};
+
+function normalizeStudioPreferences(
+  value: StartSlideStudioDto['preferences'],
+): StudioPreferences {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_PREFERENCES };
+  const language = value.language ?? DEFAULT_PREFERENCES.language;
+  const otherLanguage =
+    language === 'other'
+      ? String(value.otherLanguage || 'fr')
+          .trim()
+          .toLowerCase()
+          .slice(0, 12) || 'fr'
+      : undefined;
+  const otherLanguageName =
+    language === 'other'
+      ? String(value.otherLanguageName || '').trim() ||
+        OTHER_LANGUAGE_NAMES[otherLanguage || 'fr'] ||
+        'French'
+      : undefined;
+  return {
+    audience: value.audience ?? DEFAULT_PREFERENCES.audience,
+    contentDepth: value.contentDepth ?? DEFAULT_PREFERENCES.contentDepth,
+    presentationStyle:
+      value.presentationStyle ?? DEFAULT_PREFERENCES.presentationStyle,
+    visualPreference: value.visualPreference ?? DEFAULT_PREFERENCES.visualPreference,
+    language,
+    otherLanguage,
+    otherLanguageName,
+    examples: value.examples ?? DEFAULT_PREFERENCES.examples,
+    speakerNotes:
+      typeof value.speakerNotes === 'boolean'
+        ? value.speakerNotes
+        : DEFAULT_PREFERENCES.speakerNotes,
+  };
+}
 
 type SessionMeta = {
   tenantId: number;
@@ -108,6 +185,7 @@ export class SlideStudioService implements OnModuleDestroy {
     this.redis = new Redis({
       host: config.get<string>('REDIS_HOST') ?? 'localhost',
       port: Number(config.get<number>('REDIS_PORT') ?? 6379),
+      password: config.get<string>('REDIS_PASSWORD') || undefined,
       maxRetriesPerRequest: 2,
     });
     this.checkpointer = new RedisCheckpointSaver(this.redis, {
@@ -350,12 +428,17 @@ export class SlideStudioService implements OnModuleDestroy {
       });
     }
 
-    const language = detectContentLanguage(
+    const detectedLanguage = detectContentLanguage(
       topic.title,
       course.title,
       course.description,
       ...course.clos.map((clo) => clo.description),
     );
+    const preferences = normalizeStudioPreferences(dto.preferences);
+    const language =
+      preferences.language === 'en' || preferences.language === 'ar'
+        ? preferences.language
+        : detectedLanguage;
     const resolvedPlan = await this.generationPlans.resolveModels(dto.generationPlanId ?? null);
     if (dto.generationPlanId && !resolvedPlan.planId) {
       throw new NotFoundException(ErrorMessageKey.GENERATION_PLAN_NOT_FOUND);
@@ -383,6 +466,7 @@ export class SlideStudioService implements OnModuleDestroy {
       slideCount: dto.slideCount,
       selections,
       language,
+      preferences,
       customTemplates: await this.slideTemplates.customTemplates(tenantId),
       cover: await this.coverFor(course, topic, userId ?? null, language),
     };
@@ -845,5 +929,234 @@ export class SlideStudioService implements OnModuleDestroy {
         },
       }),
     );
+  }
+
+  /** Deterministic CLO ↔ slide coverage for instructor review before approval. */
+  async getCoverageReport(tenantId: number, sessionId: string) {
+    const meta = await this.requireSession(tenantId, sessionId);
+    const snapshot = await this.graph.getState(this.config(sessionId));
+    const values = (snapshot.values ?? {}) as Partial<StudioStateType>;
+    const slides = this.slidesFromState(values);
+    if (!slides.length) {
+      throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_NO_DECK);
+    }
+    return {
+      sessionId,
+      topicId: meta.topicId,
+      coverage: buildCloCoverageReport({
+        slides,
+        plan: values.plan ?? null,
+        outline: values.outline ?? null,
+        review: values.review ?? null,
+      }),
+    };
+  }
+
+  /**
+   * Rewrite one slide with a focused optimizer-style prompt and persist the
+   * updated deck without re-running the full generation graph.
+   */
+  async regenerateSlide(
+    tenantId: number,
+    sessionId: string,
+    slideIndex: number,
+    dto: RegenerateSlideDto,
+  ) {
+    const meta = await this.requireSession(tenantId, sessionId);
+    if ((await this.redis.exists(this.lockKey(sessionId))) === 1) {
+      throw new ConflictException(ErrorMessageKey.SLIDE_STUDIO_BUSY);
+    }
+    const snapshot = await this.graph.getState(this.config(sessionId));
+    const values = (snapshot.values ?? {}) as Partial<StudioStateType>;
+    const input = values.input;
+    if (!input) throw new NotFoundException(ErrorMessageKey.SLIDE_STUDIO_SESSION_NOT_FOUND);
+
+    const previousSlides = this.slidesFromState(values);
+    if (!previousSlides.length) {
+      throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_NO_DECK);
+    }
+    if (
+      !Number.isInteger(slideIndex) ||
+      slideIndex < 0 ||
+      slideIndex >= previousSlides.length
+    ) {
+      throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_SLIDE_NOT_FOUND);
+    }
+
+    const plan = values.plan;
+    if (!plan) throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_NO_DECK);
+    const outline = values.outline ?? [];
+    const context = values.context;
+    const template = findTemplate(values.templateId, input.customTemplates);
+    const previous = previousSlides[slideIndex];
+    const item = outline[slideIndex];
+    const profile = disciplineProfile(values.analysis?.profile);
+
+    const locked = await this.redis.set(
+      this.lockKey(sessionId),
+      '1',
+      'EX',
+      LOCK_TTL_SECONDS,
+      'NX',
+    );
+    if (!locked) throw new ConflictException(ErrorMessageKey.SLIDE_STUDIO_BUSY);
+
+    try {
+      await this.aiUsage.assertWithinLimit(meta.userId ?? undefined);
+      const resolvedPlan = await this.planModelsForSession(meta);
+      const excerpts =
+        context && item
+          ? await this.sectionExcerpts(
+              input,
+              context,
+              plan.sections.find((section) => section.id === item.sectionId) ??
+                ({
+                  id: item.sectionId || 'body',
+                  phase: 'body',
+                  title: item.title,
+                  goal: item.intent,
+                  cloCodes: item.cloCode ? [item.cloCode] : [],
+                  slideCount: 1,
+                  keyPoints: [item.intent],
+                  visuals: [],
+                } as StudioPlanSection),
+            )
+          : context?.excerpts ?? [];
+
+      const raw = await runWithAiContext(
+        {
+          userId: meta.userId,
+          tenantId: meta.tenantId,
+          purpose: 'slide_studio_regenerate',
+          generationPlanCode: resolvedPlan.code,
+        },
+        () =>
+          runWithPlanModels(resolvedPlan.models, () =>
+            this.llm.json(
+              'optimizer',
+              regenerateSlidePrompt(
+                input,
+                plan,
+                template,
+                previousSlides,
+                outline,
+                slideIndex,
+                dto.feedback?.trim() || null,
+                excerpts,
+                context?.figures ?? [],
+                profile,
+              ),
+            ),
+          ),
+      );
+
+      const rest = { ...raw };
+      delete rest.n;
+      const drafted =
+        polishSlide(
+          normalizeOneSlide({
+            ...rest,
+            type: rest.type || previous.type,
+            layout: rest.layout || previous.layout,
+            title: rest.title || previous.title,
+          }) ?? { ...previous },
+        ) ?? { ...previous };
+      drafted.slideNumber = slideIndex + 1;
+      drafted.cloCode = drafted.cloCode || previous.cloCode || item?.cloCode || null;
+      if (previous.image) {
+        drafted.image = previous.image;
+        drafted.diagram = null;
+      } else if (previous.diagram && !drafted.diagram?.mermaid) {
+        drafted.diagram = previous.diagram;
+      }
+      const { slide: repaired } = repairSlideStructure(drafted);
+      fillEmptySlideBody(repaired);
+
+      const nextSlides = previousSlides.map((slide, index) =>
+        index === slideIndex ? repaired : slide,
+      );
+      const deck = this.buildDeckRecord(input, values, nextSlides, template);
+      await this.saveDeck(input, deck);
+      await this.graph.updateState(this.config(sessionId), {
+        slides: nextSlides,
+        deck,
+      });
+
+      return {
+        sessionId,
+        topicId: meta.topicId,
+        index: slideIndex,
+        slide: repaired,
+        slides: nextSlides,
+        deck,
+        coverage: buildCloCoverageReport({
+          slides: nextSlides,
+          plan,
+          outline,
+          review: values.review ?? null,
+        }),
+      };
+    } finally {
+      await this.redis.del(this.lockKey(sessionId)).catch(() => undefined);
+    }
+  }
+
+  private slidesFromState(values: Partial<StudioStateType>): StudioSlide[] {
+    if (Array.isArray(values.slides) && values.slides.length) return values.slides;
+    const deckSlides = values.deck?.slides;
+    return Array.isArray(deckSlides) ? (deckSlides as StudioSlide[]) : [];
+  }
+
+  private buildDeckRecord(
+    input: StudioInput,
+    values: Partial<StudioStateType>,
+    slidesIn: StudioSlide[],
+    template: ReturnType<typeof findTemplate>,
+  ) {
+    const framed = withLectureFrame(
+      slidesIn,
+      input,
+      values.plan ?? null,
+      values.analysis ?? null,
+      values.context ?? null,
+    );
+    const slides = framed.map((slide) => {
+      const { slide: repaired } = repairSlideStructure(slide);
+      fillEmptySlideBody(repaired);
+      return repaired;
+    });
+    return fitSlideDeckToTarget(
+      normalizeAndPaginateSlideDeck(
+        {
+          deckMeta: {
+            courseTitle: input.courseTitle,
+            topicTitle: input.topicTitle,
+            topicNumber: input.topicNumber,
+            designTheme: 'UNIVERSITY_ACADEMIC',
+            ...templateDeckMeta(template),
+            language: input.language,
+            cover: input.cover ?? null,
+            studio: {
+              sessionId: input.sessionId,
+              deckTitle: values.plan?.title ?? null,
+              field: values.analysis?.field ?? null,
+              profile: values.analysis?.profile ?? null,
+              reviewScore: values.review?.score ?? null,
+              draftScore: values.qa?.draftScore ?? null,
+              qaIssuesFound: values.qa?.initialCount ?? 0,
+              qaSlidesOptimized: values.qa?.optimized.length ?? 0,
+              models: this.llm.models,
+            },
+          },
+          slides,
+        },
+        {
+          courseTitle: input.courseTitle,
+          topicTitle: input.topicTitle,
+          topicNumber: input.topicNumber,
+        },
+      ),
+      slides.length,
+    ) as Record<string, unknown>;
   }
 }

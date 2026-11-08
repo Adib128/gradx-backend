@@ -4,6 +4,21 @@ import type { DisciplineId } from './utils/discipline-profile.util';
 
 export type StudioLanguage = 'ar' | 'en';
 
+/** Instructor choices from the generation-settings modal. */
+export type StudioPreferences = {
+  audience: 'undergraduate' | 'graduate';
+  contentDepth: 'basic' | 'moderate' | 'detailed';
+  presentationStyle: 'academic' | 'modern' | 'minimal';
+  visualPreference: 'diagrams' | 'infographics' | 'balanced';
+  language: 'en' | 'ar' | 'other';
+  /** Set when language is `other` (e.g. fr, es). */
+  otherLanguage?: string;
+  /** Display name for prompts when language is `other` (e.g. French). */
+  otherLanguageName?: string;
+  examples: 'basic' | 'practical' | 'real_world';
+  speakerNotes: boolean;
+};
+
 export type StudioChapterSelection = {
   referenceIndex: number;
   chapterIndices: number[];
@@ -50,6 +65,8 @@ export type StudioInput = {
   slideCount: number;
   selections: StudioChapterSelection[];
   language: StudioLanguage;
+  /** Instructor presentation preferences (absent in older sessions). */
+  preferences?: StudioPreferences;
   /** Institution templates available to the designer (absent in older sessions). */
   customTemplates?: SlideTemplate[];
   /** Cover slide data (absent in older sessions). */
