@@ -759,9 +759,8 @@ export class CourseService {
     const isPdf =
       String(file.mimetype || '').toLowerCase().includes('pdf') ||
       String(file.originalname || '').toLowerCase().endsWith('.pdf');
-    // Skip figure mining on large textbooks — a second full-PDF parse OOMs
-    // the production API box (seen as aborted uploads / extract failures).
-    if (isPdf && file.size <= 10 * 1024 * 1024) {
+    // Figure extract is best-effort; the util caps work on large textbooks to avoid OOM.
+    if (isPdf) {
       try {
         figures = await extractReferenceFigureAssets({
           buffer: file.buffer,
@@ -1006,7 +1005,7 @@ export class CourseService {
       const isPdf =
         String(file.mimetype || '').toLowerCase().includes('pdf') ||
         String(file.originalname || '').toLowerCase().endsWith('.pdf');
-      if (isPdf && file.size <= 10 * 1024 * 1024) {
+      if (isPdf) {
         try {
           figures = await extractReferenceFigureAssets({
             buffer: file.buffer,
@@ -1016,12 +1015,6 @@ export class CourseService {
         } catch {
           figures = [];
         }
-      } else if (isPdf) {
-        emit('progress', {
-          percent: 96,
-          stage: 'figures',
-          message: 'Skipping figure extract for large textbook…',
-        });
       }
 
       const result = {

@@ -19,13 +19,17 @@ const FIGURE_CAPTION_LINE_PATTERN =
   /^(?:Figure|Fig\.?|FIGURE|FIG\.?)\s+(\d+(?:\.\d+)*)\s*[:.\-–—]?\s*(.*)$/i;
 
 const MAX_FIGURES_PER_DOCUMENT = 80;
+/** Large textbooks: fewer rasters keeps memory under the API box limit. */
+const MAX_FIGURES_LARGE_DOCUMENT = 40;
 const MAX_IMAGE_WIDTH = 1100;
 const JPEG_QUALITY = 78;
 /** Skip tiny icons / bullets when pulling embedded images. */
 const MIN_EMBEDDED_IMAGE_EDGE = 80;
 /** Screenshot scale for vector-diagram fallback crops. */
 const SCREENSHOT_SCALE = 1.5;
+const SCREENSHOT_SCALE_LARGE = 1.25;
 const SCREENSHOT_BATCH_SIZE = 6;
+const SCREENSHOT_BATCH_SIZE_LARGE = 3;
 
 type CaptionHit = {
   caption: string;
@@ -262,9 +266,11 @@ async function cropFigureFromScreenshot(options: {
  * - Prefer large embedded raster images
  * - Fall back to cropped page screenshots for vector diagrams (common in textbooks)
  */
-/** Large textbooks OOMed the API box when we re-parsed every page for figures. */
-const MAX_PAGES_FOR_FIGURE_EXTRACT = 180;
-const MAX_BYTES_FOR_FIGURE_EXTRACT = 10 * 1024 * 1024;
+/** Match reference upload limit; larger files skip figures to avoid OOM. */
+const MAX_BYTES_FOR_FIGURE_EXTRACT = 20 * 1024 * 1024;
+/** Docs above this size/page count use tighter raster caps (still extract). */
+const LARGE_DOC_BYTES = 10 * 1024 * 1024;
+const LARGE_DOC_PAGES = 180;
 const FIGURE_TEXT_BATCH = 25;
 
 export async function extractReferenceFigureAssets(options: {
@@ -281,12 +287,19 @@ export async function extractReferenceFigureAssets(options: {
   try {
     const info = await parser.getInfo();
     const pageCount = Math.max(info.total ?? 0, 1);
-    if (pageCount > MAX_PAGES_FOR_FIGURE_EXTRACT) {
-      return [];
-    }
+    const largeDoc =
+      options.buffer.length > LARGE_DOC_BYTES || pageCount > LARGE_DOC_PAGES;
+    const maxFigures = largeDoc
+      ? MAX_FIGURES_LARGE_DOCUMENT
+      : MAX_FIGURES_PER_DOCUMENT;
+    const screenshotBatch = largeDoc
+      ? SCREENSHOT_BATCH_SIZE_LARGE
+      : SCREENSHOT_BATCH_SIZE;
+    const screenshotScale = largeDoc ? SCREENSHOT_SCALE_LARGE : SCREENSHOT_SCALE;
 
     const captionHits: CaptionHit[] = [];
     const seenNumbers = new Set<string>();
+    // Stop once we have enough captions — do not walk every page of a 1000+ page book.
     for (let start = 1; start <= pageCount; start += FIGURE_TEXT_BATCH) {
       const end = Math.min(pageCount, start + FIGURE_TEXT_BATCH - 1);
       const partial = Array.from(
@@ -311,18 +324,18 @@ export async function extractReferenceFigureAssets(options: {
           if (seenNumbers.has(key)) continue;
           seenNumbers.add(key);
           captionHits.push(hit);
-          if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;
+          if (captionHits.length >= maxFigures) break;
         }
-        if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;
+        if (captionHits.length >= maxFigures) break;
       }
-      if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;
+      if (captionHits.length >= maxFigures) break;
     }
 
     if (captionHits.length === 0) {
       return [];
     }
 
-    const limited = captionHits.slice(0, MAX_FIGURES_PER_DOCUMENT);
+    const limited = captionHits.slice(0, maxFigures);
     const pageNumbers = [
       ...new Set(limited.map((hit) => hit.pageNumber)),
     ].sort((a, b) => a - b);
@@ -359,12 +372,12 @@ export async function extractReferenceFigureAssets(options: {
       number,
       { data: Buffer; width: number; height: number }
     >();
-    for (let i = 0; i < needsScreenshot.length; i += SCREENSHOT_BATCH_SIZE) {
-      const batch = needsScreenshot.slice(i, i + SCREENSHOT_BATCH_SIZE);
+    for (let i = 0; i < needsScreenshot.length; i += screenshotBatch) {
+      const batch = needsScreenshot.slice(i, i + screenshotBatch);
       try {
         const shot = await parser.getScreenshot({
           partial: batch,
-          scale: SCREENSHOT_SCALE,
+          scale: screenshotScale,
           imageBuffer: true,
           imageDataUrl: false,
         });

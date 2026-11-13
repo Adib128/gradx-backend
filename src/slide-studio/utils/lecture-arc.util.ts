@@ -46,6 +46,20 @@ export function parseLecturePhase(raw: unknown, fallback: LecturePhase = 'body')
   return PHASE_OF[key] ?? fallback;
 }
 
+/**
+ * Chrome slides excluded from the instructor "content slides" parameter:
+ * title cover, key takeaways, knowledge check, references.
+ * Example: parameter 10 → 1 title + 10 content + takeaways + check + references = 14.
+ */
+export const FIXED_CHROME_PHASES: LecturePhase[] = [
+  'title',
+  'summary',
+  'knowledge_check',
+  'references',
+];
+
+export const FIXED_CHROME_SLIDES = FIXED_CHROME_PHASES.length;
+
 const FRAME_PHASES = new Set<LecturePhase>([
   'title',
   'clo_scope',
@@ -55,6 +69,15 @@ const FRAME_PHASES = new Set<LecturePhase>([
   'knowledge_check',
   'references',
 ]);
+
+export function isFixedChromePhase(phase: LecturePhase): boolean {
+  return FIXED_CHROME_PHASES.includes(phase);
+}
+
+/** Total deck size from the instructor content-slide parameter. */
+export function deckTotalFromContentSlides(contentSlides: number): number {
+  return Math.max(1, Math.floor(contentSlides) || 1) + FIXED_CHROME_SLIDES;
+}
 
 function frameSection(
   phase: LecturePhase,
@@ -75,120 +98,178 @@ function frameSection(
   };
 }
 
+function mergeBodySections(sections: StudioPlanSection[], maxBody: number): StudioPlanSection[] {
+  if (sections.length <= maxBody) return sections;
+  const keep = sections.slice(0, Math.max(1, maxBody));
+  const overflow = sections.slice(keep.length);
+  const last = keep[keep.length - 1];
+  keep[keep.length - 1] = {
+    ...last,
+    slideCount:
+      last.slideCount +
+      overflow.reduce((sum, section) => sum + section.slideCount, 0),
+    keyPoints: [...last.keyPoints, ...overflow.flatMap((section) => section.keyPoints)].slice(
+      0,
+      8,
+    ),
+    cloCodes: [...new Set([...last.cloCodes, ...overflow.flatMap((section) => section.cloCodes)])],
+    visuals: [...last.visuals, ...overflow.flatMap((section) => section.visuals)].slice(0, 6),
+  };
+  return keep;
+}
+
+/** Rebalance only non-chrome sections so their slideCounts sum to `contentSlides`. */
+export function rebalanceContentSlides(plan: StudioPlan, contentSlides: number): StudioPlan {
+  const target = Math.max(1, Math.floor(contentSlides) || 1);
+  const chrome = plan.sections.filter((section) => isFixedChromePhase(section.phase));
+  const content = plan.sections
+    .filter((section) => !isFixedChromePhase(section.phase))
+    .map((section) => ({ ...section }));
+  if (!content.length) {
+    content.push(
+      frameSection('body', plan.title || 'Main content', plan.approach || 'Teach the topic', target, chrome.length),
+    );
+  }
+  let total = content.reduce((sum, section) => sum + section.slideCount, 0);
+  while (total > target) {
+    const largest = content.reduce((best, section) =>
+      section.slideCount > best.slideCount ? section : best,
+    );
+    if (largest.slideCount <= 1) break;
+    largest.slideCount -= 1;
+    total -= 1;
+  }
+  let cursor = 0;
+  while (total < target) {
+    const candidates = [...content].sort((a, b) => a.slideCount - b.slideCount);
+    candidates[cursor % candidates.length].slideCount += 1;
+    cursor += 1;
+    total += 1;
+  }
+  // Preserve teaching order: title → content… → summary → knowledge_check → references
+  const title = chrome.filter((section) => section.phase === 'title');
+  const closing = chrome.filter((section) => section.phase !== 'title');
+  return {
+    ...plan,
+    sections: [...title, ...content, ...closing].map((section, index) => ({
+      ...section,
+      id: `s${index + 1}`,
+      slideCount: isFixedChromePhase(section.phase) ? 1 : section.slideCount,
+    })),
+  };
+}
+
 /**
- * Ensure the plan has the PO lecture arc: title → clo_scope → roadmap →
- * introduction → body… → summary → knowledge_check → references.
- * Existing body sections are preserved; missing frame sections are inserted.
+ * Ensure the plan has title + content… + takeaways + knowledge check + references.
+ * `contentSlideCount` is the instructor parameter (excludes chrome).
  */
 export function ensureLectureArc(
   plan: StudioPlan,
-  options: { language: 'ar' | 'en'; hasReferences: boolean },
+  options: {
+    language: 'ar' | 'en';
+    hasReferences: boolean;
+    /** Instructor content-slide parameter (not including title/takeaways/check/refs). */
+    slideCount?: number;
+    /** @deprecated alias of slideCount */
+    contentSlideCount?: number;
+  },
 ): StudioPlan {
   const ar = options.language === 'ar';
+  const contentTarget = Math.max(
+    1,
+    Math.floor(options.contentSlideCount ?? options.slideCount ?? 16) || 16,
+  );
   const sections = plan.sections.map((section) => ({ ...section }));
-  const byPhase = (phase: LecturePhase) => sections.filter((section) => section.phase === phase);
-  const body = sections.filter((section) => !FRAME_PHASES.has(section.phase) || section.phase === 'body');
+  const byPhase = (phase: LecturePhase) =>
+    sections.filter((section) => section.phase === phase);
 
-  const ordered: StudioPlanSection[] = [];
-  const pushUnique = (phase: LecturePhase, factory: () => StudioPlanSection) => {
-    const existing = byPhase(phase)[0];
-    ordered.push(existing ? { ...existing, phase } : factory());
-  };
+  // Content = everything that is not fixed chrome (may include clo_scope / roadmap / intro / body).
+  let contentSections: StudioPlanSection[] = sections
+    .filter((section) => !isFixedChromePhase(section.phase))
+    .map((section) => ({
+      ...section,
+      phase:
+        section.phase === 'clo_scope' ||
+        section.phase === 'roadmap' ||
+        section.phase === 'introduction' ||
+        section.phase === 'body'
+          ? section.phase
+          : ('body' as LecturePhase),
+    }));
 
-  pushUnique('title', () =>
+  if (!contentSections.length) {
+    contentSections = [
+      frameSection(
+        'body',
+        plan.title || (ar ? 'المحتوى الرئيسي' : 'Main content'),
+        plan.approach || (ar ? 'شرح مفاهيم المحاضرة' : 'Teach the lecture concepts'),
+        contentTarget,
+        1,
+      ),
+    ];
+  }
+
+  // Keep enough content sections for the budget (at least 1, at most contentTarget).
+  contentSections = mergeBodySections(contentSections, Math.min(contentTarget, 8));
+
+  const title =
+    byPhase('title')[0] ??
     frameSection(
       'title',
       ar ? 'شريحة العنوان' : 'Lecture title',
       ar ? 'بيانات المقرر والمحاضرة' : 'Course and lecture identity from course data',
       1,
-      ordered.length,
-    ),
-  );
-  pushUnique('clo_scope', () =>
-    frameSection(
-      'clo_scope',
-      ar ? 'مخرج التعلم ونطاق المحاضرة' : 'CLO and lecture scope',
-      ar
-        ? 'عرض مخرج التعلم كاملاً وما يُغطى / لا يُغطى في هذه المحاضرة'
-        : 'Full CLO plus covered / partial / not covered for this lecture',
-      1,
-      ordered.length,
-    ),
-  );
-  pushUnique('roadmap', () =>
-    frameSection(
-      'roadmap',
-      ar ? 'خريطة المحاضرة' : 'Lecture roadmap',
-      ar ? 'ترتيب المواضيع المستند إلى الفصل' : 'Teaching order grounded in the chapter',
-      1,
-      ordered.length,
-    ),
-  );
-  pushUnique('introduction', () =>
-    frameSection(
-      'introduction',
-      ar ? 'مقدمة' : 'Introduction',
-      ar ? 'سياق وأهمية وسؤال محفّز' : 'Context, importance, motivating question',
-      1,
-      ordered.length,
-    ),
-  );
-
-  const bodySections = (body.length ? body : sections.filter((s) => s.phase === 'body')).map(
-    (section) => ({ ...section, phase: 'body' as const }),
-  );
-  if (!bodySections.length) {
-    ordered.push(
-      frameSection(
-        'body',
-        plan.title || (ar ? 'المحتوى الرئيسي' : 'Main content'),
-        plan.approach || (ar ? 'شرح مفاهيم المحاضرة' : 'Teach the lecture concepts'),
-        Math.max(2, Math.floor((plan.sections[0]?.slideCount ?? 6) / 2)),
-        ordered.length,
-      ),
+      0,
     );
-  } else {
-    ordered.push(...bodySections);
-  }
-
-  pushUnique('summary', () =>
+  const summary =
+    byPhase('summary')[0] ??
     frameSection(
       'summary',
-      ar ? 'خلاصة المحاضرة' : 'Lecture summary',
+      ar ? 'خلاصة المحاضرة' : 'Key takeaways',
       ar
         ? 'أبرز النقاط وربطها بمكوّنات مخرج التعلم المغطاة فقط'
         : 'Key takeaways linked only to CLO parts covered in this lecture',
       1,
-      ordered.length,
-    ),
-  );
-  pushUnique('knowledge_check', () =>
+      0,
+    );
+  const knowledge =
+    byPhase('knowledge_check')[0] ??
     frameSection(
       'knowledge_check',
-      ar ? 'تحقق من الفهم' : 'Knowledge check',
+      ar ? 'تحقق من الفهم' : 'Check your understanding',
       ar
         ? 'اختبر فهمك: 3–5 أسئلة على المحتوى الذي دُرّس فقط'
         : 'Check your understanding: 3–5 questions only on content taught in this lecture',
       1,
-      ordered.length,
-    ),
-  );
-  // Always close with References (Clause-style), even when chapter excerpts are sparse.
-  pushUnique('references', () =>
+      0,
+    );
+  const references =
+    byPhase('references')[0] ??
     frameSection(
       'references',
       ar ? 'المراجع' : 'References',
       ar ? 'مراجع الفصل ومصادر الأشكال' : 'Chapter bibliography and figure provenance',
       1,
-      ordered.length,
-    ),
-  );
+      0,
+    );
   void options.hasReferences;
+  void FRAME_PHASES;
 
-  return {
-    ...plan,
-    sections: ordered.map((section, index) => ({ ...section, id: `s${index + 1}` })),
-  };
+  const ordered: StudioPlanSection[] = [
+    { ...title, phase: 'title', slideCount: 1 },
+    ...contentSections,
+    { ...summary, phase: 'summary', slideCount: 1 },
+    { ...knowledge, phase: 'knowledge_check', slideCount: 1 },
+    { ...references, phase: 'references', slideCount: 1 },
+  ];
+
+  return rebalanceContentSlides(
+    {
+      ...plan,
+      sections: ordered.map((section, index) => ({ ...section, id: `s${index + 1}` })),
+    },
+    contentTarget,
+  );
 }
 
 export function cloComponentsBlock(components: StudioCloComponent[] | undefined) {
@@ -229,9 +310,6 @@ export function missingArcTypes(types: string[]): string[] {
   const upper = new Set(types.map((type) => type.toUpperCase()));
   const required = [
     'TITLE',
-    'LEARNING_OUTCOMES',
-    'AGENDA',
-    'INTRODUCTION',
     'SUMMARY',
     'CHECKPOINT',
     'REFERENCES',

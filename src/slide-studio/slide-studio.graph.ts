@@ -78,13 +78,16 @@ import {
   coerceTemplateSuggestion,
   emptyPlan,
   fallbackAnalysis,
-  planSlideTotal,
   filterPlanClosToLinked,
-  rebalancePlan,
+  planSlideTotal,
   sanitizeOutline,
   sanitizePlan,
 } from './utils/studio-coerce.util';
-import { ensureClosingOutline, ensureLectureArc } from './utils/lecture-arc.util';
+import {
+  deckTotalFromContentSlides,
+  ensureClosingOutline,
+  ensureLectureArc,
+} from './utils/lecture-arc.util';
 
 export const StudioState = Annotation.Root({
   input: Annotation<StudioInput>(),
@@ -352,14 +355,12 @@ export function buildStudioGraph(
     if (!plan.cloComponents?.length && state.analysis?.cloComponents?.length) {
       plan = { ...plan, cloComponents: state.analysis.cloComponents };
     }
-    plan = ensureLectureArc(
-      filterPlanClosToLinked(rebalancePlan(plan, state.input.slideCount), linkedCodes),
-      {
-        language: state.input.language,
-        hasReferences: (state.context?.excerpts.length ?? 0) > 0,
-      },
-    );
-    plan = rebalancePlan(plan, state.input.slideCount);
+    // slideCount = content slides only; ensureLectureArc adds title + takeaways + check + refs (+4).
+    plan = ensureLectureArc(filterPlanClosToLinked(plan, linkedCodes), {
+      language: state.input.language,
+      hasReferences: (state.context?.excerpts.length ?? 0) > 0,
+      slideCount: state.input.slideCount,
+    });
     emit(config, { event: 'plan_partial', data: plan });
     activity(config, 'planner', 'done', `${plan.sections.length} sections planned`);
     return {
@@ -397,13 +398,14 @@ export function buildStudioGraph(
       ensureLectureArc(confirmed, {
         language: state.input.language,
         hasReferences: (state.context?.excerpts.length ?? 0) > 0,
+        slideCount: state.input.slideCount,
       }),
       linkedCodes,
     );
     return {
       plan,
       planFeedback: null,
-      input: { ...state.input, slideCount: planSlideTotal(plan) },
+      // Keep the instructor's content-slideCount; deck total is content + fixed chrome.
     };
   };
 
@@ -492,7 +494,9 @@ export function buildStudioGraph(
         disciplineProfile(state.analysis?.profile),
       ),
       (line) => {
-        if (outline.length >= state.input.slideCount) return;
+        const deckTotal =
+          planSlideTotal(plan) || deckTotalFromContentSlides(state.input.slideCount);
+        if (outline.length >= deckTotal) return;
         const item = coerceOutlineItem(
           line,
           outline.length,
@@ -521,7 +525,20 @@ export function buildStudioGraph(
         `Slides ${enforced.changed.map((index) => index + 1).join(', ')} retyped to carry ${profile.evidence}`,
       );
     }
-    const closed = ensureClosingOutline(enforced.outline, plan, state.input.language);
+    const deckTotal =
+      planSlideTotal(plan) || deckTotalFromContentSlides(state.input.slideCount);
+    let closed = ensureClosingOutline(enforced.outline, plan, state.input.language);
+    if (closed.length > deckTotal) {
+      // Prefer dropping middle content over chrome (first + last three).
+      const head = closed[0];
+      const tail = closed.slice(-3);
+      const middle = closed.slice(1, -3);
+      const keep = Math.max(0, deckTotal - 4);
+      closed = [head, ...middle.slice(0, keep), ...tail].map((item, index) => ({
+        ...item,
+        index,
+      }));
+    }
     emit(config, { event: 'outline', data: closed });
     activity(config, 'outliner', 'done', `${closed.length} slides outlined`);
     return {
@@ -557,7 +574,7 @@ export function buildStudioGraph(
     return {
       outline: closed,
       outlineFeedback: null,
-      input: { ...state.input, slideCount: closed.length },
+      // Keep content-only slideCount; writers use outline.length for the full deck.
     };
   };
 

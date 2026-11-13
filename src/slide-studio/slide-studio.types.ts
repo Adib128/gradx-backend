@@ -62,6 +62,11 @@ export type StudioInput = {
   topicTitle: string;
   topicNumber: number;
   clos: StudioClo[];
+  /**
+   * Instructor content-slide parameter (excludes fixed chrome:
+   * title, key takeaways, check your understanding, references).
+   * Full deck size = slideCount + 4.
+   */
   slideCount: number;
   selections: StudioChapterSelection[];
   language: StudioLanguage;

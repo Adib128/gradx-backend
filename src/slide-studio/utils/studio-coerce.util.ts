@@ -12,10 +12,13 @@ import type {
   StudioVisualSource,
 } from '../slide-studio.types';
 import { isDisciplineId } from './discipline-profile.util';
-import { parseLecturePhase } from './lecture-arc.util';
+import { FIXED_CHROME_SLIDES, parseLecturePhase } from './lecture-arc.util';
 
 export const MIN_SLIDES = 4;
+/** Max instructor content-slide parameter (excludes title / takeaways / check / refs). */
 export const MAX_SLIDES = 40;
+/** Max full deck size once fixed chrome is added. */
+export const MAX_DECK_SLIDES = MAX_SLIDES + FIXED_CHROME_SLIDES;
 export const MAX_PLAN_SECTIONS = 16;
 
 const text = (value: unknown, max = 600) =>
@@ -221,7 +224,7 @@ export function sanitizePlan(raw: unknown, fallback: StudioPlan): StudioPlan {
     cloComponents,
   };
   const total = sections.reduce((sum, section) => sum + section.slideCount, 0);
-  if (total > MAX_SLIDES) return rebalancePlan(plan, MAX_SLIDES);
+  if (total > MAX_DECK_SLIDES) return rebalancePlan(plan, MAX_DECK_SLIDES);
   if (total < MIN_SLIDES) return rebalancePlan(plan, MIN_SLIDES);
   return plan;
 }

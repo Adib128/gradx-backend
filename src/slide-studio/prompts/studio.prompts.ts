@@ -8,7 +8,11 @@ import {
   type DisciplineProfile,
 } from '../utils/discipline-profile.util';
 import { estimateSlideFit } from '../utils/slide-fit.util';
-import { cloComponentsBlock } from '../utils/lecture-arc.util';
+import {
+  cloComponentsBlock,
+  deckTotalFromContentSlides,
+  FIXED_CHROME_SLIDES,
+} from '../utils/lecture-arc.util';
 import { rankedFiguresBlock } from '../utils/figure-rank.util';
 import type {
   StudioAnalysis,
@@ -143,7 +147,9 @@ function preferencesBlock(input: StudioInput) {
     `- Examples: ${prefs.examples} (${examples})`,
     `- Deck language: ${languageLabel}`,
     `- Speaker notes: ${prefs.speakerNotes ? 'required on every content slide' : 'omit speaker notes (use empty string)'}`,
-    `- Slide count is fixed at ${input.slideCount}.`,
+    `- Content slides (instructor parameter): ${input.slideCount}.`,
+    `- Fixed chrome slides (not counted in that parameter): title, key takeaways, check your understanding, references (${FIXED_CHROME_SLIDES}).`,
+    `- Total deck size: ${deckTotalFromContentSlides(input.slideCount)} (= ${input.slideCount} content + ${FIXED_CHROME_SLIDES} chrome).`,
   ].join('\n');
 }
 
@@ -260,29 +266,36 @@ export function plannerPrompt(
   analysis: StudioAnalysis | null,
   revision: { previous: StudioPlan; feedback: string } | null,
 ): PromptPair {
+  const contentSlides = input.slideCount;
+  const deckTotal = deckTotalFromContentSlides(contentSlides);
   return {
     system: `${TEAM}
-You are the PLANNER agent (lead instructional designer). Design the teaching plan for a deck of EXACTLY ${input.slideCount} slides.
+You are the PLANNER agent (lead instructional designer). Design the teaching plan for a deck of EXACTLY ${deckTotal} slides.
+
+The instructor parameter is CONTENT slides only (= ${contentSlides}). Fixed chrome is NOT in that number:
+title (1) + ${contentSlides} content + key takeaways/summary (1) + check your understanding (1) + references (1) = ${deckTotal}.
 
 Output NDJSON: one JSON object per line, no prose, no code fences, no array brackets.
 Line 1: {"type":"meta","title":string /* assertion about the lecture, not "Lecture on X" */,"approach":string /* pedagogy in 1-2 sentences */,"learningGoals":string[] /* 3-5 measurable outcomes with Bloom verbs + object, only for CLO parts covered/partial in this lecture */,"cloComponents":[{"id","cloCode","label","status":"covered"|"partial"|"not_covered","evidence"}]}
 Then one line per section, in teaching order:
 {"type":"section","phase":"title"|"clo_scope"|"roadmap"|"introduction"|"body"|"summary"|"knowledge_check"|"references","title":string,"goal":string,"cloCodes":string[],"slideCount":integer,"keyPoints":string[] /* 2-5 assertion claims for body; short for frame phases */,"visuals":string[]}
 
-Required lecture arc (phases, in this order):
-1. title (1 slide) — cover from course data; visuals none
-2. clo_scope (1 slide) — full original CLO + which components are covered / partial / not covered this lecture
-3. roadmap (1 slide) — teaching order tied to chapter sections for covered/partial components only
-4. introduction (1 slide) — context, importance, motivating question grounded in the chapter
-5. body (several sections) — teach ONLY covered/partial CLO components; never invent not_covered topics
-6. summary (1 slide) — takeaways + contribution to covered CLO parts only (do not claim the whole CLO)
-7. knowledge_check (1 slide) — 3–5 questions only on content taught; answers belong in speaker notes later
-8. references (1 slide, always last) — verified biblio; figure provenance filled later
+Required lecture arc (phases, in teaching order):
+1. title (1 slide) — always; NOT counted in the content parameter
+2. clo_scope (1 slide) — when content budget allows (counts toward the ${contentSlides} content slides)
+3. roadmap (1 slide) — optional when contentSlides ≥ 8 (counts toward content)
+4. introduction (1 slide) — optional when contentSlides ≥ 9 (counts toward content)
+5. body (one or more sections) — teach ONLY covered/partial CLO components; never invent not_covered topics (counts toward content)
+6. summary (1 slide, "Key takeaways") — always; NOT counted in the content parameter
+7. knowledge_check (1 slide, "Check your understanding") — always; NOT counted in the content parameter
+8. references (1 slide, always last) — always; NOT counted in the content parameter
 
 Rules:
-- The sum of slideCount over all sections MUST equal ${input.slideCount}.
+- Sum of slideCount over ALL sections MUST equal EXACTLY ${deckTotal}.
+- Sum of slideCount over NON-chrome sections (everything except title, summary, knowledge_check, references) MUST equal EXACTLY ${contentSlides}.
+- title, summary, knowledge_check, and references are always exactly 1 slide each.
 - Copy/refine cloComponents from the analyst map; keep honesty about partial/not_covered.
-- Body sections only: usually 3-6 thematic units; every body section maps to at least one CLO code.
+- Body sections: for small decks prefer 1–2 units; for larger decks usually 3–6; every body section maps to at least one CLO code.
 - ONLY use CLO codes from the provided topic-linked list — never invent or pick unrelated course CLOs.
 - Section titles for body are teachable units ("The PCB stores everything needed to resume a process"), not catalogue headings.
 - keyPoints for body are assertion claims (mechanism, condition, result or misconception), 8-16 words each.
@@ -363,9 +376,13 @@ export function outlinerPrompt(
   revision: { previous: StudioOutlineItem[]; feedback: string } | null,
   profile: DisciplineProfile = disciplineProfile(null),
 ): PromptPair {
+  const deckTotal =
+    plan.sections.reduce((sum, section) => sum + section.slideCount, 0) ||
+    deckTotalFromContentSlides(input.slideCount);
   return {
     system: `${TEAM}
-You are the OUTLINER agent. Turn the approved plan into a slide-by-slide outline of EXACTLY ${input.slideCount} slides.
+You are the OUTLINER agent. Turn the approved plan into a slide-by-slide outline of EXACTLY ${deckTotal} slides
+(instructor content parameter ${input.slideCount} + ${FIXED_CHROME_SLIDES} fixed chrome: title, takeaways, check, references).
 
 Output NDJSON: one JSON object per line (one per slide, in order), no prose, no code fences:
 {"section": string /* section id */, "type": string, "layout": string, "title": string /* final slide headline, 5-10 words */,
