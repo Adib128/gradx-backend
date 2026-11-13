@@ -107,6 +107,18 @@ function looksLikeBodyChapterReference(header: string): boolean {
   return false;
 }
 
+function isTruncatedTocTitle(header: string): boolean {
+  const suffix = header
+    .trim()
+    .replace(/^(?:chapter|ch\.|part|unit)\s*\d+\s*[:\.\-–—]?\s*/i, '')
+    .trim();
+  if (!suffix) return false;
+  // Brief-contents wraps mid-phrase: "Chapter 1 Introduction to Computers, Programs,"
+  if (/[,:;–—-]$/.test(suffix)) return true;
+  if (/\b(and|or|to|of|the|a|an|for|with|in)$/i.test(suffix)) return true;
+  return false;
+}
+
 function isChapterHeaderLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 160 || trimmed.endsWith('.')) return false;
@@ -117,16 +129,17 @@ function isChapterHeaderLine(line: string): boolean {
     // Short "Chapter N   12" TOC rows
     if (/\s{2,}\d+\s*$/.test(trimmed)) return false;
   }
-  // Trailing page number without leaders: "Chapter 1 Introduction 17"
+  // Trailing page number without leaders: "Chapter 1 Introduction 17" / "Chapter 34 … 34-1"
   if (
     /^(?:chapter|ch\.|part|unit)\s*\d+/i.test(trimmed) &&
-    /\s\d{1,4}$/.test(trimmed) &&
-    trimmed.length < 80
+    /\s\d{1,4}(?:-\d{1,4})?$/.test(trimmed) &&
+    trimmed.length < 100
   ) {
     return false;
   }
   if (!CHAPTER_HEADER_PATTERN.test(trimmed)) return false;
   if (looksLikeBodyChapterReference(trimmed)) return false;
+  if (isTruncatedTocTitle(trimmed)) return false;
   return true;
 }
 
@@ -217,7 +230,12 @@ function findPageMarkerBefore(
     if (!trimmed) continue;
     if (isPageMarkerLine(trimmed)) return lines[i];
     // Stop at other chapter markers / real body so we don't steal an earlier page.
-    if (parseWileyChapterMarkerLine(trimmed) || isChapterHeaderLine(trimmed)) {
+    if (
+      parseWileyChapterMarkerLine(trimmed) ||
+      isChapterHeaderLine(trimmed) ||
+      isPearsonChapterKeyword(trimmed) ||
+      parseBareChapterNumberLine(trimmed) != null
+    ) {
       break;
     }
     if (trimmed.length > 20) break;
@@ -327,15 +345,163 @@ function sectionsToChapters(sections: RawSection[]): ReferenceChapter[] {
   const meaningful = filterMeaningfulSections(merged);
   if (meaningful.length === 0) return [];
 
-  return meaningful.map((section, index) => {
+  const chapters = meaningful.map((section, index) => {
     const { startPage, endPage } = pageRangeFromLines(section.lines);
     return {
       name: normalizeChapterName(section.header, index + 1),
       content: sanitizeTextForJsonStorage(section.lines.join('\n')),
       startPage,
       endPage,
+      chapterNumber: section.chapterNumber,
     };
   });
+
+  // Prefer numbered textbook order over TOC/preface encounter order.
+  chapters.sort((a, b) => {
+    if (a.chapterNumber != null && b.chapterNumber != null) {
+      if (a.chapterNumber !== b.chapterNumber) {
+        return a.chapterNumber - b.chapterNumber;
+      }
+    } else if (a.chapterNumber != null) return -1;
+    else if (b.chapterNumber != null) return 1;
+    const pageA = a.startPage ?? Number.MAX_SAFE_INTEGER;
+    const pageB = b.startPage ?? Number.MAX_SAFE_INTEGER;
+    return pageA - pageB;
+  });
+
+  return chapters.map(({ chapterNumber: _n, ...chapter }) => chapter);
+}
+
+function isPearsonChapterKeyword(line: string): boolean {
+  return /^(chapter|part|unit)$/i.test(line.trim());
+}
+
+function parseBareChapterNumberLine(line: string): number | null {
+  const trimmed = line.trim();
+  if (!/^\d{1,2}$/.test(trimmed)) return null;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Running header under a Pearson opener: "2 Chapter 1 Introduction to …". */
+function titleFromPearsonRunningHeader(
+  line: string,
+  chapterNumber: number,
+): string | null {
+  const match = line
+    .trim()
+    .match(/^\d+\s+Chapter\s+(\d+)\s+(.+)$/i);
+  if (!match) return null;
+  if (Number(match[1]) !== chapterNumber) return null;
+  const title = match[2].trim();
+  return title || null;
+}
+
+function collectPearsonTitleParts(
+  lines: string[],
+  startIndex: number,
+  chapterNumber: number,
+): { titleParts: string[]; bodyStartIndex: number } {
+  const titleParts: string[] = [];
+  let index = startIndex;
+
+  while (index < lines.length && titleParts.length < 6) {
+    const trimmed = lines[index].trim();
+    index += 1;
+    if (!trimmed) continue;
+    if (isPageMarkerLine(trimmed)) continue;
+    if (isPearsonChapterKeyword(trimmed) || parseBareChapterNumberLine(trimmed) != null) {
+      index -= 1;
+      break;
+    }
+    if (parseWileyChapterMarkerLine(trimmed) || isChapterHeaderLine(trimmed)) {
+      index -= 1;
+      break;
+    }
+
+    const fromRunning = titleFromPearsonRunningHeader(trimmed, chapterNumber);
+    if (fromRunning) {
+      titleParts.push(fromRunning);
+      break;
+    }
+
+    // Section opener "1.1 Introduction" — body starts here.
+    if (/^\d+\.\d+\b/.test(trimmed)) {
+      index -= 1;
+      break;
+    }
+    if (looksLikeBodyParagraphLine(trimmed) && titleParts.length > 0) {
+      index -= 1;
+      break;
+    }
+    // ALL-CAPS / short title fragments from the chapter splash page.
+    if (trimmed.length <= 48 && !/[.!?]$/.test(trimmed)) {
+      titleParts.push(trimmed);
+      continue;
+    }
+    index -= 1;
+    break;
+  }
+
+  return { titleParts, bodyStartIndex: index };
+}
+
+/**
+ * Pearson/Liang openers look like:
+ *   CHAPTER
+ *   1
+ *   INTRODUCTION TO …
+ * (often followed by a page marker + running header).
+ */
+function splitByPearsonChapterOpeners(text: string): RawSection[] {
+  const lines = text.split('\n');
+  const markers: Array<{ lineIndex: number; numberLineIndex: number; chapterNumber: number }> =
+    [];
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    if (!isPearsonChapterKeyword(lines[lineIndex])) continue;
+    let numberLineIndex = lineIndex + 1;
+    while (
+      numberLineIndex < lines.length &&
+      !lines[numberLineIndex].trim()
+    ) {
+      numberLineIndex += 1;
+    }
+    if (numberLineIndex >= lines.length) continue;
+    const chapterNumber = parseBareChapterNumberLine(lines[numberLineIndex]);
+    if (chapterNumber == null) continue;
+    markers.push({ lineIndex, numberLineIndex, chapterNumber });
+  }
+
+  if (markers.length < 2) return [];
+
+  const sections: RawSection[] = [];
+  for (let markerIndex = 0; markerIndex < markers.length; markerIndex++) {
+    const marker = markers[markerIndex];
+    const nextMarker = markers[markerIndex + 1];
+    const { titleParts, bodyStartIndex } = collectPearsonTitleParts(
+      lines,
+      marker.numberLineIndex + 1,
+      marker.chapterNumber,
+    );
+    const bodyEnd = nextMarker?.lineIndex ?? lines.length;
+    const bodyLines = lines.slice(bodyStartIndex, bodyEnd);
+    const pageMarker = findPageMarkerBefore(lines, marker.lineIndex);
+    if (
+      pageMarker &&
+      !bodyLines.some((line) => line.trim() === pageMarker.trim())
+    ) {
+      bodyLines.unshift(pageMarker);
+    }
+
+    sections.push({
+      header: formatWileyChapterName(marker.chapterNumber, titleParts),
+      lines: bodyLines,
+      chapterNumber: marker.chapterNumber,
+    });
+  }
+
+  return sections;
 }
 
 function splitByStandardChapterHeaders(text: string): RawSection[] {
@@ -356,14 +522,29 @@ function splitByStandardChapterHeaders(text: string): RawSection[] {
     currentLines = [];
   };
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const line = lines[lineIndex];
     if (isChapterHeaderLine(line)) {
-      const trimmed = line.trim();
+      let header = line.trim();
+      // Continue wrapped titles: "Chapter 20 Lists, Stacks, Queues," + "and Priority Queues"
+      let lookAhead = lineIndex + 1;
+      while (lookAhead < lines.length && isTruncatedTocTitle(header)) {
+        const next = lines[lookAhead].trim();
+        if (!next || isPageMarkerLine(next) || isChapterHeaderLine(next)) break;
+        if (isPearsonChapterKeyword(next) || parseBareChapterNumberLine(next) != null) {
+          break;
+        }
+        if (next.length > 60 || looksLikeBodyParagraphLine(next)) break;
+        header = `${header} ${next}`.replace(/\s+/g, ' ').trim();
+        lookAhead += 1;
+      }
+      lineIndex = lookAhead - 1;
+
       const leadingPageMarkers = peelTrailingPageMarkers(currentLines);
       if (currentLines.length > 0 || currentHeader) {
         pushSection();
       }
-      currentHeader = trimmed;
+      currentHeader = header;
       currentLines = [...leadingPageMarkers];
       continue;
     }
@@ -381,37 +562,48 @@ type RawSection = {
 };
 
 /**
- * Merge duplicate chapter numbers (e.g. "Chapter 1" then "Chapter 1: Introduction")
- * into a single section, keeping the more descriptive title.
+ * Merge duplicate chapter numbers (TOC + body, or repeated TOC wraps) into one
+ * section per number. Keep the best title and the largest body (real chapter wins).
  */
 function mergeDuplicateChapterSections(sections: RawSection[]): RawSection[] {
-  const merged: RawSection[] = [];
+  const byNumber = new Map<number, RawSection>();
+  const unnumbered: RawSection[] = [];
 
   for (const section of sections) {
-    const previous = merged[merged.length - 1];
-    const sameNumber =
-      previous &&
-      section.chapterNumber != null &&
-      previous.chapterNumber != null &&
-      previous.chapterNumber === section.chapterNumber;
-
-    if (!sameNumber) {
-      merged.push({
+    const number = section.chapterNumber;
+    if (number == null) {
+      unnumbered.push({
         header: section.header,
         lines: [...section.lines],
-        chapterNumber: section.chapterNumber,
+        chapterNumber: null,
       });
       continue;
     }
 
-    // Prefer the titled header ("Chapter 1: Introduction" over "Chapter 1").
-    if (chapterTitleScore(section.header) > chapterTitleScore(previous.header)) {
-      previous.header = section.header;
+    const existing = byNumber.get(number);
+    if (!existing) {
+      byNumber.set(number, {
+        header: section.header,
+        lines: [...section.lines],
+        chapterNumber: number,
+      });
+      continue;
     }
-    previous.lines.push(...section.lines);
+
+    if (chapterTitleScore(section.header) > chapterTitleScore(existing.header)) {
+      existing.header = section.header;
+    }
+    const existingLen = existing.lines.join('\n').trim().length;
+    const nextLen = section.lines.join('\n').trim().length;
+    // Prefer the longer body (actual chapter text over TOC stubs).
+    if (nextLen > existingLen) {
+      existing.lines = [...section.lines];
+    } else if (nextLen > 0 && nextLen >= existingLen * 0.8) {
+      existing.lines.push(...section.lines);
+    }
   }
 
-  return merged;
+  return [...byNumber.values(), ...unnumbered];
 }
 
 function filterMeaningfulSections(sections: RawSection[]): RawSection[] {
@@ -443,6 +635,14 @@ export function splitReferenceIntoChapters(text: string): ReferenceChapter[] {
   const wileyChapters = sectionsToChapters(wileySections);
   if (wileyChapters.length >= 2) {
     return wileyChapters;
+  }
+
+  // Pearson/Liang: real openers are "CHAPTER" + number on the next line.
+  // Prefer these over TOC/preface "Chapter N …" rows that scramble order.
+  const pearsonSections = splitByPearsonChapterOpeners(normalized);
+  const pearsonChapters = sectionsToChapters(pearsonSections);
+  if (pearsonChapters.length >= 2) {
+    return pearsonChapters;
   }
 
   const standardSections = splitByStandardChapterHeaders(normalized);

@@ -37,6 +37,7 @@ import {
   storeReferenceDocumentFile,
 } from './utils/reference-document-storage.util';
 import { extractReferenceFigureAssets } from './utils/extract-reference-figures.util';
+import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
   mergeAssessmentPlanTiming,
@@ -1119,7 +1120,7 @@ export class CourseService {
     }
 
     const lower = resolved.relativePath.toLowerCase();
-    const mimeType = lower.endsWith('.pdf')
+    let mimeType = lower.endsWith('.pdf')
       ? 'application/pdf'
       : lower.endsWith('.docx')
         ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -1129,9 +1130,33 @@ export class CourseService {
             ? 'image/png'
             : 'application/octet-stream';
 
+    // Older uploads truncated the filename and dropped ".pdf"; sniff magic bytes.
+    if (mimeType === 'application/octet-stream') {
+      try {
+        const handle = await open(resolved.absolutePath, 'r');
+        try {
+          const header = Buffer.alloc(8);
+          const { bytesRead } = await handle.read(header, 0, 8, 0);
+          const head = header.subarray(0, bytesRead).toString('utf8');
+          if (head.startsWith('%PDF')) mimeType = 'application/pdf';
+          else if (header[0] === 0x50 && header[1] === 0x4b) {
+            mimeType =
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          }
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        /* keep octet-stream */
+      }
+    }
+
+    const fileName = basename(resolved.relativePath);
     return {
       filePath: resolved.absolutePath,
-      fileName: basename(resolved.relativePath),
+      fileName: mimeType === 'application/pdf' && !fileName.toLowerCase().endsWith('.pdf')
+        ? `${fileName}.pdf`
+        : fileName,
       mimeType,
     };
   }

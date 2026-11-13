@@ -1,10 +1,8 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ReferenceEmbeddingProcessor } from './processors/reference-embedding.processor';
-import {
-  REFERENCE_EMBEDDING_QUEUE,
-  ReferenceVectorService,
-} from './reference-vector.service';
+import { REFERENCE_EMBEDDING_QUEUE } from './reference-vector.constants';
+import { ReferenceVectorService } from './reference-vector.service';
 
 @Module({
   imports: [BullModule.registerQueue({ name: REFERENCE_EMBEDDING_QUEUE })],

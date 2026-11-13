@@ -727,6 +727,64 @@ export class AdminService {
     });
   }
 
+  /** Platform-wide reference vector index documents (embeddings log). */
+  async listReferenceEmbeddings(
+    query: PageQuery & { status?: string; courseId?: string; tenantId?: string },
+  ) {
+    const { page, limit, skip } = this.pageLimit(query);
+    const where: Prisma.ReferenceDocumentWhereInput = {};
+    const status = query.status?.trim();
+    if (
+      status === 'PENDING' ||
+      status === 'PROCESSING' ||
+      status === 'COMPLETED' ||
+      status === 'FAILED'
+    ) {
+      where.status = status;
+    }
+    if (query.courseId) where.courseId = Number(query.courseId);
+    if (query.tenantId) where.tenantId = Number(query.tenantId);
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { fileName: { contains: search, mode: 'insensitive' } },
+        { documentKey: { contains: search, mode: 'insensitive' } },
+        { embeddingModel: { contains: search, mode: 'insensitive' } },
+        { error: { contains: search, mode: 'insensitive' } },
+        { course: { title: { contains: search, mode: 'insensitive' } } },
+        { course: { code: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
+    const [total, rows] = await Promise.all([
+      this.prisma.referenceDocument.count({ where }),
+      this.prisma.referenceDocument.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { updatedAt: 'desc' },
+        select: {
+          id: true,
+          courseId: true,
+          tenantId: true,
+          referenceIndex: true,
+          title: true,
+          fileName: true,
+          documentKey: true,
+          embeddingModel: true,
+          status: true,
+          chunkCount: true,
+          error: true,
+          indexedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          course: { select: { id: true, title: true, code: true } },
+        },
+      }),
+    ]);
+    return paginate(rows, total, page, limit);
+  }
+
   async listAiLogs(
     query: PageQuery & { purpose?: string; success?: string; userId?: string },
   ) {

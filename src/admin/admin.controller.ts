@@ -184,6 +184,25 @@ export class AdminController {
     });
   }
 
+  @Get('reference-embeddings')
+  listReferenceEmbeddings(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('courseId') courseId?: string,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    return this.adminService.listReferenceEmbeddings({
+      page: Number(page),
+      limit: Number(limit),
+      search,
+      status,
+      courseId,
+      tenantId,
+    });
+  }
+
   @Get('login-logs')
   listLoginLogs(
     @Query('page') page?: string,

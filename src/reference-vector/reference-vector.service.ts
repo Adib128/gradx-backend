@@ -13,12 +13,16 @@ import {
 } from 'src/common/helpers/openrouter-embedding.helper';
 import type { ReferenceChapterSelection } from 'src/assessment/dto/generate-assessment.dto';
 import {
+  REFERENCE_EMBEDDING_QUEUE,
+  REFERENCE_EMBEDDING_SYNC_DEBOUNCE_MS,
+} from './reference-vector.constants';
+import {
   buildReferenceEntries,
   chunkReferenceEntry,
   type ReferenceIndexEntry,
 } from './utils/reference-chunking.util';
 
-export const REFERENCE_EMBEDDING_QUEUE = 'reference-embedding';
+export { REFERENCE_EMBEDDING_QUEUE } from './reference-vector.constants';
 
 export type ReferenceEmbeddingJob = {
   courseId: number;
@@ -47,7 +51,6 @@ export type RetrievedReferenceChunk = {
 
 /** Rows per INSERT; each 1536-d vector literal is ~30KB of SQL text. */
 const INSERT_BATCH_SIZE = 50;
-const SYNC_DEBOUNCE_MS = 3000;
 
 @Injectable()
 export class ReferenceVectorService {
@@ -85,10 +88,10 @@ export class ReferenceVectorService {
         'sync-course',
         { courseId, ...context },
         {
-          delay: SYNC_DEBOUNCE_MS,
+          delay: REFERENCE_EMBEDDING_SYNC_DEBOUNCE_MS,
           deduplication: {
             id: `course-${courseId}`,
-            ttl: SYNC_DEBOUNCE_MS,
+            ttl: REFERENCE_EMBEDDING_SYNC_DEBOUNCE_MS,
             extend: true,
             replace: true,
           },

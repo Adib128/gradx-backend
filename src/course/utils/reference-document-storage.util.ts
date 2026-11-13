@@ -28,10 +28,18 @@ export async function storeReferenceDocumentFile(options: {
   );
   await mkdir(absoluteDir, { recursive: true });
 
-  const safeName = String(options.originalName || 'document')
+  // Keep the real extension (e.g. .pdf) even when the long original name is truncated.
+  // Without it, browsers treat the file as a download and refuse to render in an iframe.
+  const original = String(options.originalName || 'document').trim() || 'document';
+  const extMatch = original.match(/(\.[A-Za-z0-9]{1,10})$/);
+  const extension = extMatch ? extMatch[1].toLowerCase() : '';
+  const baseName = original
+    .slice(0, Math.max(0, original.length - extension.length))
     .replace(/[^\w.\-]+/g, '_')
-    .slice(0, 80);
-  const storedName = `ref-${Date.now()}-${safeName}`;
+    .replace(/_+/g, '_')
+    .replace(/^[_\.]+|[_\.]+$/g, '')
+    .slice(0, 60) || 'document';
+  const storedName = `ref-${Date.now()}-${baseName}${extension}`;
   const absolutePath = join(absoluteDir, storedName);
   await writeFile(absolutePath, options.buffer);
 
