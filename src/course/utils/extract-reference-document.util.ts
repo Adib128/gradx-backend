@@ -716,9 +716,13 @@ export async function extractReferenceDocumentText(options: {
   if (isPdf) {
     // Textbooks are large digital PDFs — never OCR here (OOM / aborted uploads
     // on the small production VM). Course-spec scans still use OCR elsewhere.
+    // Stop once we have enough text for storage; a 1300-page book otherwise
+    // spikes RAM past what the 2GB API box can spare.
     rawText = await extractPdfText(options.buffer, {
       allowOcr: false,
-      pageBatchSize: 30,
+      pageBatchSize: 20,
+      maxCharacters: MAX_REFERENCE_EXTRACTED_CHARS + 50_000,
+      password: '',
     });
     extractionMethod = 'pdf';
   } else if (isDocx) {

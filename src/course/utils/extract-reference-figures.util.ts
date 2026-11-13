@@ -113,6 +113,7 @@ async function loadPageTextGeometry(
     data: new Uint8Array(buffer),
     useSystemFonts: true,
     isEvalSupported: false,
+    password: '',
   }).promise;
 
   try {
@@ -261,35 +262,57 @@ async function cropFigureFromScreenshot(options: {
  * - Prefer large embedded raster images
  * - Fall back to cropped page screenshots for vector diagrams (common in textbooks)
  */
+/** Large textbooks OOMed the API box when we re-parsed every page for figures. */
+const MAX_PAGES_FOR_FIGURE_EXTRACT = 180;
+const MAX_BYTES_FOR_FIGURE_EXTRACT = 10 * 1024 * 1024;
+const FIGURE_TEXT_BATCH = 25;
+
 export async function extractReferenceFigureAssets(options: {
   buffer: Buffer;
   tenantId: number;
   documentStoredName: string;
 }): Promise<ReferenceFigureAsset[]> {
-  const parser = new PDFParse({ data: options.buffer });
+  if (options.buffer.length > MAX_BYTES_FOR_FIGURE_EXTRACT) {
+    return [];
+  }
+
+  const parser = new PDFParse({ data: options.buffer, password: '' });
 
   try {
     const info = await parser.getInfo();
     const pageCount = Math.max(info.total ?? 0, 1);
-    const textResult = await parser.getText({
-      parseHyperlinks: true,
-      lineEnforce: true,
-      pageJoiner: '',
-      itemJoiner: ' ',
-    });
+    if (pageCount > MAX_PAGES_FOR_FIGURE_EXTRACT) {
+      return [];
+    }
 
     const captionHits: CaptionHit[] = [];
     const seenNumbers = new Set<string>();
-    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-      const pageText =
-        textResult.getPageText(pageNumber) ??
-        textResult.pages.find((page) => page.num === pageNumber)?.text ??
-        '';
-      for (const hit of extractCaptionsFromPageText(pageNumber, pageText)) {
-        const key = hit.figureNumber.toLowerCase();
-        if (seenNumbers.has(key)) continue;
-        seenNumbers.add(key);
-        captionHits.push(hit);
+    for (let start = 1; start <= pageCount; start += FIGURE_TEXT_BATCH) {
+      const end = Math.min(pageCount, start + FIGURE_TEXT_BATCH - 1);
+      const partial = Array.from(
+        { length: end - start + 1 },
+        (_, index) => start + index,
+      );
+      const textResult = await parser.getText({
+        parseHyperlinks: false,
+        lineEnforce: true,
+        pageJoiner: '',
+        itemJoiner: ' ',
+        partial,
+      });
+
+      for (const pageNumber of partial) {
+        const pageText =
+          textResult.getPageText(pageNumber) ??
+          textResult.pages.find((page) => page.num === pageNumber)?.text ??
+          '';
+        for (const hit of extractCaptionsFromPageText(pageNumber, pageText)) {
+          const key = hit.figureNumber.toLowerCase();
+          if (seenNumbers.has(key)) continue;
+          seenNumbers.add(key);
+          captionHits.push(hit);
+          if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;
+        }
         if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;
       }
       if (captionHits.length >= MAX_FIGURES_PER_DOCUMENT) break;

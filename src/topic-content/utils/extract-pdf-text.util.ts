@@ -83,6 +83,13 @@ export type ExtractPdfDocumentOptions = {
   allowOcr?: boolean;
   /** Pages per getText() call to keep memory bounded on large books. */
   pageBatchSize?: number;
+  /**
+   * Stop after collecting this many text-layer characters (used for huge
+   * textbooks so we never hold 1000+ pages in RAM on the small VM).
+   */
+  maxCharacters?: number;
+  /** Owner-restricted PDFs often need an empty user password to unlock copy. */
+  password?: string;
   onProgress?: (progress: { page: number; total: number }) => void;
 };
 
@@ -94,13 +101,22 @@ export async function extractPdfDocument(
 ): Promise<PdfExtractionResult> {
   const allowOcr = options.allowOcr !== false;
   const pageBatchSize = Math.max(1, options.pageBatchSize ?? DEFAULT_PAGE_BATCH);
-  const parser = new PDFParse({ data: buffer });
+  const maxCharacters =
+    typeof options.maxCharacters === 'number' && options.maxCharacters > 0
+      ? options.maxCharacters
+      : null;
+  // Empty string unlocks many "encrypted but printable/copyable" textbooks.
+  const parser = new PDFParse({
+    data: buffer,
+    password: options.password ?? '',
+  });
   const warnings: string[] = [];
 
   try {
     const info = await parser.getInfo();
     const pageCount = Math.max(info.total ?? 0, 1);
     const textLayerPages: PdfExtractionPage[] = [];
+    let collectedChars = 0;
 
     // Batch page text extraction so multi-hundred-page textbooks stay within
     // the small production VM memory budget.
@@ -111,7 +127,7 @@ export async function extractPdfDocument(
         (_, index) => start + index,
       );
       const textResult = await parser.getText({
-        parseHyperlinks: true,
+        parseHyperlinks: false,
         lineEnforce: true,
         pageJoiner: '',
         itemJoiner: ' ',
@@ -130,9 +146,17 @@ export async function extractPdfDocument(
           characterCount: pageText.length,
           method: 'text-layer',
         });
+        collectedChars += pageText.length;
       }
 
       options.onProgress?.({ page: end, total: pageCount });
+
+      if (maxCharacters != null && collectedChars >= maxCharacters) {
+        warnings.push(
+          `Stopped text extraction after ${end} of ${pageCount} pages (character budget reached).`,
+        );
+        break;
+      }
     }
 
     const emptyPageNumbers = textLayerPages
