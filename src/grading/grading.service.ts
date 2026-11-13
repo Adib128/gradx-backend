@@ -9,8 +9,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { PrismaService } from 'prisma/prisma.service';
-import { OpenCvGradingService, ScanQuality } from './opencv-grading.service';
-import { NodeGraderService } from './node-grader.service';
+import { ScanQuality } from './opencv-grading.service';
+import { GradingQueueService } from './grading-queue.service';
 import { StudentInfoVisionService } from './student-info-vision.service';
 import { SHEET_CONFIG } from './sheet-config';
 import {
@@ -99,8 +99,8 @@ export class GradingService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly openCvService: OpenCvGradingService,
-    private readonly nodeGrader: NodeGraderService,
+    /** Queued OpenCV / Node OMR — sync wait, capped concurrency. */
+    private readonly gradingQueue: GradingQueueService,
     private readonly studentInfoVision: StudentInfoVisionService,
   ) {}
 
@@ -202,7 +202,7 @@ export class GradingService {
 
     // Try Python OpenCV first
     try {
-      const pyResult = await this.openCvService.processAnswerSheet(
+      const pyResult = await this.gradingQueue.processAnswerSheet(
         imagePath,
         JSON.stringify(graderConfig),
       );
@@ -241,7 +241,7 @@ export class GradingService {
       (!processResult || (processResult.confidence ?? 0) < 0.2)
     ) {
       try {
-        const nodeResult = await this.nodeGrader.gradeSheet(imagePath, numIdDigits, {
+        const nodeResult = await this.gradingQueue.gradeSheet(imagePath, numIdDigits, {
           answerGrid: sheetLayout?.answerGrid,
           studentIdGrid: sheetLayout?.studentIdGrid,
         });
@@ -519,7 +519,7 @@ export class GradingService {
     let sectionWritten = true;
     if (this.studentInfoVision.enabled) {
       try {
-        const cropResult = await this.openCvService.processAnswerSheet(
+        const cropResult = await this.gradingQueue.processAnswerSheet(
           scan.imagePath,
           JSON.stringify({ ...SHEET_CONFIG, mode: 'nameCrop' }),
         );
@@ -552,7 +552,7 @@ export class GradingService {
       }
     }
     try {
-      const result = await this.openCvService.processAnswerSheet(
+      const result = await this.gradingQueue.processAnswerSheet(
         scan.imagePath,
         JSON.stringify({ ...SHEET_CONFIG, mode: 'nameOnly' }),
       );
@@ -649,7 +649,7 @@ export class GradingService {
     const bubbled = (scan.detectedStudentId ?? '').trim();
     if (!bubbled || !/^\d+$/.test(bubbled)) return unavailable;
     try {
-      const cropResult = await this.openCvService.processAnswerSheet(
+      const cropResult = await this.gradingQueue.processAnswerSheet(
         scan.imagePath,
         JSON.stringify({
           ...SHEET_CONFIG,
@@ -749,7 +749,7 @@ export class GradingService {
     let processError: string | null = null;
 
     try {
-      const pyResult = await this.openCvService.processAnswerSheet(
+      const pyResult = await this.gradingQueue.processAnswerSheet(
         existing.imagePath,
         JSON.stringify(graderConfig),
       );
@@ -784,7 +784,7 @@ export class GradingService {
 
     if (!processResult || (processResult.confidence ?? 0) < 0.2) {
       try {
-        processResult = await this.nodeGrader.gradeSheet(
+        processResult = await this.gradingQueue.gradeSheet(
           existing.imagePath,
           numIdDigits,
           {

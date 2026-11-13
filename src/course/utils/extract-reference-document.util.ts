@@ -519,11 +519,23 @@ function truncateChaptersForStorage(
 
 /** Strip chars PostgreSQL JSON/JSONB rejects (null bytes, lone surrogates). */
 export function sanitizeTextForJsonStorage(text: string): string {
-  return text
-    .replace(/\u0000/g, '')
-    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
-    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
-    .trim();
+  // Avoid lookbehind (not needed on Node, but keep this ES2017-safe).
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0) continue;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += text[i] + text[i + 1];
+        i += 1;
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) continue;
+    out += text[i];
+  }
+  return out.trim();
 }
 
 function truncateText(text: string, maxChars: number): {
@@ -702,7 +714,12 @@ export async function extractReferenceDocumentText(options: {
   let extractionMethod: 'pdf' | 'docx';
 
   if (isPdf) {
-    rawText = await extractPdfText(options.buffer);
+    // Textbooks are large digital PDFs — never OCR here (OOM / aborted uploads
+    // on the small production VM). Course-spec scans still use OCR elsewhere.
+    rawText = await extractPdfText(options.buffer, {
+      allowOcr: false,
+      pageBatchSize: 30,
+    });
     extractionMethod = 'pdf';
   } else if (isDocx) {
     rawText = await extractDocxPlainText(options.buffer);

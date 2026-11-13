@@ -22,7 +22,7 @@ const MESSAGE_ALIASES: Array<{ pattern: RegExp; key: ErrorMessageKey }> = [
   },
   {
     pattern:
-      /402|requires more credits|can only afford|insufficient.?credit|max_tokens|openrouter\.ai\/settings\/credits/i,
+      /402|requires more credits|can only afford|insufficient.?credit|in[_ -]?flight|openrouter_in_flight_budget|max_tokens|openrouter\.ai\/settings\/credits/i,
     key: ErrorMessageKey.GENERATION_AI_CREDITS_EXCEEDED,
   },
   {

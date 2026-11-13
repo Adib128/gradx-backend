@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { CreateCourseDto } from './dto/create-course.dto';
@@ -143,6 +144,8 @@ const EXTRACT_STREAM_SECTIONS: ExtractStreamSection[] = [
 
 @Injectable()
 export class CourseService {
+  private readonly logger = new Logger(CourseService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('course-extraction') private readonly extractionQueue: Queue,
@@ -692,7 +695,16 @@ export class CourseService {
       if (code === 'EMPTY_DOCUMENT') {
         throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EMPTY);
       }
-      throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED);
+      this.logger.error(
+        `Reference extract failed for ${file.originalname || 'document'}: ${code || error}`,
+      );
+      throw new BadRequestException({
+        message: ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED,
+        messageKey: ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED,
+        detail: code && code !== ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED
+          ? code.slice(0, 240)
+          : undefined,
+      });
     }
 
     const courseTitle = String(context?.courseTitle || '').trim();
@@ -707,23 +719,32 @@ export class CourseService {
       String(extracted.extractedText || '').slice(0, 4000);
 
     if (excerpt.trim()) {
-      await runWithAiContext(
-        {
-          userId: context?.userId,
-          tenantId,
-          purpose: 'reference_relevance',
-        },
-        () =>
-          this.courseAIService.validateReferenceDocumentRelevance({
-            courseTitle: courseTitle || '(not specified)',
-            courseCode: String(context?.courseCode || '').trim() || undefined,
-            courseDescription:
-              String(context?.courseDescription || '').trim() || undefined,
-            topicTitles: topicTitles.length ? topicTitles : undefined,
-            referenceTitle: extracted.fileName,
-            documentExcerpt: excerpt,
-          }),
-      );
+      try {
+        await runWithAiContext(
+          {
+            userId: context?.userId,
+            tenantId,
+            purpose: 'reference_relevance',
+          },
+          () =>
+            this.courseAIService.validateReferenceDocumentRelevance({
+              courseTitle: courseTitle || '(not specified)',
+              courseCode: String(context?.courseCode || '').trim() || undefined,
+              courseDescription:
+                String(context?.courseDescription || '').trim() || undefined,
+              topicTitles: topicTitles.length ? topicTitles : undefined,
+              referenceTitle: extracted.fileName,
+              documentExcerpt: excerpt,
+            }),
+        );
+      } catch (error: unknown) {
+        if (this.isReferenceNotRelevantError(error)) throw error;
+        this.logger.warn(
+          `Reference relevance check skipped: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
 
     const safeTenant = requireTenantId(tenantId);
@@ -823,6 +844,14 @@ export class CourseService {
         message: 'Reading document text…',
       });
 
+      const heartbeat = setInterval(() => {
+        emit('progress', {
+          percent: 18,
+          stage: 'reading',
+          message: 'Reading document text…',
+        });
+      }, 8_000);
+
       let extracted;
       try {
         extracted = await extractReferenceDocumentText({
@@ -838,7 +867,19 @@ export class CourseService {
         if (code === 'EMPTY_DOCUMENT') {
           throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EMPTY);
         }
-        throw new BadRequestException(ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED);
+        this.logger.error(
+          `Reference stream extract failed for ${file.originalname || 'document'}: ${code || error}`,
+        );
+        throw new BadRequestException({
+          message: ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED,
+          messageKey: ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED,
+          detail:
+            code && code !== ErrorMessageKey.REFERENCE_FILE_EXTRACT_FAILED
+              ? code.slice(0, 240)
+              : undefined,
+        });
+      } finally {
+        clearInterval(heartbeat);
       }
 
       if (closed) return;
@@ -861,23 +902,32 @@ export class CourseService {
         String(extracted.extractedText || '').slice(0, 4000);
 
       if (excerpt.trim()) {
-        await runWithAiContext(
-          {
-            userId: context?.userId,
-            tenantId,
-            purpose: 'reference_relevance',
-          },
-          () =>
-            this.courseAIService.validateReferenceDocumentRelevance({
-              courseTitle: courseTitle || '(not specified)',
-              courseCode: String(context?.courseCode || '').trim() || undefined,
-              courseDescription:
-                String(context?.courseDescription || '').trim() || undefined,
-              topicTitles: topicTitles.length ? topicTitles : undefined,
-              referenceTitle: extracted.fileName,
-              documentExcerpt: excerpt,
-            }),
-        );
+        try {
+          await runWithAiContext(
+            {
+              userId: context?.userId,
+              tenantId,
+              purpose: 'reference_relevance',
+            },
+            () =>
+              this.courseAIService.validateReferenceDocumentRelevance({
+                courseTitle: courseTitle || '(not specified)',
+                courseCode: String(context?.courseCode || '').trim() || undefined,
+                courseDescription:
+                  String(context?.courseDescription || '').trim() || undefined,
+                topicTitles: topicTitles.length ? topicTitles : undefined,
+                referenceTitle: extracted.fileName,
+                documentExcerpt: excerpt,
+              }),
+          );
+        } catch (error: unknown) {
+          if (this.isReferenceNotRelevantError(error)) throw error;
+          this.logger.warn(
+            `Reference relevance check skipped: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
 
       if (closed) return;
@@ -917,12 +967,14 @@ export class CourseService {
         if (closed) return;
         const chapter = chapters[index];
         const chapterPercent = 45 + Math.round(((index + 1) / total) * 40);
+        // Omit full chapter bodies from intermediate SSE events — a textbook
+        // can be megabytes of text and aborts the stream on small VMs / proxies.
+        // Full chapter content is still included on the final `done` payload.
         emit('chapter', {
           index,
           total,
           name: chapter.name,
           characterCount: chapter.content.length,
-          content: chapter.content,
           startPage: chapter.startPage ?? null,
           endPage: chapter.endPage ?? null,
           percent: chapterPercent,
@@ -1024,6 +1076,22 @@ export class CourseService {
         res.end();
       }
     }
+  }
+
+  private isReferenceNotRelevantError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const getResponse = (error as { getResponse?: () => unknown }).getResponse;
+    if (typeof getResponse !== 'function') return false;
+    const body = getResponse.call(error);
+    if (typeof body === 'string') {
+      return body === ErrorMessageKey.REFERENCE_DOCUMENT_NOT_RELEVANT;
+    }
+    if (!body || typeof body !== 'object') return false;
+    const record = body as Record<string, unknown>;
+    return (
+      record.messageKey === ErrorMessageKey.REFERENCE_DOCUMENT_NOT_RELEVANT ||
+      record.message === ErrorMessageKey.REFERENCE_DOCUMENT_NOT_RELEVANT
+    );
   }
 
   /**

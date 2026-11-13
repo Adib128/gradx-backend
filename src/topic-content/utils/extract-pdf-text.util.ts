@@ -75,41 +75,65 @@ async function recognizePages(
   return recognized;
 }
 
+export type ExtractPdfDocumentOptions = {
+  /**
+   * OCR empty/scanned pages. Default true for course-spec uploads.
+   * Reference textbooks should pass false — OCR on large PDFs OOMs the API box.
+   */
+  allowOcr?: boolean;
+  /** Pages per getText() call to keep memory bounded on large books. */
+  pageBatchSize?: number;
+  onProgress?: (progress: { page: number; total: number }) => void;
+};
+
+const DEFAULT_PAGE_BATCH = 40;
+
 export async function extractPdfDocument(
   buffer: Buffer,
+  options: ExtractPdfDocumentOptions = {},
 ): Promise<PdfExtractionResult> {
+  const allowOcr = options.allowOcr !== false;
+  const pageBatchSize = Math.max(1, options.pageBatchSize ?? DEFAULT_PAGE_BATCH);
   const parser = new PDFParse({ data: buffer });
   const warnings: string[] = [];
 
   try {
     const info = await parser.getInfo();
     const pageCount = Math.max(info.total ?? 0, 1);
+    const textLayerPages: PdfExtractionPage[] = [];
 
-    const textResult = await parser.getText({
-      parseHyperlinks: true,
-      lineEnforce: true,
-      pageJoiner: '',
-      itemJoiner: ' ',
-    });
+    // Batch page text extraction so multi-hundred-page textbooks stay within
+    // the small production VM memory budget.
+    for (let start = 1; start <= pageCount; start += pageBatchSize) {
+      const end = Math.min(pageCount, start + pageBatchSize - 1);
+      const partial = Array.from(
+        { length: end - start + 1 },
+        (_, index) => start + index,
+      );
+      const textResult = await parser.getText({
+        parseHyperlinks: true,
+        lineEnforce: true,
+        pageJoiner: '',
+        itemJoiner: ' ',
+        partial,
+      });
 
-    const textLayerPages: PdfExtractionPage[] = Array.from(
-      { length: pageCount },
-      (_, index) => {
-        const pageNumber = index + 1;
+      for (const pageNumber of partial) {
         const pageText = normalizeExtractedText(
           textResult.getPageText(pageNumber) ??
             textResult.pages.find((page) => page.num === pageNumber)?.text ??
             '',
         );
-
-        return {
+        textLayerPages.push({
           pageNumber,
           text: pageText,
           characterCount: pageText.length,
-          method: 'text-layer' as const,
-        };
-      },
-    );
+          method: 'text-layer',
+        });
+      }
+
+      options.onProgress?.({ page: end, total: pageCount });
+    }
 
     const emptyPageNumbers = textLayerPages
       .filter((page) => isPageEffectivelyEmpty(page.text))
@@ -118,6 +142,7 @@ export async function extractPdfDocument(
     const nonEmptyTextLayerPages =
       textLayerPages.length - emptyPageNumbers.length;
     const needsOcr =
+      allowOcr &&
       emptyPageNumbers.length > 0 &&
       (nonEmptyTextLayerPages === 0 ||
         emptyPageNumbers.length / pageCount >= 0.4);
@@ -125,13 +150,22 @@ export async function extractPdfDocument(
     let finalPages = textLayerPages;
 
     if (needsOcr) {
+      // Cap OCR work — full-book OCR on a 2GB box will abort the request.
+      const ocrPageLimit = Math.min(emptyPageNumbers.length, 25);
+      const ocrPages = emptyPageNumbers.slice(0, ocrPageLimit);
+      if (emptyPageNumbers.length > ocrPageLimit) {
+        warnings.push(
+          `OCR limited to first ${ocrPageLimit} of ${emptyPageNumbers.length} empty pages.`,
+        );
+      }
+
       const worker = await createWorker(OCR_LANGUAGES);
 
       try {
-        const ocrTexts = await recognizePages(parser, emptyPageNumbers, worker);
+        const ocrTexts = await recognizePages(parser, ocrPages, worker);
 
         finalPages = textLayerPages.map((page) => {
-          if (!emptyPageNumbers.includes(page.pageNumber)) {
+          if (!ocrPages.includes(page.pageNumber)) {
             return page;
           }
 
@@ -156,12 +190,14 @@ export async function extractPdfDocument(
 
       if (nonEmptyTextLayerPages > 0) {
         warnings.push(
-          `Used OCR for ${emptyPageNumbers.length} of ${pageCount} pages where the text layer was empty.`,
+          `Used OCR for ${ocrPages.length} of ${pageCount} pages where the text layer was empty.`,
         );
       }
     } else if (emptyPageNumbers.length > 0) {
       warnings.push(
-        `Skipped OCR for ${emptyPageNumbers.length} low-content page(s); text layer values were kept.`,
+        allowOcr
+          ? `Skipped OCR for ${emptyPageNumbers.length} low-content page(s); text layer values were kept.`
+          : `Skipped OCR for ${emptyPageNumbers.length} low-content page(s) (OCR disabled for this upload).`,
       );
     }
 
@@ -184,7 +220,10 @@ export async function extractPdfDocument(
   }
 }
 
-export async function extractPdfText(buffer: Buffer): Promise<string> {
-  const result = await extractPdfDocument(buffer);
+export async function extractPdfText(
+  buffer: Buffer,
+  options: ExtractPdfDocumentOptions = {},
+): Promise<string> {
+  const result = await extractPdfDocument(buffer, options);
   return result.text;
 }

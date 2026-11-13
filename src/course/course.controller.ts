@@ -26,6 +26,7 @@ import { CourseQueryDto } from './dto/course-query.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { ApiConsumes } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { MAX_REFERENCE_UPLOAD_BYTES } from './utils/extract-reference-document.util';
 import { CourseAIService } from './course-ai.service';
 import { CreateTopicDto } from './dto/create-topic.dto';
 import { TopicService } from './topic.service';
@@ -642,7 +643,11 @@ export class CourseController {
 
   @Post('references/extract-document')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_REFERENCE_UPLOAD_BYTES },
+    }),
+  )
   extractReferenceDocument(
     @GetUser('tenantId') tenantId: number,
     @GetUser('userId') userId: number,
@@ -680,7 +685,11 @@ export class CourseController {
 
   @Post('references/extract-document/stream')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_REFERENCE_UPLOAD_BYTES },
+    }),
+  )
   streamExtractReferenceDocument(
     @GetUser('tenantId') tenantId: number,
     @GetUser('userId') userId: number,
