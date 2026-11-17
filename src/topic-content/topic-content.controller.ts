@@ -7,6 +7,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Res,
   StreamableFile,
   UploadedFile,
   UseGuards,
@@ -14,6 +15,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { createReadStream } from 'node:fs';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -90,6 +92,100 @@ export class TopicContentController {
     return this.topicContentService.updateLabManual(tenantId, topicId, body);
   }
 
+  @Post(':topicId/lab/generate-stream')
+  streamLabManual(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: Record<string, unknown>,
+    @Res() res: Response,
+  ) {
+    return this.topicContentService.streamCollegeDocument(
+      tenantId,
+      topicId,
+      'LAB',
+      body || {},
+      userId,
+      res,
+    );
+  }
+
+  @Post(':topicId/tutorial/generate-stream')
+  streamTutorial(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: Record<string, unknown>,
+    @Res() res: Response,
+  ) {
+    return this.topicContentService.streamCollegeDocument(
+      tenantId,
+      topicId,
+      'TUTORIAL',
+      body || {},
+      userId,
+      res,
+    );
+  }
+
+  @Post(':topicId/lab/optimize')
+  optimizeLab(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body()
+    body: {
+      instruction?: string;
+      content?: Record<string, unknown>;
+      generationPlanId?: number;
+      params?: Record<string, unknown>;
+    },
+  ) {
+    return this.topicContentService.optimizeCollegeDocument(
+      tenantId,
+      topicId,
+      'LAB',
+      body || {},
+      userId,
+    );
+  }
+
+  @Post(':topicId/tutorial/optimize')
+  optimizeTutorial(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body()
+    body: {
+      instruction?: string;
+      content?: Record<string, unknown>;
+      generationPlanId?: number;
+      params?: Record<string, unknown>;
+    },
+  ) {
+    return this.topicContentService.optimizeCollegeDocument(
+      tenantId,
+      topicId,
+      'TUTORIAL',
+      body || {},
+      userId,
+    );
+  }
+
+  @Patch(':topicId/tutorial')
+  updateTutorial(
+    @GetUser('tenantId') tenantId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Body() body: { content?: Record<string, unknown> },
+  ) {
+    return this.topicContentService.updateCollegeDocument(
+      tenantId,
+      topicId,
+      'TUTORIAL',
+      body || {},
+    );
+  }
+
   @Post(':topicId/accept')
   acceptContent(
     @GetUser('tenantId') tenantId: number,
@@ -97,13 +193,15 @@ export class TopicContentController {
     @Body() body: { type?: string; content?: unknown },
   ) {
     const type = String(body?.type || 'LECTURE').toUpperCase();
-    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ'].includes(type)) {
-      throw new BadRequestException('type must be LECTURE, SLIDES, LAB, or QUIZ');
+    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ', 'TUTORIAL'].includes(type)) {
+      throw new BadRequestException(
+        'type must be LECTURE, SLIDES, LAB, QUIZ, or TUTORIAL',
+      );
     }
     return this.topicContentService.acceptContent(
       tenantId,
       topicId,
-      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ',
+      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ' | 'TUTORIAL',
       body?.content,
     );
   }
@@ -115,13 +213,15 @@ export class TopicContentController {
     @Body() body: { type?: string },
   ) {
     const type = String(body?.type || 'LECTURE').toUpperCase();
-    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ'].includes(type)) {
-      throw new BadRequestException('type must be LECTURE, SLIDES, LAB, or QUIZ');
+    if (!['LECTURE', 'SLIDES', 'LAB', 'QUIZ', 'TUTORIAL'].includes(type)) {
+      throw new BadRequestException(
+        'type must be LECTURE, SLIDES, LAB, QUIZ, or TUTORIAL',
+      );
     }
     return this.topicContentService.markContentDraft(
       tenantId,
       topicId,
-      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ',
+      type as 'LECTURE' | 'SLIDES' | 'LAB' | 'QUIZ' | 'TUTORIAL',
     );
   }
 

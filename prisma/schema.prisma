@@ -13,6 +13,7 @@ enum ContentType {
   SLIDES
   QUIZ
   LAB
+  TUTORIAL
 }
 
 enum GenerationStatus {

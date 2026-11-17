@@ -28,6 +28,7 @@ export class ContentGeneratonProcessor extends WorkerHost {
       LECTURE: 'topic_lecture',
       SLIDES: 'topic_slides',
       LAB: 'topic_lab',
+      TUTORIAL: 'topic_tutorial',
       QUIZ: 'topic_quiz',
     };
 

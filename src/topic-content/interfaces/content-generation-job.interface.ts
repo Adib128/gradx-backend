@@ -1,7 +1,12 @@
 import { CLOSchemaDto } from 'src/course/dto/create-clo.dto';
 import { ReferenceSchemaDto } from 'src/course/dto/create-reference.dto';
 
-export type GeneratedContentType = 'LECTURE' | 'SLIDES' | 'QUIZ' | 'LAB';
+export type GeneratedContentType =
+  | 'LECTURE'
+  | 'SLIDES'
+  | 'QUIZ'
+  | 'LAB'
+  | 'TUTORIAL';
 
 export type CourseNoteType =
   | 'Complete Topic Note'

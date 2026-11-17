@@ -5,12 +5,14 @@ import { BullModule } from '@nestjs/bullmq';
 import { TopicContentAiService } from './topic-content-ai.service';
 import { ContentGeneratonProcessor } from './processors/content-generation.processor';
 import { SkyworkPptService } from './skywork-ppt.service';
+import { GenerationPlansModule } from 'src/generation-plans/generation-plans.module';
 
 @Module({
   imports: [
     BullModule.registerQueue({
       name: 'topic-content-generation',
     }),
+    GenerationPlansModule,
   ],
   controllers: [TopicContentController],
   providers: [

@@ -22,6 +22,26 @@ import {
   LAB_SECTION_PROMPT,
   LAB_SYSTEM_PROMPT,
 } from './prompts/lab.prompt';
+import {
+  COLLEGE_LAB_CLOSING_PROMPT,
+  COLLEGE_LAB_EXERCISES_PROMPT,
+  COLLEGE_LAB_OVERVIEW_PROMPT,
+  COLLEGE_LAB_SETUP_PROMPT,
+  COLLEGE_LAB_SYSTEM,
+  COLLEGE_LAB_TASKS_PROMPT,
+  COLLEGE_LAB_THEORY_PROMPT,
+} from './prompts/college-lab.prompt';
+import {
+  COLLEGE_TUTORIAL_CONCEPTS_PROMPT,
+  COLLEGE_TUTORIAL_OVERVIEW_PROMPT,
+  COLLEGE_TUTORIAL_PRACTICE_PROMPT,
+  COLLEGE_TUTORIAL_SYSTEM,
+  COLLEGE_TUTORIAL_WORKED_PROMPT,
+} from './prompts/college-tutorial.prompt';
+import type {
+  CollegeDocumentJob,
+  CollegeDocumentProgress,
+} from './interfaces/college-document-job.interface';
 import { QUIZ_SYSTEM_PROMPT } from './prompts/quiz.prompt';
 import {
   LECTURE_CLOSING_PROMPT,
@@ -1111,6 +1131,11 @@ export class TopicContentAiService {
     system: string,
     prompt: string,
     images: ReferenceVisionImage[] = [],
+    options: {
+      model?: string | null;
+      maxTokens?: number | null;
+      purpose?: string;
+    } = {},
   ): Promise<any> {
     const figureNotes =
       images.length > 0
@@ -1135,19 +1160,258 @@ export class TopicContentAiService {
     const response = await createChatCompletion(
       this.client,
       {
-        model: this.model,
+        model: options.model || this.model,
         temperature: 0.35,
-        max_tokens: OPENROUTER_MAX_OUTPUT_TOKENS,
+        max_tokens:
+          options.maxTokens && Number.isFinite(options.maxTokens)
+            ? Math.max(512, Math.round(options.maxTokens))
+            : OPENROUTER_MAX_OUTPUT_TOKENS,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: userContent },
         ],
       },
-      { purpose: 'topic_content' },
+      { purpose: options.purpose || 'topic_content' },
     );
 
     const text = response.choices[0]?.message?.content ?? '';
     return this.parseResponse(text);
+  }
+
+  private llmOpts(job: CollegeDocumentJob) {
+    return {
+      model: job.model,
+      maxTokens: job.maxTokens,
+      purpose: job.kind === 'TUTORIAL' ? 'topic_tutorial' : 'topic_lab',
+    };
+  }
+
+  async generateCollegeLabStreaming(
+    job: CollegeDocumentJob,
+    onProgress?: (progress: CollegeDocumentProgress) => Promise<void> | void,
+  ): Promise<Record<string, unknown>> {
+    const emit = async (progress: CollegeDocumentProgress) => {
+      if (onProgress) await onProgress(progress);
+    };
+    const opts = this.llmOpts(job);
+    let partial: Record<string, unknown> = {
+      format: 'college_lab_v1',
+      source: 'gradx',
+      provider: 'openrouter',
+      streamStatus: 'overview',
+    };
+
+    await emit({
+      stage: 'overview',
+      percent: 8,
+      message: 'Writing lab information and learning outcomes…',
+      partial,
+    });
+    const overview = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_OVERVIEW_PROMPT(job),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...overview, streamStatus: 'theory' };
+    await emit({
+      stage: 'theory',
+      percent: 20,
+      message: 'Writing background theory…',
+      partial,
+    });
+
+    const theory = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_THEORY_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...theory, streamStatus: 'setup' };
+    await emit({
+      stage: 'setup',
+      percent: 35,
+      message: 'Writing setup and procedure…',
+      partial,
+    });
+
+    const setup = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_SETUP_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...setup, streamStatus: 'exercises' };
+    await emit({
+      stage: 'exercises',
+      percent: 50,
+      message: 'Writing guided exercises…',
+      partial,
+    });
+
+    const exercises = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_EXERCISES_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...exercises, streamStatus: 'tasks' };
+    await emit({
+      stage: 'tasks',
+      percent: 68,
+      message: 'Writing independent tasks…',
+      partial,
+    });
+
+    const tasks = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_TASKS_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...tasks, streamStatus: 'closing' };
+    await emit({
+      stage: 'closing',
+      percent: 82,
+      message: 'Writing questions, rubric and references…',
+      partial,
+    });
+
+    const closing = await this.chatJson(
+      COLLEGE_LAB_SYSTEM,
+      COLLEGE_LAB_CLOSING_PROMPT(job, { ...overview, ...tasks }),
+      [],
+      opts,
+    );
+    const finalContent = {
+      ...partial,
+      ...closing,
+      format: 'college_lab_v1',
+      streamStatus: 'done',
+      generatedAt: new Date().toISOString(),
+    };
+    await emit({
+      stage: 'done',
+      percent: 100,
+      message: 'Lab manual generation complete',
+      partial: finalContent,
+    });
+    return finalContent;
+  }
+
+  async generateCollegeTutorialStreaming(
+    job: CollegeDocumentJob,
+    onProgress?: (progress: CollegeDocumentProgress) => Promise<void> | void,
+  ): Promise<Record<string, unknown>> {
+    const emit = async (progress: CollegeDocumentProgress) => {
+      if (onProgress) await onProgress(progress);
+    };
+    const opts = this.llmOpts(job);
+    let partial: Record<string, unknown> = {
+      format: 'college_tutorial_v1',
+      source: 'gradx',
+      provider: 'openrouter',
+      streamStatus: 'overview',
+    };
+
+    await emit({
+      stage: 'overview',
+      percent: 10,
+      message: 'Writing tutorial information and outcomes…',
+      partial,
+    });
+    const overview = await this.chatJson(
+      COLLEGE_TUTORIAL_SYSTEM,
+      COLLEGE_TUTORIAL_OVERVIEW_PROMPT(job),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...overview, streamStatus: 'concepts' };
+    await emit({
+      stage: 'concepts',
+      percent: 30,
+      message: 'Writing key concepts recap…',
+      partial,
+    });
+
+    const concepts = await this.chatJson(
+      COLLEGE_TUTORIAL_SYSTEM,
+      COLLEGE_TUTORIAL_CONCEPTS_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...concepts, streamStatus: 'worked' };
+    await emit({
+      stage: 'worked',
+      percent: 50,
+      message: 'Writing worked example…',
+      partial,
+    });
+
+    const worked = await this.chatJson(
+      COLLEGE_TUTORIAL_SYSTEM,
+      COLLEGE_TUTORIAL_WORKED_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    partial = { ...partial, ...worked, streamStatus: 'practice' };
+    await emit({
+      stage: 'practice',
+      percent: 75,
+      message: 'Writing practice problems…',
+      partial,
+    });
+
+    const practice = await this.chatJson(
+      COLLEGE_TUTORIAL_SYSTEM,
+      COLLEGE_TUTORIAL_PRACTICE_PROMPT(job, overview),
+      [],
+      opts,
+    );
+    const finalContent = {
+      ...partial,
+      ...practice,
+      format: 'college_tutorial_v1',
+      streamStatus: 'done',
+      generatedAt: new Date().toISOString(),
+    };
+    await emit({
+      stage: 'done',
+      percent: 100,
+      message: 'Tutorial generation complete',
+      partial: finalContent,
+    });
+    return finalContent;
+  }
+
+  async optimizeCollegeDocument(
+    job: CollegeDocumentJob,
+    current: Record<string, unknown>,
+    instruction: string,
+  ): Promise<Record<string, unknown>> {
+    const system =
+      job.kind === 'TUTORIAL' ? COLLEGE_TUTORIAL_SYSTEM : COLLEGE_LAB_SYSTEM;
+    const kindLabel = job.kind === 'TUTORIAL' ? 'tutorial' : 'lab manual';
+    const prompt = `You are revising an existing college ${kindLabel} JSON document.
+Apply the instructor's optimization request carefully. Keep the same schema/format keys.
+Do not drop required sections. Return the FULL updated JSON document only.
+
+Instructor request:
+${instruction}
+
+Current document:
+${JSON.stringify(current).slice(0, 50000)}
+`;
+    const updated = await this.chatJson(system, prompt, [], this.llmOpts(job));
+    return {
+      ...current,
+      ...updated,
+      format:
+        current.format ||
+        (job.kind === 'TUTORIAL' ? 'college_tutorial_v1' : 'college_lab_v1'),
+      streamStatus: 'done',
+      optimizedAt: new Date().toISOString(),
+    };
   }
 
   /**

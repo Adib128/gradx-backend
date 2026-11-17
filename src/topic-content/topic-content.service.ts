@@ -6,11 +6,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import type { Response } from 'express';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PrismaService } from 'prisma/prisma.service';
 import { GenerateContentDto } from './dto/generate-content.dto';
 import { ContentGenerationJob } from './interfaces/content-generation-job.interface';
+import type {
+  CollegeDocumentJob,
+  CollegeDocumentKind,
+  CollegeDocumentParams,
+} from './interfaces/college-document-job.interface';
 import { TopicContentAiService } from './topic-content-ai.service';
 import z from 'zod';
 import { ReferenceSchema } from 'src/course/schemas/reference.schema';
@@ -21,9 +27,11 @@ import { ErrorMessageKey } from 'src/common/constants/error-message';
 import { generationErrorPayload } from 'src/common/helpers/generation-error.helper';
 import { detectContentLanguage } from './utils/content-language.util';
 import { withDbRetry } from 'src/common/helpers/db-retry.helper';
+import { GenerationPlansService } from 'src/generation-plans/generation-plans.service';
+import { runWithAiContext } from 'src/common/helpers/openrouter-chat.helper';
 
-/** Slide decks and lab manuals skip the draft/accept review cycle entirely. */
-const ALWAYS_ACCEPTED_TYPES = new Set<ContentType>(['SLIDES', 'LAB']);
+/** Slide decks and lab/tutorial manuals skip the draft/accept review cycle entirely. */
+const ALWAYS_ACCEPTED_TYPES = new Set<ContentType>(['SLIDES', 'LAB', 'TUTORIAL']);
 
 function isAlwaysAccepted(type: ContentType) {
   return ALWAYS_ACCEPTED_TYPES.has(type);
@@ -213,6 +221,7 @@ export class TopicContentService {
     @InjectQueue('topic-content-generation')
     private readonly contentQueue: Queue,
     private readonly topicContentAiService: TopicContentAiService,
+    private readonly generationPlans: GenerationPlansService,
   ) {}
 
   async generate(
@@ -1052,6 +1061,370 @@ export class TopicContentService {
       tenantId,
       'SLIDES',
       contentPayload,
+      'ACCEPTED',
+    );
+  }
+
+  private async buildCollegeDocumentJob(
+    tenantId: number,
+    topicId: number,
+    kind: CollegeDocumentKind,
+    body: Record<string, unknown>,
+    userId?: number,
+  ): Promise<CollegeDocumentJob> {
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        course: { include: { clos: true } },
+        topicClos: { include: { clo: true } },
+        topicContents: {
+          where: {
+            type: { in: ['SLIDES', 'LECTURE'] },
+            status: 'COMPLETED',
+          },
+          orderBy: { updatedAt: 'desc' },
+        },
+      },
+    });
+    if (!topic) throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+
+    const slides = topic.topicContents.find((row) => row.type === 'SLIDES');
+    const lecture = topic.topicContents.find((row) => row.type === 'LECTURE');
+    const sourceRow = slides?.content ? slides : lecture?.content ? lecture : null;
+    const sourceType: CollegeDocumentJob['sourceType'] = slides?.content
+      ? 'SLIDES'
+      : lecture?.content
+        ? 'LECTURE'
+        : 'NONE';
+    if (sourceType === 'NONE') {
+      throw new BadRequestException(
+        'Generate slide content (or a lecture) for this topic before creating a lab manual or tutorial.',
+      );
+    }
+
+    const linkedCloCodes = topic.topicClos
+      .map((row) => String(row.clo?.code || '').trim())
+      .filter(Boolean);
+    const mappedClos = topic.course.clos.map((clo) => ({
+      code: clo.code,
+      category: clo.category,
+      programCLOCode: clo.programCLOCode,
+      description: clo.description,
+      teachingStrategies: clo.teachingStrategies,
+      assessmentMethods: clo.assessmentMethods,
+      courseId: clo.courseId,
+    }));
+    const paramsBody =
+      body.params && typeof body.params === 'object'
+        ? (body.params as Record<string, unknown>)
+        : body;
+    const language =
+      paramsBody.contentLanguage === 'ar' || paramsBody.contentLanguage === 'en'
+        ? paramsBody.contentLanguage
+        : detectContentLanguage(
+            topic.title,
+            topic.course.title,
+            topic.course.description,
+          );
+
+    const params: CollegeDocumentParams = {
+      documentNo: Math.max(
+        1,
+        Number(paramsBody.documentNo ?? topic.topicNumber) || topic.topicNumber || 1,
+      ),
+      title: String(paramsBody.title || topic.title).trim(),
+      courseCode: String(paramsBody.courseCode || topic.course.code || '').trim(),
+      courseName: String(
+        paramsBody.courseName || topic.course.title || '',
+      ).trim(),
+      semester: String(
+        paramsBody.semester ||
+          [topic.course.semester, topic.course.academicYear]
+            .filter(Boolean)
+            .join(' ') ||
+          '',
+      ).trim(),
+      instructor: String(paramsBody.instructor || '').trim(),
+      section: String(paramsBody.section || '').trim(),
+      duration: String(
+        paramsBody.duration ||
+          (kind === 'TUTORIAL'
+            ? '50 minutes (1 contact hour)'
+            : '100 minutes (2 contact hours)'),
+      ).trim(),
+      relatedLecture: String(
+        paramsBody.relatedLecture ||
+          `Topic ${topic.topicNumber}: ${topic.title}`,
+      ).trim(),
+      prerequisites: String(paramsBody.prerequisites || '').trim(),
+      toolsOrMaterials: String(
+        paramsBody.toolsOrMaterials ||
+          (kind === 'TUTORIAL'
+            ? 'Calculator, formula sheet; no electronic devices'
+            : 'Lab PC, required software as specified by the instructor'),
+      ).trim(),
+      totalMarks: Math.max(1, Number(paramsBody.totalMarks) || 10),
+      guidedCount: Math.min(
+        8,
+        Math.max(2, Number(paramsBody.guidedCount) || (kind === 'LAB' ? 4 : 1)),
+      ),
+      taskOrProblemCount: Math.min(
+        10,
+        Math.max(
+          2,
+          Number(paramsBody.taskOrProblemCount) || (kind === 'LAB' ? 2 : 5),
+        ),
+      ),
+      questionCount: Math.min(
+        8,
+        Math.max(3, Number(paramsBody.questionCount) || 5),
+      ),
+      contentLanguage: language,
+    };
+
+    const planId =
+      body.generationPlanId != null ? Number(body.generationPlanId) : null;
+    const resolved = await this.generationPlans.resolveModels(
+      Number.isFinite(planId) ? planId : null,
+    );
+    const writer = resolved.models.writer ?? resolved.models.default;
+
+    const references = z
+      .array(ReferenceSchema)
+      .parse(topic.course.references ?? []);
+
+    return {
+      tenantId,
+      userId,
+      topicId,
+      courseId: topic.courseId,
+      kind,
+      topicTitle: topic.title,
+      topicNumber: topic.topicNumber,
+      courseTitle: topic.course.title,
+      courseDescription: topic.course.description || '',
+      clos: mappedClos,
+      targetedCloIds: linkedCloCodes.length
+        ? linkedCloCodes
+        : mappedClos.map((clo) => clo.code),
+      references,
+      sourceContent: sourceRow?.content ?? {},
+      sourceType,
+      params,
+      generationPlanId: resolved.planId,
+      generationPlanCode: resolved.code,
+      model: writer?.model || null,
+      maxTokens: writer?.maxTokens ?? 8192,
+    };
+  }
+
+  private writeSse(res: Response, event: string, data: unknown) {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  async streamCollegeDocument(
+    tenantId: number,
+    topicId: number,
+    kind: CollegeDocumentKind,
+    body: Record<string, unknown>,
+    userId: number,
+    res: Response,
+  ) {
+    const job = await this.buildCollegeDocumentJob(
+      tenantId,
+      topicId,
+      kind,
+      body,
+      userId,
+    );
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const abort = new AbortController();
+    let finished = false;
+    res.on('close', () => {
+      if (!finished) abort.abort();
+    });
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': ping\n\n');
+    }, 15000);
+
+    this.writeSse(res, 'session', {
+      kind,
+      generationPlanId: job.generationPlanId,
+      generationPlanCode: job.generationPlanCode,
+    });
+
+    try {
+      const contentType: ContentType = kind === 'TUTORIAL' ? 'TUTORIAL' : 'LAB';
+      const run =
+        kind === 'TUTORIAL'
+          ? this.topicContentAiService.generateCollegeTutorialStreaming.bind(
+              this.topicContentAiService,
+            )
+          : this.topicContentAiService.generateCollegeLabStreaming.bind(
+              this.topicContentAiService,
+            );
+
+      const result = await runWithAiContext(
+        {
+          userId,
+          tenantId,
+          purpose: kind === 'TUTORIAL' ? 'topic_tutorial' : 'topic_lab',
+          generationPlanCode: job.generationPlanCode,
+        },
+        () =>
+          run(job, async (progress) => {
+            if (abort.signal.aborted) return;
+            this.writeSse(res, 'progress', progress);
+            if (progress.partial) {
+              await this.savePartialContent(
+                topicId,
+                job.courseId,
+                tenantId,
+                contentType,
+                progress.partial,
+              );
+            }
+          }),
+      );
+
+      await this.saveContent(
+        topicId,
+        job.courseId,
+        tenantId,
+        contentType,
+        result,
+        'ACCEPTED',
+      );
+      this.writeSse(res, 'done', { content: result });
+      this.writeSse(res, 'end', { status: 'completed' });
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        const payload = generationErrorPayload(error);
+        this.logger.error(
+          `College ${kind} generation failed for topic ${topicId}`,
+          error instanceof Error ? error.stack : error,
+        );
+        this.writeSse(res, 'error', payload);
+      }
+    } finally {
+      finished = true;
+      clearInterval(heartbeat);
+      if (!res.writableEnded) res.end();
+    }
+  }
+
+  async optimizeCollegeDocument(
+    tenantId: number,
+    topicId: number,
+    kind: CollegeDocumentKind,
+    body: { instruction?: string; content?: Record<string, unknown>; generationPlanId?: number; params?: Record<string, unknown> },
+    userId: number,
+  ) {
+    const instruction = String(body?.instruction || '').trim();
+    if (!instruction) {
+      throw new BadRequestException('optimization instruction is required');
+    }
+    const job = await this.buildCollegeDocumentJob(
+      tenantId,
+      topicId,
+      kind,
+      {
+        params: body.params,
+        generationPlanId: body.generationPlanId,
+      },
+      userId,
+    );
+    const contentType: ContentType = kind === 'TUTORIAL' ? 'TUTORIAL' : 'LAB';
+    const existing = await this.prisma.topicContent.findFirst({
+      where: { topicId, courseId: job.courseId, tenantId, type: contentType },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const current =
+      body.content && typeof body.content === 'object'
+        ? body.content
+        : existing?.content &&
+            typeof existing.content === 'object' &&
+            !Array.isArray(existing.content)
+          ? (existing.content as Record<string, unknown>)
+          : null;
+    if (!current) {
+      throw new BadRequestException('Generate the document before optimizing it.');
+    }
+
+    const updated = await runWithAiContext(
+      {
+        userId,
+        tenantId,
+        purpose: kind === 'TUTORIAL' ? 'topic_tutorial' : 'topic_lab',
+        generationPlanCode: job.generationPlanCode,
+      },
+      () =>
+        this.topicContentAiService.optimizeCollegeDocument(
+          job,
+          current,
+          instruction,
+        ),
+    );
+    return this.saveContent(
+      topicId,
+      job.courseId,
+      tenantId,
+      contentType,
+      updated,
+      'ACCEPTED',
+    );
+  }
+
+  async updateCollegeDocument(
+    tenantId: number,
+    topicId: number,
+    kind: CollegeDocumentKind,
+    body: { content?: Record<string, unknown> },
+  ) {
+    const contentType: ContentType = kind === 'TUTORIAL' ? 'TUTORIAL' : 'LAB';
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        topicContents: {
+          where: { type: contentType },
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+    if (!topic) throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+
+    const existingRow = topic.topicContents[0];
+    const existing = existingRow?.content;
+    const existingObj =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? (existing as Record<string, unknown>)
+        : {};
+    const incoming =
+      body?.content && typeof body.content === 'object' ? body.content : body;
+    if (!incoming || typeof incoming !== 'object') {
+      throw new BadRequestException('document content is required');
+    }
+    return this.saveContent(
+      topicId,
+      topic.courseId,
+      tenantId,
+      contentType,
+      {
+        ...existingObj,
+        ...incoming,
+        source: existingObj.source || 'gradx',
+        provider: existingObj.provider || 'openrouter',
+        editedAt: new Date().toISOString(),
+      },
       'ACCEPTED',
     );
   }
