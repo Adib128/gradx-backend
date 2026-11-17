@@ -352,6 +352,7 @@ You are the DESIGNER agent. Choose the slide template that best fits the field, 
 All built-in templates share the same lecture chrome (underline header, rounded graphic cards, Think-about-it, CLO bands). Pick on palette and writing style, not decoration.
 Honor the instructor presentation-style preference from the course block (academic → Scholar/classic; modern → cleaner contemporary palettes; minimal → Swiss/Atlas-like sparse look) when it still fits the field.
 Prefer an institution custom template when brand identity matters. Otherwise default to academic-classic (Scholar) for university lectures unless another template's field list is a clearly better match.
+When recommending alternatives, include at least one light/white-paper option (snow, daylight, ivory, cloud) so instructors can avoid dark title slides for classroom projection and printing.
 Templates:
 ${templateCatalogForPrompt(input.customTemplates)}
 
@@ -459,7 +460,9 @@ const SLIDE_BODY_RULES = `Body rules (the slide is 16:9 — everything must fit 
   decision). No filler, no "In this slide…", no topic-name bullets. Bold the one key term with **term** (at most one bold run per bullet).
   Prefer 3-card rows for mechanisms, 2-column COMPARISON for contrasts, EXAMPLE_STEPS for worked problems.
 - LEARNING_OUTCOMES (clo_scope) → sectionLabel "Course learning outcome & lecture scope"; title "What this lecture
-  covers from {CLO code}". callout = the original CLO statement unchanged. table = two columns
+  covers from {CLO codes}". When multiple CLOs are linked, list every code in the title and put EACH original CLO
+  statement on its own line in callout.text as "**CLO x.y:** <exact wording>" separated by a blank line — never
+  merge CLO descriptions into one semicolon-joined paragraph. table = two columns
   ("In this lecture" | "CLO components") with up to three rows: Covered / Partially covered / Not covered.
   Separate components in a cell with "; ". Never imply the whole CLO is achieved here if the map says otherwise. No visual.
 - AGENDA (roadmap) → sectionLabel "Lecture roadmap"; title "Today's path through {chapter}". Numbered stops:

@@ -139,6 +139,14 @@ function cloBandLabel(status: StudioCloComponent['status'], ar: boolean) {
   return ar ? 'غير مغطى هنا' : 'Not covered here';
 }
 
+function formatCloCode(raw: string): string {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  const match = value.match(/^(?:CLO\s*)?(\d+(?:\.\d+)*)/i);
+  if (match) return `CLO ${match[1]}`;
+  return value.replace(/^CLO\s*/i, 'CLO ').trim();
+}
+
 function cloScopeSlide(
   input: StudioInput,
   plan: StudioPlan | null,
@@ -146,7 +154,9 @@ function cloScopeSlide(
 ): StudioSlide {
   const ar = input.language === 'ar';
   const linked = input.clos.filter((clo) => clo.linked);
-  const clo = linked[0] ?? input.clos[0];
+  const clos = linked.length ? linked : input.clos.slice(0, 1);
+  const codes = clos.map((clo) => formatCloCode(clo.code)).filter(Boolean);
+  const codeList = codes.join(', ') || (ar ? 'مخرج التعلم' : 'the CLO');
   const components: StudioCloComponent[] =
     plan?.cloComponents?.length ? plan.cloComponents : analysis?.cloComponents ?? [];
   const band = (status: StudioCloComponent['status']) => {
@@ -169,15 +179,22 @@ function cloScopeSlide(
     type: 'LEARNING_OUTCOMES',
     layout: 'BULLETS',
     title: ar
-      ? `ما الذي تغطيه هذه المحاضرة من ${clo?.code || 'مخرج التعلم'}`
-      : `What this lecture covers from ${clo?.code || 'the CLO'}`,
+      ? `ما الذي تغطيه هذه المحاضرة من ${codeList}`
+      : `What this lecture covers from ${codeList}`,
     subtitle: null,
     sectionLabel: ar ? 'مخرج التعلم ونطاق المحاضرة' : 'Course learning outcome & lecture scope',
     bullets: rows.length ? [] : bullets.length ? bullets : plan?.learningGoals.slice(0, MAX_FRAME_BULLETS) ?? [],
-    callout: clo
+    // One labeled block per CLO — never join descriptions with "; ".
+    callout: clos.length
       ? {
-          label: `${clo.code}${clo.category ? ` · ${clo.category}` : ''}`,
-          text: clo.description,
+          label: codeList,
+          text: clos
+            .map((clo) => {
+              const code = formatCloCode(clo.code);
+              const description = String(clo.description || '').trim();
+              return description ? `**${code}:** ${description}` : `**${code}:**`;
+            })
+            .join('\n\n'),
         }
       : null,
     table: rows.length
@@ -186,11 +203,11 @@ function cloScopeSlide(
           rows,
         }
       : null,
-    cloCode: clo?.code ?? null,
+    cloCode: codeList || null,
     teachingBeat: 'frame',
     speakerNotes: ar
-      ? `CLO: اقرأ بيان مخرج التعلم كما هو دون إعادة صياغة. وضّح المكوّنات المغطاة والجزئية وغير المغطاة. لا تَدَّعِ أن المحاضرة تحقق مخرج التعلم كاملاً إن بقيت أجزاء لاحقة.`
-      : `CLO component: scope-setting. Read the full CLO aloud unchanged. Point out covered vs partial vs not covered. Do not imply students achieve the whole CLO from this lecture alone.`,
+      ? `CLO: اقرأ بيان كل مخرج تعلم كما هو دون إعادة صياغة. وضّح المكوّنات المغطاة والجزئية وغير المغطاة. لا تَدَّعِ أن المحاضرة تحقق مخرج التعلم كاملاً إن بقيت أجزاء لاحقة.`
+      : `CLO component: scope-setting. Read each linked CLO aloud unchanged, one at a time. Point out covered vs partial vs not covered. Do not imply students achieve the whole CLO from this lecture alone.`,
   };
 }
 

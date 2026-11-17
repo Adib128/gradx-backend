@@ -353,6 +353,70 @@ export const SLIDE_TEMPLATES: SlideTemplate[] = [
       visualEmphasis: `${LECTURE_CHROME}; a few strong figures`,
     },
   },
+  {
+    id: 'snow',
+    name: { en: 'Snow', ar: 'ثلج' },
+    description: {
+      en: 'Pure white lecture page with navy titles — clean classroom projection and printing.',
+      ar: 'صفحة محاضرة بيضاء صافية بعناوين كحلية — واضحة للعرض والطباعة.',
+    },
+    bestFor: ['university lectures', 'general education', 'printing', 'any field'],
+    themeId: 'snow',
+    style: {
+      density: 'light',
+      tone: 'clear and concise; one idea per slide with strong hierarchy',
+      preferredLayouts: LECTURE_LAYOUTS,
+      visualEmphasis: LECTURE_CHROME,
+    },
+  },
+  {
+    id: 'daylight',
+    name: { en: 'Daylight', ar: 'ضوء النهار' },
+    description: {
+      en: 'Bright white-and-sky lecture for STEM and computing without a dark title slide.',
+      ar: 'محاضرة بيضاء وسماوية للعلوم والحوسبة دون شريحة عنوان داكنة.',
+    },
+    bestFor: ['computer science', 'engineering', 'mathematics', 'data science', 'networks', 'operating systems'],
+    themeId: 'daylight',
+    style: {
+      density: 'balanced',
+      tone: 'precise and technical; name components, inputs/outputs and trade-offs',
+      preferredLayouts: ['TWO_COLUMN', 'EXAMPLE_STEPS', 'DEFINITION', 'BULLETS'],
+      visualEmphasis: `${LECTURE_CHROME}; architecture and pipeline diagrams`,
+    },
+  },
+  {
+    id: 'ivory',
+    name: { en: 'Ivory', ar: 'عاجي' },
+    description: {
+      en: 'Warm ivory-white paper with amber accents for humanities and reading-heavy courses.',
+      ar: 'ورق عاجي دافئ بلمسات كهرمانية للإنسانيات والمقررات الغنية بالقراءة.',
+    },
+    bestFor: ['literature', 'history', 'law', 'languages', 'education', 'philosophy'],
+    themeId: 'ivory',
+    style: {
+      density: 'balanced',
+      tone: 'narrative and precise; connect claims to sources',
+      preferredLayouts: ['DEFINITION', 'TWO_COLUMN', 'QUOTE_CALLOUT', 'BULLETS'],
+      visualEmphasis: LECTURE_CHROME,
+    },
+  },
+  {
+    id: 'cloud',
+    name: { en: 'Cloud', ar: 'سحاب' },
+    description: {
+      en: 'White lecture with soft teal accents — light alternative for health, earth and systems topics.',
+      ar: 'محاضرة بيضاء بلمسات فيروزية ناعمة — بديل فاتح للصحة والأرض والأنظمة.',
+    },
+    bestFor: ['nursing', 'public health', 'environmental science', 'biology', 'geography', 'civil engineering'],
+    themeId: 'cloud',
+    style: {
+      density: 'balanced',
+      tone: 'clear and explanatory; connect each concept to a real system',
+      preferredLayouts: LECTURE_LAYOUTS,
+      visualEmphasis: `${LECTURE_CHROME}; process and cycle diagrams`,
+    },
+  },
 ];
 
 export const DEFAULT_TEMPLATE_ID = 'academic-classic';
