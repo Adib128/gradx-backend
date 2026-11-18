@@ -124,6 +124,9 @@ enum CourseAnswerSheetAnswerType {
 model Tenant {
   id             Int            @id @default(autoincrement())
   createdAt      DateTime       @default(now())
+  /// Default institution brand used on surveys, assessments, and college docs.
+  /// Shape: country/ministry/university/faculty/department (EN+AR) + logoUrl + ids.
+  branding       Json?
   users          User[]
   departements   Departement[]
   classes        Class[]
