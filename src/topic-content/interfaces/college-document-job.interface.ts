@@ -22,6 +22,10 @@ export type CollegeDocumentParams = {
   taskOrProblemCount: number;
   questionCount: number;
   contentLanguage: 'ar' | 'en';
+  /** When false, skip generating § Submission Instructions. */
+  includeSubmission: boolean;
+  /** When false, skip generating § Assessment Rubric. */
+  includeRubric: boolean;
 };
 
 export type CollegeDocumentJob = {

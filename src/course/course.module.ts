@@ -8,6 +8,9 @@ import { TopicService } from './topic.service';
 import { DocxPdfService } from './docx-pdf.service';
 import { CourseReportsService } from './course-reports.service';
 import { CourseWorkbookService } from './course-workbook.service';
+import { CourseSurveyService } from './course-survey.service';
+import { CourseSurveyController } from './course-survey.controller';
+import { PublicSurveyController } from './public-survey.controller';
 import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.module';
 
 @Module({
@@ -17,7 +20,11 @@ import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.mod
     }),
     ReferenceVectorModule,
   ],
-  controllers: [CourseController],
+  controllers: [
+    CourseController,
+    CourseSurveyController,
+    PublicSurveyController,
+  ],
   providers: [
     CourseService,
     CourseAIService,
@@ -26,6 +33,7 @@ import { ReferenceVectorModule } from 'src/reference-vector/reference-vector.mod
     CourseReportsService,
     DocxPdfService,
     CourseWorkbookService,
+    CourseSurveyService,
   ],
 })
 export class CourseModule {}

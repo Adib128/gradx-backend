@@ -1180,6 +1180,8 @@ export class TopicContentService {
         Math.max(3, Number(paramsBody.questionCount) || 5),
       ),
       contentLanguage: language,
+      includeSubmission: paramsBody.includeSubmission !== false,
+      includeRubric: paramsBody.includeRubric !== false,
     };
 
     const planId =

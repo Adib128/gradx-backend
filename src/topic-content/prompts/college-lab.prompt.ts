@@ -29,6 +29,8 @@ function ctx(job: CollegeDocumentJob) {
 - Guided exercises: ${p.guidedCount}
 - Independent tasks: ${p.taskOrProblemCount}
 - Post-lab questions: ${p.questionCount}
+- Include submission instructions: ${p.includeSubmission ? 'YES' : 'NO — omit entirely'}
+- Include assessment rubric: ${p.includeRubric ? 'YES' : 'NO — omit entirely'}
 - Language: ${p.contentLanguage === 'ar' ? 'Arabic' : 'English'} — write all student-facing text in this language.
 
 ## Course
@@ -169,8 +171,43 @@ Return ONLY JSON:
 export const COLLEGE_LAB_CLOSING_PROMPT = (
   job: CollegeDocumentJob,
   overview: unknown,
-) => `
-Finish the lab with POST-LAB QUESTIONS (${job.params.questionCount}), SUBMISSION INSTRUCTIONS, ASSESSMENT RUBRIC totaling ${job.params.totalMarks} marks, and REFERENCES.
+) => {
+  const includeSubmission = job.params.includeSubmission !== false;
+  const includeRubric = job.params.includeRubric !== false;
+  const parts = [
+    `POST-LAB QUESTIONS (${job.params.questionCount})`,
+    includeSubmission ? 'SUBMISSION INSTRUCTIONS' : null,
+    includeRubric
+      ? `ASSESSMENT RUBRIC totaling ${job.params.totalMarks} marks`
+      : null,
+    'REFERENCES',
+  ].filter(Boolean);
+
+  const submissionJson = includeSubmission
+    ? `"submission": {
+    "what": string,
+    "fileNaming": string,
+    "where": string,
+    "deadline": string
+  },`
+    : `"submission": null,`;
+
+  const rubricJson = includeRubric
+    ? `"rubric": [
+    {
+      "criterion": string,
+      "lo": string,
+      "fullMarks": string,
+      "partialMarks": string,
+      "marks": number
+    }
+  ],`
+    : `"rubric": [],`;
+
+  return `
+Finish the lab with ${parts.join(', ')}.
+${includeSubmission ? '' : 'Do NOT invent submission instructions — set submission to null.'}
+${includeRubric ? '' : 'Do NOT invent an assessment rubric — return an empty rubric array.'}
 ${ctx(job)}
 Overview / LOs / tasks context: ${JSON.stringify(overview)}
 
@@ -179,21 +216,11 @@ Return ONLY JSON:
   "postLabQuestions": [
     { "id": "Q1", "question": string, "loCodes": ["LO1"] }
   ],
-  "submission": {
-    "what": string,
-    "fileNaming": string,
-    "where": string,
-    "deadline": string
-  },
-  "rubric": [
-    {
-      "criterion": string,
-      "lo": string,
-      "fullMarks": string,
-      "partialMarks": string,
-      "marks": number
-    }
-  ],
+  ${submissionJson}
+  ${rubricJson}
   "totalMarks": ${job.params.totalMarks},
+  "includeSubmission": ${includeSubmission},
+  "includeRubric": ${includeRubric},
   "references": string[]
 }`;
+};

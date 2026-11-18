@@ -1283,9 +1283,20 @@ export class TopicContentAiService {
       [],
       opts,
     );
+    const includeSubmission = job.params.includeSubmission !== false;
+    const includeRubric = job.params.includeRubric !== false;
+    const closingClean = {
+      ...(closing && typeof closing === 'object' ? closing : {}),
+      includeSubmission,
+      includeRubric,
+      ...(includeSubmission
+        ? {}
+        : { submission: null }),
+      ...(includeRubric ? {} : { rubric: [] }),
+    };
     const finalContent = {
       ...partial,
-      ...closing,
+      ...closingClean,
       format: 'college_lab_v1',
       streamStatus: 'done',
       generatedAt: new Date().toISOString(),

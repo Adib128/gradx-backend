@@ -127,6 +127,7 @@ model Tenant {
   users          User[]
   departements   Departement[]
   classes        Class[]
+  surveys CourseSurvey[]
   courses        Course[]
   topicContents  TopicContent[]
   questions      Question[]
@@ -312,10 +313,67 @@ model Course {
   students      Student[]
   courseAnswerSheets CourseAnswerSheet[]
   referenceDocuments ReferenceDocument[]
+  surveys            CourseSurvey[]
 
   @@index([tenantId])
   @@map("courses")
 }
+
+
+model CourseSurvey {
+  id             Int       @id @default(autoincrement())
+  courseId       Int
+  course         Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tenantId       Int
+  tenant         Tenant    @relation(fields: [tenantId], references: [id])
+  title          String
+  subtitle       String?
+  introText      String
+  instructions   String
+  closingText    String?
+  instructor     String?
+  semester       String?
+  section        String?
+  courseCode     String?
+  courseName     String?
+  /// Bilingual institution header + logo (assessment-style brand)
+  brand          Json?
+  /// Snapshot of CLO rows: [{ code, statement }]
+  clos           Json
+  /// Unpredictable public token; never reuse survey id in public URLs
+  shareToken     String?   @unique
+  shareEnabled   Boolean   @default(false)
+  shareExpiresAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  responses      CourseSurveyResponse[]
+
+  @@index([courseId])
+  @@index([tenantId])
+  @@map("course_surveys")
+}
+
+model CourseSurveyResponse {
+  id          Int          @id @default(autoincrement())
+  surveyId    Int
+  survey      CourseSurvey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  studentName String?
+  studentId   String?
+  section     String?
+  submittedAt DateTime     @default(now())
+  /// [{ cloCode, rating: 1-5 }]
+  ratings     Json
+  comments    String?
+  locale      String?
+  userAgent   String?
+  createdAt   DateTime     @default(now())
+
+  @@unique([surveyId, studentId])
+  @@index([surveyId])
+  @@index([submittedAt])
+  @@map("course_survey_responses")
+}
+
 
 enum ReferenceEmbeddingStatus {
   PENDING
