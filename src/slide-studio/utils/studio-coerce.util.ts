@@ -293,6 +293,53 @@ export function coerceOutlineItem(
   };
 }
 
+/** Collect plan-section `mermaid:<prompt>` tokens that should appear as slide diagrams. */
+export function planMermaidIdeas(plan: StudioPlan): string[] {
+  const ideas: string[] = [];
+  for (const section of plan.sections) {
+    for (const raw of section.visuals || []) {
+      const visual = parseVisual(raw, new Set());
+      if (visual.kind === 'mermaid' && visual.idea) ideas.push(visual.idea);
+    }
+  }
+  return ideas;
+}
+
+/**
+ * Ensure instructor-authored Mermaid prompts from the plan are assigned onto
+ * body outline slides that still have `visual: none`. Frame slides stay text-only.
+ */
+export function assignPlanMermaidVisuals(
+  outline: StudioOutlineItem[],
+  plan: StudioPlan,
+): { outline: StudioOutlineItem[]; assigned: number } {
+  const ideas = planMermaidIdeas(plan);
+  if (!ideas.length) return { outline, assigned: 0 };
+
+  const used = new Set(
+    outline
+      .filter((item) => item.visual.kind === 'mermaid')
+      .map((item) =>
+        item.visual.kind === 'mermaid' ? item.visual.idea.trim().toLowerCase() : '',
+      )
+      .filter(Boolean),
+  );
+  const pending = ideas.filter((idea) => !used.has(idea.trim().toLowerCase()));
+  if (!pending.length) return { outline, assigned: 0 };
+
+  let cursor = 0;
+  let assigned = 0;
+  const next = outline.map((item) => {
+    if (FRAME_TYPES.has(item.type) || item.visual.kind !== 'none') return item;
+    if (cursor >= pending.length) return item;
+    const idea = pending[cursor++];
+    assigned += 1;
+    return { ...item, visual: { kind: 'mermaid' as const, idea } };
+  });
+
+  return { outline: next, assigned };
+}
+
 /** Instructor-edited outline from the client. */
 export function sanitizeOutline(
   raw: unknown,

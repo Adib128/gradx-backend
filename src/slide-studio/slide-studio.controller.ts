@@ -148,7 +148,34 @@ export class SlideStudioController {
     @Param('sessionId', ParseUUIDPipe) sessionId: string,
     @Param('index', ParseIntPipe) index: number,
     @Body() dto: RegenerateSlideDto,
+    @Res() res: Response,
   ) {
-    return this.slideStudioService.regenerateSlide(tenantId, sessionId, index, dto);
+    return this.slideStudioService.regenerateSlide(
+      tenantId,
+      sessionId,
+      index,
+      dto,
+      res,
+    );
+  }
+
+  /** Enhance one slide from the saved deck (SSE; works without a live session). */
+  @Post('topics/:topicId/slides/:index/enhance')
+  enhanceSavedSlide(
+    @GetUser('tenantId') tenantId: number,
+    @GetUser('userId') userId: number,
+    @Param('topicId', ParseIntPipe) topicId: number,
+    @Param('index', ParseIntPipe) index: number,
+    @Body() dto: RegenerateSlideDto,
+    @Res() res: Response,
+  ) {
+    return this.slideStudioService.enhanceSavedSlide(
+      tenantId,
+      userId ?? null,
+      topicId,
+      index,
+      dto,
+      res,
+    );
   }
 }

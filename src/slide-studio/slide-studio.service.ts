@@ -64,6 +64,7 @@ import { summarizeContext } from './slide-studio.types';
 import { buildCloCoverageReport } from './utils/clo-coverage-report.util';
 import { disciplineProfile } from './utils/discipline-profile.util';
 import { fillEmptySlideBody, repairSlideStructure } from './utils/slide-repair.util';
+import { applySurgicalEnhance } from './utils/slide-enhance.util';
 import { polishSlide } from './utils/slide-lint.util';
 import { semesterLabel, withLectureFrame } from './utils/studio-frame.util';
 
@@ -953,14 +954,244 @@ export class SlideStudioService implements OnModuleDestroy {
   }
 
   /**
+   * Enhance one slide from a saved TopicContent deck (no live session required).
+   * Streams SSE progress so the UI can disable send and show live status.
+   */
+  async enhanceSavedSlide(
+    tenantId: number,
+    userId: number | null,
+    topicId: number,
+    slideIndex: number,
+    dto: RegenerateSlideDto,
+    res: Response,
+  ) {
+    const lockKey = `${PREFIX}:topic-enhance:${tenantId}:${topicId}`;
+    if ((await this.redis.exists(lockKey)) === 1) {
+      throw new ConflictException(ErrorMessageKey.SLIDE_STUDIO_BUSY);
+    }
+
+    const topic = await this.prisma.topic.findFirst({
+      where: { id: topicId, course: { tenantId } },
+      include: {
+        course: { include: { clos: true } },
+        topicClos: { select: { cloId: true } },
+        topicContents: {
+          where: { type: 'SLIDES' },
+          take: 1,
+          orderBy: { updatedAt: 'desc' },
+        },
+      },
+    });
+    if (!topic) throw new NotFoundException(ErrorMessageKey.TOPIC_NOT_FOUND);
+
+    const saved = topic.topicContents[0];
+    const payload =
+      saved?.content && typeof saved.content === 'object' && !Array.isArray(saved.content)
+        ? (saved.content as Record<string, unknown>)
+        : null;
+    const previousSlides = Array.isArray(payload?.slides)
+      ? (payload!.slides as StudioSlide[])
+      : [];
+    if (!previousSlides.length) {
+      throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_NO_DECK);
+    }
+    if (
+      !Number.isInteger(slideIndex) ||
+      slideIndex < 0 ||
+      slideIndex >= previousSlides.length
+    ) {
+      throw new BadRequestException(ErrorMessageKey.SLIDE_STUDIO_SLIDE_NOT_FOUND);
+    }
+
+    const deckMeta =
+      payload?.deckMeta && typeof payload.deckMeta === 'object'
+        ? (payload.deckMeta as Record<string, unknown>)
+        : {};
+    const customTemplates = await this.slideTemplates.customTemplates(tenantId);
+    const templateId =
+      typeof deckMeta.templateId === 'string' ? deckMeta.templateId : null;
+    const template = findTemplate(templateId, customTemplates);
+    const language =
+      deckMeta.language === 'ar' || deckMeta.language === 'en'
+        ? deckMeta.language
+        : detectContentLanguage(topic.title, topic.course.title);
+
+    const linkedIds = new Set(topic.topicClos.map((link) => link.cloId));
+    const input: StudioInput = {
+      sessionId: `saved-${topicId}`,
+      tenantId,
+      userId: userId ?? null,
+      courseId: topic.course.id,
+      topicId: topic.id,
+      courseTitle: topic.course.title,
+      courseCode: topic.course.code ?? null,
+      courseDescription: topic.course.description ?? null,
+      courseLevel: topic.course.level ?? null,
+      department: topic.course.department ?? null,
+      topicTitle: topic.title,
+      topicNumber: topic.topicNumber,
+      clos: topic.course.clos.map((clo) => ({
+        code: clo.code,
+        category: clo.category ?? null,
+        description: clo.description,
+        linked: linkedIds.has(clo.id),
+      })),
+      slideCount: Math.max(1, previousSlides.length),
+      selections: [],
+      language,
+      preferences: { ...DEFAULT_PREFERENCES, language },
+      customTemplates,
+    };
+
+    const plan = {
+      title: String(
+        deckMeta.studio && typeof deckMeta.studio === 'object'
+          ? (deckMeta.studio as Record<string, unknown>).deckTitle || topic.title
+          : topic.title,
+      ),
+      approach: 'Enhance a single saved slide while preserving deck structure.',
+      learningGoals: [] as string[],
+      sections: [
+        {
+          id: 'body',
+          phase: 'body' as const,
+          title: topic.title,
+          goal: `Improve slide ${slideIndex + 1}`,
+          cloCodes: previousSlides[slideIndex]?.cloCode
+            ? [String(previousSlides[slideIndex].cloCode)]
+            : [],
+          slideCount: previousSlides.length,
+          keyPoints: [] as string[],
+          visuals: [] as string[],
+        },
+      ],
+    };
+    const outline = previousSlides.map((slide, index) => ({
+      index,
+      sectionId: 'body',
+      type: String(slide.type || 'CONTENT').toUpperCase(),
+      layout: String(slide.layout || 'BULLETS').toUpperCase(),
+      title: String(slide.title || `Slide ${index + 1}`),
+      intent: String(slide.subtitle || slide.speakerNotes || slide.title || ''),
+      cloCode: slide.cloCode ? String(slide.cloCode) : null,
+      visual: slide.diagram?.mermaid
+        ? {
+            kind: 'mermaid' as const,
+            idea: String(slide.diagram.title || slide.title || 'diagram'),
+          }
+        : ({ kind: 'none' } as const),
+    }));
+
+    const previous = previousSlides[slideIndex];
+    const locked = await this.redis.set(lockKey, '1', 'EX', LOCK_TTL_SECONDS, 'NX');
+    if (!locked) throw new ConflictException(ErrorMessageKey.SLIDE_STUDIO_BUSY);
+
+    this.beginOptimizeStream(res);
+    const send = this.sseWriter(res);
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': ping\n\n');
+    }, HEARTBEAT_MS);
+
+    try {
+      send('activity', {
+        agent: 'optimizer',
+        status: 'start',
+        message: `Enhancing slide ${slideIndex + 1}`,
+      });
+      send('slide_writing', { index: slideIndex });
+      await this.aiUsage.assertWithinLimit(userId ?? undefined);
+      const resolvedPlan = await this.generationPlans.resolveModels(null);
+      const raw = await runWithAiContext(
+        {
+          userId,
+          tenantId,
+          purpose: 'slide_studio_enhance_saved',
+          generationPlanCode: resolvedPlan.code,
+        },
+        () =>
+          runWithPlanModels(resolvedPlan.models, () =>
+            this.llm.json(
+              'optimizer',
+              regenerateSlidePrompt(
+                input,
+                plan,
+                template,
+                previousSlides,
+                outline,
+                slideIndex,
+                dto.feedback?.trim() || null,
+                [],
+                [],
+                disciplineProfile(null),
+              ),
+            ),
+          ),
+      );
+
+      const rest = { ...raw };
+      delete rest.n;
+      const drafted =
+        polishSlide(
+          normalizeOneSlide({
+            ...rest,
+            type: previous.type || rest.type,
+            layout: previous.layout || rest.layout,
+            title: rest.title || previous.title,
+          }) ?? { ...previous },
+        ) ?? { ...previous };
+      const surgical = applySurgicalEnhance(previous, drafted);
+      surgical.slideNumber = slideIndex + 1;
+      const { slide: repaired } = repairSlideStructure(surgical);
+      fillEmptySlideBody(repaired);
+      const enhanced = applySurgicalEnhance(previous, repaired);
+
+      const nextSlides = previousSlides.map((slide, index) =>
+        index === slideIndex ? enhanced : slide,
+      );
+      const deck = {
+        ...payload,
+        deckMeta: {
+          ...deckMeta,
+          ...templateDeckMeta(template),
+        },
+        slides: nextSlides,
+      };
+      await this.saveDeck(input, deck);
+
+      send('slide', { index: slideIndex, slide: enhanced });
+      send('done', {
+        topicId,
+        index: slideIndex,
+        slide: enhanced,
+        slides: nextSlides,
+        deck,
+      });
+      send('end', { status: 'completed', next: [] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Enhance saved slide ${topicId}/${slideIndex} failed: ${message}`);
+      const errorKey = normalizeGenerationErrorKey(
+        (error as { response?: { message?: unknown } })?.response?.message ?? message,
+        ErrorMessageKey.SLIDE_STUDIO_FAILED,
+      );
+      send('error', { errorKey, message: errorKey });
+    } finally {
+      clearInterval(heartbeat);
+      await this.redis.del(lockKey).catch(() => undefined);
+      if (!res.writableEnded) res.end();
+    }
+  }
+
+  /**
    * Rewrite one slide with a focused optimizer-style prompt and persist the
-   * updated deck without re-running the full generation graph.
+   * updated deck without re-running the full generation graph (SSE).
    */
   async regenerateSlide(
     tenantId: number,
     sessionId: string,
     slideIndex: number,
     dto: RegenerateSlideDto,
+    res: Response,
   ) {
     const meta = await this.requireSession(tenantId, sessionId);
     if ((await this.redis.exists(this.lockKey(sessionId))) === 1) {
@@ -1001,7 +1232,19 @@ export class SlideStudioService implements OnModuleDestroy {
     );
     if (!locked) throw new ConflictException(ErrorMessageKey.SLIDE_STUDIO_BUSY);
 
+    this.beginOptimizeStream(res);
+    const send = this.sseWriter(res);
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(': ping\n\n');
+    }, HEARTBEAT_MS);
+
     try {
+      send('activity', {
+        agent: 'optimizer',
+        status: 'start',
+        message: `Enhancing slide ${slideIndex + 1}`,
+      });
+      send('slide_writing', { index: slideIndex });
       await this.aiUsage.assertWithinLimit(meta.userId ?? undefined);
       const resolvedPlan = await this.planModelsForSession(meta);
       const excerpts =
@@ -1056,24 +1299,21 @@ export class SlideStudioService implements OnModuleDestroy {
         polishSlide(
           normalizeOneSlide({
             ...rest,
-            type: rest.type || previous.type,
-            layout: rest.layout || previous.layout,
+            type: previous.type || rest.type,
+            layout: previous.layout || rest.layout,
             title: rest.title || previous.title,
           }) ?? { ...previous },
         ) ?? { ...previous };
-      drafted.slideNumber = slideIndex + 1;
-      drafted.cloCode = drafted.cloCode || previous.cloCode || item?.cloCode || null;
-      if (previous.image) {
-        drafted.image = previous.image;
-        drafted.diagram = null;
-      } else if (previous.diagram && !drafted.diagram?.mermaid) {
-        drafted.diagram = previous.diagram;
-      }
-      const { slide: repaired } = repairSlideStructure(drafted);
+      const surgical = applySurgicalEnhance(previous, drafted);
+      surgical.slideNumber = slideIndex + 1;
+      surgical.cloCode =
+        previous.cloCode || surgical.cloCode || item?.cloCode || null;
+      const { slide: repaired } = repairSlideStructure(surgical);
       fillEmptySlideBody(repaired);
+      const enhanced = applySurgicalEnhance(previous, repaired);
 
       const nextSlides = previousSlides.map((slide, index) =>
-        index === slideIndex ? repaired : slide,
+        index === slideIndex ? enhanced : slide,
       );
       const deck = this.buildDeckRecord(input, values, nextSlides, template);
       await this.saveDeck(input, deck);
@@ -1082,11 +1322,12 @@ export class SlideStudioService implements OnModuleDestroy {
         deck,
       });
 
-      return {
+      send('slide', { index: slideIndex, slide: enhanced });
+      send('done', {
         sessionId,
         topicId: meta.topicId,
         index: slideIndex,
-        slide: repaired,
+        slide: enhanced,
         slides: nextSlides,
         deck,
         coverage: buildCloCoverageReport({
@@ -1095,10 +1336,37 @@ export class SlideStudioService implements OnModuleDestroy {
           outline,
           review: values.review ?? null,
         }),
-      };
+      });
+      send('end', { status: 'completed', next: [] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Regenerate slide ${sessionId}/${slideIndex} failed: ${message}`);
+      const errorKey = normalizeGenerationErrorKey(
+        (error as { response?: { message?: unknown } })?.response?.message ?? message,
+        ErrorMessageKey.SLIDE_STUDIO_FAILED,
+      );
+      send('error', { errorKey, message: errorKey });
     } finally {
+      clearInterval(heartbeat);
       await this.redis.del(this.lockKey(sessionId)).catch(() => undefined);
+      if (!res.writableEnded) res.end();
     }
+  }
+
+  private beginOptimizeStream(res: Response) {
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+  }
+
+  private sseWriter(res: Response) {
+    return (event: string, data: unknown) => {
+      if (res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
   }
 
   private slidesFromState(values: Partial<StudioStateType>): StudioSlide[] {

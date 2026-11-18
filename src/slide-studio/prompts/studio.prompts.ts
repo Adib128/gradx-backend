@@ -843,28 +843,28 @@ export function regenerateSlidePrompt(
     'REFERENCES',
   ]);
   const lockedType = frameTypes.has(String(slide?.type || '').toUpperCase());
+  const hasFeedback = Boolean(feedback?.trim());
   return {
     system: `${TEAM}
-You are rewriting ONE lecture slide for an instructor. Keep the slide's teaching purpose, CLO and visual intent.
+You are applying a SURGICAL edit to ONE lecture slide for an instructor.
 Return ONLY one JSON slide object (no markdown fences, no commentary).
 
 Slide object fields: ${SLIDE_SCHEMA}
 
 ${SLIDE_BODY_RULES}
 - Keep n=${index + 1}.
-${lockedType ? `- Keep type "${slide?.type}" and layout "${slide?.layout}" (frame slide).` : '- You may change type/layout only when the instructor feedback requires a different teaching form (e.g. add a worked example).'}
-- Keep the existing diagram unchanged unless feedback asks to redesign it; a textbook figure stays attached automatically.
+- CRITICAL: Apply ONLY what the instructor feedback asks for. Do not redesign, restyle, or rearrange the slide.
+- Keep type "${slide?.type || 'CONTENT'}" and layout "${slide?.layout || 'BULLETS'}" unchanged${lockedType ? ' (frame slide).' : '.'}
+- Keep the same components that already exist (diagram, image, video, code, formula, table, callout, columns). Do not add or remove components unless feedback explicitly asks.
+- Keep the existing diagram / mermaid / figure unchanged unless feedback explicitly asks to change the diagram.
+- Do not change visual shape, spacing intent, or presentation style. No new layout experiments.
+- Copy every field that is not covered by the feedback from the current slide unchanged.
 - Do not repeat neighbouring slides.
-- If feedback is provided, satisfy it while staying faithful to the excerpts.
+${hasFeedback ? '- Satisfy the instructor feedback precisely; leave everything else identical.' : '- No feedback was given: make only minimal wording clarity fixes; keep meaning, structure and components identical.'}
 - ${templateBlock(template)}
 
 ${disciplineBlock(profile)}
 
-${PROFESSIONAL_STYLE}
-
-${CONTENT_DEPTH}
-
-${exemplars(profile)}
 ${studioLanguageGuidance(input)}`,
     user: `${courseBlock(input)}
 
@@ -872,11 +872,11 @@ Deck: ${plan.title}
 Neighboring slides:
 ${neighbors || '- (none)'}
 
-Current slide:
+Current slide (preserve unless feedback targets a field):
 ${slideDigest(slide, index)}${slide?.diagram?.mermaid ? `\n   current mermaid:\n${slide.diagram.mermaid}` : ''}
 Planned: ${item ? slideLine(item, figureByKey) : '-'}
 
-Instructor feedback: ${feedback?.trim() || '(none — improve clarity, depth and classroom usefulness while keeping the same purpose)'}
+Instructor feedback (ONLY apply this): ${feedback?.trim() || '(none — tiny wording clarity only)'}
 
 Reference excerpts:
 ${excerptsBlock(excerpts, 16_000)}`,

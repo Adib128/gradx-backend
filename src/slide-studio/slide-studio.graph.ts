@@ -72,6 +72,7 @@ import {
   applyPlanMeta,
   coerceAnalysis,
   coerceInspection,
+  assignPlanMermaidVisuals,
   coerceOutlineItem,
   coercePlanSection,
   coerceReview,
@@ -538,6 +539,16 @@ export function buildStudioGraph(
         ...item,
         index,
       }));
+    }
+    const mermaidAssigned = assignPlanMermaidVisuals(closed, plan);
+    closed = mermaidAssigned.outline.map((item, index) => ({ ...item, index }));
+    if (mermaidAssigned.assigned) {
+      activity(
+        config,
+        'outliner',
+        'info',
+        `Assigned ${mermaidAssigned.assigned} plan Mermaid prompt(s) to outline slides`,
+      );
     }
     emit(config, { event: 'outline', data: closed });
     activity(config, 'outliner', 'done', `${closed.length} slides outlined`);
