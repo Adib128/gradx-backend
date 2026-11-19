@@ -803,8 +803,13 @@ export class CourseWorkbookService {
       }
 
       const type = normalizeQuestionType(question.typeRaw);
+      const questionHasMarks = sheet.rows.some((row) => row.marks[index] !== null);
+      // Require a type only once grades are entered for that question.
+      // Creating / saving an empty mark sheet must not fail on blank Type cells.
       if (!question.typeRaw.trim()) {
-        errors.push(`${where}: select the question type.`);
+        if (questionHasMarks) {
+          errors.push(`${where}: select the question type.`);
+        }
       } else if (!type) {
         errors.push(
           `${where}: question type "${question.typeRaw}" must be MCQ, TRUE_FALSE, SHORT_ANSWER, Coding, ORDERING, or MATCHING.`,
